@@ -4,7 +4,9 @@ import time
 if __name__ == '__main__':
     start_time = time.time()
 
-    print(common.get_target_size(r'B:\1.临时'))
+    大小 = common.get_target_size(r'B:\1.临时')
+    print(大小)
+
 
     end_time = time.time()
     elapsed_time = end_time - start_time
