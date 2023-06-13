@@ -3,7 +3,7 @@ from typing import List
 
 def get_subdirectories(path: str) -> List[str]:
     """
-    获取目标目录下的第一级文件夹路径列表
+    获取目标目录下的第一级目录路径列表
 
     :param path: 检测目录
     :return: 文件夹路径列表
@@ -21,3 +21,9 @@ def get_subdirectories(path: str) -> List[str]:
         print(f"获取文件夹路径时发生错误: {e}")
 
     return subdirectories
+
+
+if __name__ == '__main__':
+    目标目录 = r'resources'
+    返回列表 = get_subdirectories(path=目标目录)
+    print(返回列表)

@@ -1,15 +1,12 @@
-from usage import *
+import common
+import time
 
 if __name__ == '__main__':
+    start_time = time.time()
 
+    print(common.get_target_size(r'B:\1.临时'))
 
-    ##############文件读写操作############
-    # 写入列表到文件()
-    # 读取文件内容到列表()
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f'总用时：{elapsed_time:.2f}秒。')
 
-    ##############获取文件信息############
-    # 获取目标目录扫描到的所有文件列表()
-    # 获取目标目录扫描到的所有文件夹列表()
-    # 获取目标目录下第一级文件夹列表()
-    # 获取文件类型依据文件内容()
-    获取文件或文件夹大小()

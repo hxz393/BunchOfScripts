@@ -3,7 +3,7 @@ from typing import List
 
 def get_folder_paths(path: str) -> List[str]:
     """
-    获取目标目录下的所有文件夹路径列表
+    获取目标目录扫描到的所有文件夹路径列表
 
     :param path: 目标目录
     :return: 文件夹路径列表
@@ -24,3 +24,9 @@ def get_folder_paths(path: str) -> List[str]:
         print(f"获取文件夹路径时发生错误: {e}")
 
     return folder_paths
+
+
+if __name__ == '__main__':
+    目标目录 = r'resources'
+    返回列表 = get_folder_paths(path=目标目录)
+    print(返回列表)

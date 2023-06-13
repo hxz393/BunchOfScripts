@@ -1,5 +1,7 @@
 from common.file_ops.read_file_to_list import read_file_to_list
 from common.file_ops.write_list_to_file import write_list_to_file
+from common.file_ops.read_json_to_dict import read_json_to_dict
+from common.file_ops.write_dict_to_json import write_dict_to_json
 from common.file_ops.get_file_paths import get_file_paths
 from common.file_ops.get_folder_paths import get_folder_paths
 from common.file_ops.get_subdirectories import get_subdirectories

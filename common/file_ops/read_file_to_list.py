@@ -29,3 +29,9 @@ def read_file_to_list(path: str) -> List[str]:
         print(f"读取文件 '{path}' 时出现错误: {e}")
 
     return content
+
+
+if __name__ == '__main__':
+    文本文件路径 = r'resources\new.txt'
+    返回列表 = read_file_to_list(path=文本文件路径)
+    print(返回列表)

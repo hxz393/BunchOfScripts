@@ -22,3 +22,9 @@ def write_list_to_file(path: str, content: List[str]) -> None:
 
     except Exception as e:
         print(f"发生了意外的错误：{e}")
+
+
+if __name__ == '__main__':
+    写入列表 = [1, 'a', '啊']
+    文本文件路径 = r'resources\new.txt'
+    write_list_to_file(path=文本文件路径, content=写入列表)

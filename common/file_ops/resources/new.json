@@ -1,0 +1,12 @@
+{
+    "name": "John Doe",
+    "age": 30,
+    "address": [
+        "New York",
+        119
+    ],
+    "pets": {
+        "cat": "meow",
+        "tiger": null
+    }
+}

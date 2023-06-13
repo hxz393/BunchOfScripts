@@ -24,3 +24,9 @@ def get_file_type(path: str) -> Optional[str]:
         print(f"检测文件类型时发生错误: {e}")
 
     return file_type
+
+
+if __name__ == '__main__':
+    目标文件 = r'resources\new.json'
+    返回类型 = get_file_type(path=目标文件)
+    print(返回类型)
