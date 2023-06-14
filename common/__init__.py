@@ -7,3 +7,6 @@ from common.file_ops.get_folder_paths import get_folder_paths
 from common.file_ops.get_subdirectories import get_subdirectories
 from common.file_ops.get_file_type import get_file_type
 from common.file_ops.get_target_size import get_target_size
+from common.file_ops.remove_target import remove_target
+from common.file_ops.remove_empty_folders import remove_empty_folders
+from common.file_ops.remove_redundant_dirs import remove_redundant_dirs

@@ -45,8 +45,12 @@ def remove_target(path: Union[str, Path]) -> None:
 
 
 if __name__ == '__main__':
-    common.write_list_to_file(path=r'1/1.txt', content=[1, 2])
-    目标删除文件 = r'1/1.txt'
-    目标删除目录 = r'1'
-    remove_target(path=目标删除文件)
-    remove_target(path=目标删除目录)
+    try:
+        common.write_list_to_file(path=r'1/1.txt', content=[1, 2])
+        目标删除文件 = r'1/1.txt'
+        目标删除目录 = r'1'
+        remove_target(path=目标删除文件)
+        remove_target(path=目标删除目录)
+    except Exception as e:
+        print(e)
+
