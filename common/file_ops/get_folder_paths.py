@@ -30,7 +30,7 @@ def get_folder_paths(path: Union[Path, str]) -> Iterator[str]:
 
 
 if __name__ == '__main__':
-    目标目录 = Path('resources')
+    目标目录 = r'resources'
     try:
         文件夹路径生成器 = get_folder_paths(path=目标目录)
         for 文件夹路径 in 文件夹路径生成器:
