@@ -7,3 +7,4 @@ __pycache__
 /common/module_use/logs/
 /common/module_use/config/
 /common/file_ops/resources/
+/common/file_ops/resources
