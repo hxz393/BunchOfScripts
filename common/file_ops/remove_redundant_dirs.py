@@ -1,5 +1,5 @@
 from typing import Union
-from pathlib import Path, PurePath
+from pathlib import Path
 import uuid
 
 

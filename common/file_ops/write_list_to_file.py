@@ -23,8 +23,6 @@ def write_list_to_file(path: str, content: List[Any]) -> Optional[bool]:
     except Exception as e:
         raise Exception(f"写入文件 '{path}' 时发生错误: {e}")
 
-    return None
-
 
 if __name__ == '__main__':
     try:

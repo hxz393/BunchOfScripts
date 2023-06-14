@@ -2,8 +2,6 @@ from pathlib import Path
 import shutil
 from typing import Callable, Any, Union
 
-import common
-
 
 def remove_permissions(func: Callable[[Path], Any], path: Path, _: Any) -> None:
     """
@@ -46,7 +44,6 @@ def remove_target(path: Union[str, Path]) -> None:
 
 if __name__ == '__main__':
     try:
-        common.write_list_to_file(path=r'1/1.txt', content=[1, 2])
         目标删除文件 = r'1/1.txt'
         目标删除目录 = r'1'
         remove_target(path=目标删除文件)
