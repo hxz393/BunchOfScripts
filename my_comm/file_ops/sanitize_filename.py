@@ -2,7 +2,7 @@ import re
 
 def sanitize_filename(filename: str) -> str:
     """
-    检查一个字符串是否可以作为Windows上的文件名，如果不能则替换掉不能作为文件名的字符。
+    检查一个字符串是否可以作为Windows上的文件名，如果不行则替换掉不能作为文件名的字符。
 
     :param filename: 待检查的字符串
     :type filename: str

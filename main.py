@@ -1,12 +1,10 @@
-import common
+import my_comm
 import time
-
 if __name__ == '__main__':
-
     ############### 测试速度 #########
     start_time = time.time()
 
-    大小 = common.get_target_size(r'B:\1.临时')
+    大小 = my_comm.get_target_size(r'B:\0.整理\BT\QB下载')
     print(大小)
 
     end_time = time.time()

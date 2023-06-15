@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Union
-from read_file_to_list import read_file_to_list
-from sanitize_filename import sanitize_filename
+
+from my_comm import read_file_to_list
+from my_comm import sanitize_filename
 
 
 def create_folders_batch(file: Union[str, Path], target_directory: Union[str, Path]) -> None:
@@ -43,6 +44,6 @@ def create_folders_batch(file: Union[str, Path], target_directory: Union[str, Pa
 
 if __name__ == "__main__":
     try:
-        create_folders_batch(Path("resources/new.txt"), Path("resources/new1"))
+        create_folders_batch(Path("resources/new.txt"), Path("resources"))
     except Exception as e:
         print(str(e))
