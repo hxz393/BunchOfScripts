@@ -4,6 +4,7 @@ from typing import Union
 from my_comm import read_file_to_list
 from my_comm import sanitize_filename
 
+MAX_PATH_LENGTH = 260
 
 def create_folders_batch(file: Union[str, Path], target_directory: Union[str, Path]) -> None:
     """
@@ -36,14 +37,19 @@ def create_folders_batch(file: Union[str, Path], target_directory: Union[str, Pa
     # 批量创建文件夹
     for name in name_list:
         folder_path = target_directory_path / name
+        # 检查路径长度
+        if len(str(folder_path)) > MAX_PATH_LENGTH:
+            raise ValueError(f"文件夹路径 {folder_path} 的长度超过了 Windows 的最大支持长度.")
         try:
             folder_path.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             raise Exception(f"创建文件夹 {folder_path} 时出错. 错误信息: {str(e)}")
 
-
 if __name__ == "__main__":
     try:
-        create_folders_batch(Path("resources/new.txt"), Path("resources"))
+        create_folders_batch(
+            r"resources/new.txt",
+            r"resources"
+        )
     except Exception as e:
         print(str(e))

@@ -1,7 +1,8 @@
 from typing import Union
 from pathlib import Path
 from shutil import move
-from rename_target_if_exist import rename_target_if_exist
+
+from my_comm.file_ops.rename_target_if_exist import rename_target_if_exist
 
 
 def move_folder_with_rename(source: Union[str, Path], destination: Union[str, Path]) -> None:
@@ -28,6 +29,7 @@ def move_folder_with_rename(source: Union[str, Path], destination: Union[str, Pa
     # 检查目标位置的父目录是否存在
     if not destination.parent.exists():
         raise FileNotFoundError(f"目标位置的父目录 {destination.parent} 不存在.")
+
 
     destination = rename_target_if_exist(destination)
 

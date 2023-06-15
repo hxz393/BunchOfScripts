@@ -1,6 +1,24 @@
-import my_comm
 import time
+
+import my_comm
+import my_scripts
+
+
 if __name__ == '__main__':
+    logger = my_comm.logging_config(console_output=True, log_level='INFO')
+
+    ########## 正常使用  ##############
+
+    try:
+        my_scripts.create_folders_batch(
+            file=r"E:\undone\待下\1.txt",
+            target_directory=r"B:\2.脚本\3"
+        )
+    except Exception as e:
+        logger.error(e)
+
+
+
     ############### 测试速度 #########
     start_time = time.time()
 

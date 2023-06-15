@@ -1,6 +1,7 @@
 from typing import List, Union
 from pathlib import Path
-from remove_target import remove_target
+
+from my_comm.file_ops.remove_target import remove_target
 
 
 def remove_target_matched(path: Union[str, Path], match_list: List[str]) -> None:
