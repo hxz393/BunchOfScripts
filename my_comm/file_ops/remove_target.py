@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import os, stat
 from typing import Callable, Any, Union
 
 
@@ -12,6 +13,7 @@ def remove_permissions(func: Callable[[Path], Any], path: Path, _: Any) -> None:
     :param _ : 用于异常处理的错误信息
     """
     path.chmod(0o777)
+    os.chmod(path, stat.S_IWRITE)
     func(path)
 
 

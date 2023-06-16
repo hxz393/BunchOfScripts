@@ -1,1 +1,3 @@
 from my_scripts.create_folders_batch import create_folders_batch
+from my_scripts.rename_folder_to_common import rename_folder_to_common
+from my_scripts.move_duplicates import move_duplicates

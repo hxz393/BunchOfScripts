@@ -29,3 +29,5 @@ from my_comm.module_use.config_write import config_write
 from my_comm.module_use.langconv_cht_to_chs import langconv_cht_to_chs
 from my_comm.module_use.langconv_chs_to_cht import langconv_chs_to_cht
 from my_comm.module_use.logging_config import logging_config
+
+from my_comm.others.convert_base64_to_ico import convert_base64_to_ico

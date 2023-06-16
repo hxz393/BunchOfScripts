@@ -49,7 +49,7 @@ if __name__ == "__main__":
     try:
         create_folders_batch(
             r"resources/new.txt",
-            r"resources"
+            r"resources/1"
         )
     except Exception as e:
         print(str(e))
