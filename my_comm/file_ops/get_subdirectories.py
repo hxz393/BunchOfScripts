@@ -1,35 +1,34 @@
-from pathlib import Path
+import os
 from typing import List, Union
 
-
-def get_subdirectories(target_path: Union[Path, str]) -> List[str]:
+def get_subdirectories(target_path: Union[os.PathLike, str]) -> List[str]:
     """
-    获取目标目录下的第一级目录路径列表
+    获取目标目录下的第一级目录路径列表。
 
-    :param target_path: 检测目录，可以是 str 或 Path
-    :return: 文件夹路径列表
-    :raise ValueError: 如果路径不是一个有效的目录，或者路径不存在，抛出 ValueError
-    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception
+    :type target_path: Union[os.PathLike, str]
+    :param target_path: 检测目录，可以是 str 或 os.PathLike 对象。
+    :rtype: List[str]
+    :return: 文件夹路径列表。
+    :raise ValueError: 如果路径不是一个有效的目录，或者路径不存在，抛出 ValueError。
+    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
     """
-    if isinstance(target_path, str):
-        target_path = Path(target_path)
 
-    if not target_path.exists():
-        raise ValueError(f"路径 '{target_path}' 不存在")
+    if not os.path.exists(target_path):
+        raise ValueError(f"The path '{target_path}' does not exist.")
 
-    if not target_path.is_dir():
-        raise ValueError(f"'{target_path}' 不是一个有效的目录")
+    if not os.path.isdir(target_path):
+        raise ValueError(f"'{target_path}' is not a valid directory.")
 
     try:
-        return [str(item) for item in target_path.iterdir() if item.is_dir()]
+        return [entry.path for entry in os.scandir(target_path) if entry.is_dir()]
     except Exception as e:
-        raise Exception(f"获取文件夹路径时发生错误: {e}")
+        raise Exception(f"An error occurred while getting subdirectories: {e}")
 
 
 if __name__ == '__main__':
-    目标目录 = Path('resources')
+    target_dir = 'resources/'
     try:
-        返回列表 = get_subdirectories(target_path=目标目录)
-        print(返回列表)
+        dir_list = get_subdirectories(target_path=target_dir)
+        print(dir_list)
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

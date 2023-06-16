@@ -1,47 +1,44 @@
-from pathlib import Path
-from typing import Union
-from os import scandir
+import os
+from typing import Union, List
 
 
-def remove_empty_folders(path: Union[str, Path]) -> None:
+def remove_empty_folders(target_path: Union[str, os.PathLike]) -> List[str]:
     """
-    删除指定路径下的所有空目录。
+    删除指定路径下搜索到的所有空目录，并返回被删除的目录路径列表。
 
-    :param path: 需要处理的目录路径，可以是字符串或 Path 对象。
-    :type path: Union[str, Path]
-    :raise FileNotFoundError: 如果路径不存在。
-    :raise NotADirectoryError: 如果路径不是一个目录。
-    :raise Exception: 如果在处理过程中出现其他错误。
-    :return: 无返回值
+    :param target_path: 需要处理的目录路径，可以是字符串或 Path 对象。
+    :type target_path: Union[str, Path]
+    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
+    :raise NotADirectoryError: 如果路径不是一个目录，抛出 NotADirectoryError。
+    :raise OSError: 如果在处理过程中出现其他错误，抛出 OSError。
+    :return: 一个列表，包含所有被删除的空目录的路径。
+    :rtype: List[str]
     """
-    # 如果输入的路径是字符串，转化为Path对象
-    if isinstance(path, str):
-        path = Path(path)
-
-    # 检查路径是否存在
-    if not path.exists():
-        raise FileNotFoundError(f"路径 {path} 不存在")
-
-    # 检查路径是否是目录
-    if not path.is_dir():
-        raise NotADirectoryError(f"{path} 不是一个有效的目录")
+    removed_dirs = []
 
     try:
-        # 使用 os.scandir 替代 pathlib 的 iterdir，性能更优
-        for entry in scandir(path):
+        entries = list(os.scandir(target_path))
+        for entry in entries:
             if entry.is_dir(follow_symlinks=False):
-                # 递归处理子目录
-                remove_empty_folders(entry.path)
-        if not any(scandir(path)):
-            # 删除空目录
-            path.rmdir()
+                removed_dirs.extend(remove_empty_folders(entry.path))
+
+        if not entries:
+            os.rmdir(target_path)
+            removed_dirs.append(str(target_path))
+    except FileNotFoundError:
+        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
+    except NotADirectoryError:
+        raise NotADirectoryError(f"'{target_path}' is not a valid directory.")
     except OSError as e:
-        raise Exception(f"无法删除目录 {path}: {str(e)}")
+        raise OSError(f"Cannot delete directory '{target_path}': {str(e)}")
+
+    return removed_dirs
 
 
 if __name__ == '__main__':
     try:
-        目标目录 = r'resources'
-        remove_empty_folders(path=目标目录)
+        target_directory = r'resources/'
+        removed_directories = remove_empty_folders(target_path=target_directory)
+        print(f"Removed directories: {removed_directories}")
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

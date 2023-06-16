@@ -23,16 +23,18 @@ if __name__ == '__main__':
 
 
 
-    ############### 性能分析 #########
+    ############## 性能分析 #########
     profiler = cProfile.Profile()
     profiler.enable()
 
     目标目录 = r'B:\1.临时'
+    要筛选文件类型列表 = ['.mp3', '.flaC']
+    删除文件列表 = ['新建 RTF 文档.rtf', '新建... Microsoft PowerPoint Presentation.pptx', '啊123v']
     try:
-        返回 = my_comm.get_file_paths(target_path=目标目录)
+        返回 = my_comm.remove_target_matched(target_path=目标目录, match_list=删除文件列表)
         # print(返回)
     except Exception as e:
-        print(e)
+        print(str(e))
 
     profiler.disable()
     profiler.print_stats()

@@ -1,37 +1,39 @@
-from typing import List, Optional
+import os
+from typing import List, Union
 
-
-def read_file_to_list(path: str) -> Optional[List[str]]:
+def read_file_to_list(target_path: Union[str, os.PathLike]) -> List[str]:
     """
     读取文本文件中的内容，并将其存储成列表。
 
-    :param path: 文本文件的路径
-    :return: 成功时返回文本内容列表，失败时返回 None
-    :raise ValueError: 如果路径不存在或者不是一个有效的文件，抛出 ValueError
-    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception
+    :type target_path: Union[str, os.PathLike]
+    :param target_path: 文本文件的路径，可以是字符串或 os.PathLike 对象。
+    :rtype: List[str]
+    :return: 成功时返回文本内容列表。
+    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
+    :raise NotADirectoryError: 如果路径是一个目录，而不是文件，抛出 NotADirectoryError。
+    :raise PermissionError: 如果无法访问文件，可能是因为权限错误，抛出 PermissionError。
+    :raise UnicodeDecodeError: 如果无法解码文件，抛出 UnicodeDecodeError。
+    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
     """
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"The file '{target_path}' does not exist.")
+    if not os.path.isfile(target_path):
+        raise NotADirectoryError(f"'{target_path}' is not a valid file.")
 
     try:
-        with open(path, 'r', encoding="utf-8") as file:
-            content = [line.strip() for line in file]
-    except FileNotFoundError:
-        raise ValueError(f"文件 '{path}' 不存在")
-    except IsADirectoryError:
-        raise ValueError(f"路径 '{path}' 是一个目录")
+        with open(target_path, 'r', encoding="utf-8") as file:
+            return [line.strip() for line in file]
     except PermissionError:
-        raise ValueError(f"无法访问文件 '{path}'，权限错误")
+        raise PermissionError(f"Cannot access file '{target_path}', permission denied.")
     except UnicodeDecodeError:
-        raise ValueError(f"无法解码文件 '{path}'，请检查是否为 'UTF-8' 格式")
+        raise UnicodeDecodeError(f"Cannot decode file '{target_path}', please check whether it is in 'UTF-8' format.")
     except Exception as e:
-        raise Exception(f"读取文件 '{path}' 时出现错误: {e}")
-
-    return content
-
+        raise Exception(f"An error occurred while reading the file '{target_path}': {e}")
 
 if __name__ == '__main__':
     try:
-        文本文件路径 = 'resources/new.txt'
-        返回列表 = read_file_to_list(path=文本文件路径)
-        print(返回列表)
+        text_file_path = 'resources/new.txt'
+        return_list = read_file_to_list(target_path=text_file_path)
+        print(return_list)
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

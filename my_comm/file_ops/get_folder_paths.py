@@ -1,38 +1,33 @@
 import os
-from typing import List
+from typing import List, Union
 
-
-def get_folder_paths(target_path: str) -> List[str]:
+def get_folder_paths(target_path: Union[str, os.PathLike]) -> List[str]:
     """
     获取目标目录下扫描到的所有文件夹路径
 
-    :param target_path: 目标目录
-    :return: 文件夹路径列表
-    :raise ValueError: 如果路径不存在或者不是一个有效的目录，抛出 ValueError
-    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception
+    :type target_path: Union[str, os.PathLike]
+    :param target_path: 目标目录的路径，可以是字符串或 os.PathLike 对象。
+    :rtype: List[str]
+    :return: 文件夹路径列表。
+    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
+    :raise NotADirectoryError: 如果路径不是一个有效的目录，抛出 NotADirectoryError。
+    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
     """
+    target_path = os.path.normpath(target_path)
     if not os.path.exists(target_path):
-        raise ValueError(f"路径 '{target_path}' 不存在")
-
+        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
     if not os.path.isdir(target_path):
-        raise ValueError(f"'{target_path}' 不是一个有效的目录")
-
-    folder_paths = []
+        raise NotADirectoryError(f"'{target_path}' is not a valid directory.")
 
     try:
-        for root, dirs, _ in os.walk(target_path):
-            for dir in dirs:
-                full_path = os.path.join(root, dir)
-                folder_paths.append(full_path)
-        return folder_paths
+        return [os.path.normpath(os.path.join(root, dir_name)) for root, dirs, _ in os.walk(target_path) for dir_name in dirs]
     except Exception as e:
-        raise Exception(f"在获取文件夹路径时发生错误: {e}")
-
+        raise Exception(f"An error occurred while retrieving folder paths: {e}")
 
 if __name__ == '__main__':
-    目标目录 = r'resources'
+    target_path = r'resources'
     try:
-        目录路径列表 = get_folder_paths(target_path=目标目录)
-        print(目录路径列表)
+        folder_paths_list = get_folder_paths(target_path=target_path)
+        print(folder_paths_list)
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

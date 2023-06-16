@@ -1,45 +1,49 @@
+import os
 from typing import List, Union
-from pathlib import Path
 
 from my_comm.file_ops.remove_target import remove_target
 
 
-def remove_target_matched(path: Union[str, Path], match_list: List[str]) -> None:
+def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List[str]) -> List[str]:
     """
-    删除完全匹配目标列表中任一名字的文件或文件夹。
+    删除目标路径下与给定匹配列表中任一名字完全匹配的文件或文件夹。
 
-    :param path: 需要搜索的路径
-    :type path: Union[str, Path]
-    :param match_list: 需要匹配的目标列表
+    :param target_path: 指定的目标路径，可是是字符串或 os.PathLike 对象。
+    :type target_path: Union[str, os.PathLike]
+    :param match_list: 需要匹配的目标列表，列表中的每个元素是一个字符串。
     :type match_list: List[str]
-    :raise FileNotFoundError: 如果指定路径不存在会抛出此异常
-    :raise ValueError: 如果匹配目标列表为空会抛出此异常
+    :rtype: List[str]
+    :return: 一个包含被删除路径的列表。
+    :raise FileNotFoundError: 如果指定的目标路径不存在，则抛出此异常。
+    :raise ValueError: 如果匹配目标列表为空，则抛出此异常。
+    :raise Exception: 如果在处理过程中遇到任何其它问题，抛出一般性的 Exception。
     """
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
 
-    if not isinstance(path, Path):
-        path = Path(path)
-
-    # 检查路径是否存在
-    if not path.exists():
-        raise FileNotFoundError(f"指定路径 {path} 不存在.")
-
-    # 检查匹配目标列表是否为空
     if not match_list:
-        raise ValueError(f"匹配目标列表为空.")
+        raise ValueError(f"Match list is empty.")
 
     try:
-        # 获取所有匹配的路径
-        matched_paths = [p for p in path.glob('**/*') if p.name in match_list]
-
-        # 批量删除匹配的目标
-        for matched_path in matched_paths:
-            remove_target(matched_path)
+        matched_paths = [
+            os.path.normpath(os.path.join(root, file))
+            for root, dirs, files in os.walk(target_path)
+            for file in files + dirs
+            if file in match_list
+        ]
+        for path in matched_paths:
+            remove_target(path)
     except Exception as e:
-        raise Exception(f"删除匹配目标时出错. 错误信息: {str(e)}")
+        raise Exception(f"An error occurred while removing matched targets. Error message: {e}")
+
+    return matched_paths
 
 
 if __name__ == "__main__":
     try:
-        remove_target_matched(r'./resources', ['test.txt', 'a'])
+        target_path = r'./resources'
+        match_list = ['test.txt', 'a']
+        removed_paths = remove_target_matched(target_path=target_path, match_list=match_list)
+        print("The following files/directories have been removed: ", removed_paths)
     except Exception as e:
-        print(str(e))
+        print(e)
