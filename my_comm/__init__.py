@@ -23,7 +23,6 @@ from my_comm.math_until.calculate_transfer_speed import calculate_transfer_speed
 from my_comm.math_until.format_size import format_size
 from my_comm.math_until.format_time import format_time
 
-from my_comm.module_use.config_get import config_get
 from my_comm.module_use.config_read import config_read
 from my_comm.module_use.config_write import config_write
 from my_comm.module_use.langconv_cht_to_chs import langconv_cht_to_chs

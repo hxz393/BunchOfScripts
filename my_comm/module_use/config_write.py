@@ -1,45 +1,47 @@
 import os
 import configparser
-from typing import Dict, Any
+from typing import Dict, Any, Union
 
-def config_write(path: str, config: Dict[str, Any]) -> None:
+def config_write(target_path: str, config: Dict[str, Union[str, Any]]) -> None:
     """
     将配置字典写入配置文件。
 
-    :param path: 配置文件的路径。
-    :type path: str
+    :param target_path: 配置文件的路径。
+    :type target_path: str
     :param config: 配置字典，其中键为节名，值为包含该节配置项的字典。
     :type config: Dict[str, Any]
     :raises ValueError: 当路径或配置为空时引发。
     :raises Exception: 当尝试写入文件失败时引发。
     """
-
-    # 参数检查
-    if not path:
-        raise ValueError("路径不能为空")
+    if not target_path:
+        raise ValueError("Path should not be empty.")
     if not config:
-        raise ValueError("配置不能为空")
+        raise ValueError("Config should not be empty.")
 
-    # 创建配置解析器
+    # Create a new ConfigParser object
     config_parser = configparser.ConfigParser()
 
-    # 将配置项添加到配置解析器
+    # Add sections and options from config dict to ConfigParser object
     for section, section_config in config.items():
-        config_parser[section] = section_config
+        config_parser[section] = {k: str(v) for k, v in section_config.items()}
 
-    # 尝试写入配置文件
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
+        # Create directory if not exists
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        # Write config to file
+        with open(target_path, 'w') as f:
             config_parser.write(f)
     except Exception as e:
-        raise Exception(f"无法写入配置文件 {path}: {str(e)}")
-
+        raise Exception(f"Failed to write config to file {target_path}: {e}")
 
 if __name__ == '__main__':
-    xxx = "x1x"
-    # 使用示例
-    config_dict = {
+    xxx = True
+    yyy = None
+    config = {
+        "DEFAULT": {
+            "key3": "value3",
+            "keyc": 0,
+        },
         "section1": {
             "key1": "value1",
             "key2": 1,
@@ -47,9 +49,12 @@ if __name__ == '__main__':
         "section2": {
             "keyA": 2.44,
             "keyB": xxx,
+            "keyC": yyy,
         },
     }
+    target_path = r"config/config.ini"
     try:
-        config_write(r"config/config.ini", config_dict)
+        config_write(target_path=target_path, config=config)
     except Exception as e:
         print(e)
+

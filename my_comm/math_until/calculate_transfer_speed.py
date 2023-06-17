@@ -1,4 +1,3 @@
-import os
 from typing import Union
 
 def calculate_transfer_speed(size_bytes: int, elapsed_time_seconds: Union[int, float]) -> str:

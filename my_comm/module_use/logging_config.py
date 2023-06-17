@@ -4,11 +4,13 @@ from logging.handlers import RotatingFileHandler
 import os
 from typing import Optional
 
-DEFAULT_LOG_FORMAT = '%(asctime)s - %(levelname)s - %(module)s::%(funcName)s - %(message)s'
-
-
-def logging_config(log_file: Optional[str] = None, console_output: bool = False, log_level: str = 'INFO',
-                   max_log_size: int = 10, backup_count: int = 10) -> logging.Logger:
+def logging_config(log_file: Optional[str] = None,
+                   console_output: bool = False,
+                   log_level: str = 'INFO',
+                   max_log_size: int = 10,
+                   backup_count: int = 10,
+                   default_log_format: str = '##%(asctime)s - %(levelname)s - %(module)s::%(funcName)s::%(lineno)d - %(message)s'
+                   ) -> logging.Logger:
     """
     配置日志记录器，可选在控制台输出，也可选择记录到日志文件。
 
@@ -22,30 +24,30 @@ def logging_config(log_file: Optional[str] = None, console_output: bool = False,
     :type max_log_size: int
     :param backup_count: 保留的备份日志文件数量，默认为10
     :type backup_count: int
-    :raise ValueError: 当日志等级不在可接受的日志等级列表中时抛出
-    :return: 配置好的日志记录器
+    :param default_log_format: 日志的默认格式
+    :type default_log_format: str
     :rtype: logging.Logger
+    :raise ValueError: 如果日志等级不在允许的列表中，将抛出此异常
+    :return: 配置后的日志记录器实例
     """
     log_levels = ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"]
     if log_level.upper() not in log_levels:
-        raise ValueError(f"无效的日志等级: {log_level}，必须是 {log_levels} 中的一种")
+        raise ValueError(f"Invalid log level: {log_level}, it must be one of {log_levels}")
 
     logger = getLogger(__name__)
     logger.setLevel(getattr(logging, log_level.upper()))
-    formatter = Formatter(DEFAULT_LOG_FORMAT)
+    formatter = Formatter(default_log_format)
 
     if console_output:
         ch = StreamHandler()
-        ch.setLevel(log_level)
+        ch.setLevel(getattr(logging, log_level.upper()))
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
     if log_file:
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-
+        os.makedirs(os.path.dirname(log_file), exist_ok=True) if os.path.dirname(log_file) else None
         fh = RotatingFileHandler(log_file, maxBytes=max_log_size * 1024 * 1024, backupCount=backup_count, encoding="utf-8")
-        fh.close()
-        fh.setLevel(log_level)
+        fh.setLevel(getattr(logging, log_level.upper()))
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
@@ -54,8 +56,10 @@ def logging_config(log_file: Optional[str] = None, console_output: bool = False,
 
 if __name__ == '__main__':
     try:
-        log_file_path = "logs/run.log"
+        log_file_path = r"logs/run.log"
         logger = logging_config(log_file=log_file_path, console_output=True, log_level='INFO')
-        logger.info("日志配置完成")
+        logger.info("Log configuration completed.")
+        logger.error("Log error.")
+        logger.debug("Log debug.")
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

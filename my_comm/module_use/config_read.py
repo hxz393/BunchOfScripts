@@ -1,34 +1,36 @@
+import os
 import configparser
 from typing import Optional
 
-def config_read(path: str) -> Optional[configparser.ConfigParser]:
+def config_read(target_path: str) -> Optional[configparser.ConfigParser]:
     """
     从指定的路径读取配置文件。
 
-    :param path: 配置文件的路径。
-    :type path: str
-    :return: configparser.ConfigParser 对象，如果文件读取失败，则返回 None。
+    :param target_path: 配置文件的路径。
+    :type target_path: str
     :rtype: Optional[configparser.ConfigParser]
+    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
+    :raise NotADirectoryError: 如果路径是一个目录，抛出 NotADirectoryError。
+    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
+    :return: 如果文件读取成功，返回一个 configparser.ConfigParser 对象；如果文件读取失败，返回 None。
     """
+    target_path = os.path.normpath(target_path)
 
-    # 创建配置解析器
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
+    if os.path.isdir(target_path):
+        raise IsADirectoryError(f"The path '{target_path}' is a directory.")
+
     config_parser = configparser.ConfigParser()
-
-    # 尝试读取配置文件
     try:
-        with open(path, 'r') as f:
+        with open(target_path, 'r') as f:
             config_parser.read_file(f)
-    except FileNotFoundError:
-        print(f"未找到配置文件 {path}")
-        return None
     except Exception as e:
-        print(f"无法读取配置文件 {path}: {str(e)}")
-        return None
+        raise Exception(f"An error occurred while reading the config file {target_path}: {e}")
 
     return config_parser
 
 if __name__ == '__main__':
-    # 使用示例
     try:
         config_parser = config_read(r"config/config.ini")
         if config_parser is not None:
@@ -36,5 +38,12 @@ if __name__ == '__main__':
                 print(f"{section}:")
                 for key, value in config_parser.items(section):
                     print(f"  {key} = {value}")
+            print(config_parser['section1'].get('key1'))
+            print(config_parser['section1'].getint('key2'))
+            print(config_parser['section2'].getfloat('keya'))
+            print(config_parser['section2'].getboolean('keyb'))
+            print(config_parser['section1'].getboolean('key2'))
+            print(config_parser['section1'].get('key3'))
+            print(config_parser['section2'].get('keyc'))
     except Exception as e:
-        print(e)
+        print(f"An error occurred: {e}")

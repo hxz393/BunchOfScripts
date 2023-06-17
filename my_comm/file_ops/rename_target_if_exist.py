@@ -17,10 +17,8 @@ def rename_target_if_exist(path: Union[str, Path]) -> Path:
     if not isinstance(path, Path):
         path = Path(path)
 
-    # 检查路径是否为空或者不合法
     if path is None or str(path).strip() == '':
         raise ValueError("The path is empty or invalid.")
-    # 检查路径是否存在
     if not path.exists():
         raise FileNotFoundError(f"The path '{path}' does not exist.")
 

@@ -1,4 +1,3 @@
-import os
 from typing import Union
 
 def format_size(size: Union[int, float], is_disk: bool = False, precision: int = 2) -> str:
