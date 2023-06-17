@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 
+# noinspection PyBroadException
 try:
     import psyco
     psyco.full()
@@ -86,13 +87,16 @@ class ConvertMap(object):
         self._map = convert_map
         self.max_key_length = max_key_length
 
+    # noinspection PyShadowingNames
     def __getitem__(self, k):
+        # noinspection PyBroadException
         try:
             is_tail, have_child, to_word  = self._map[k]
             return Node(k, to_word, is_tail, have_child)
         except:
             return Node(k)
 
+    # noinspection PyShadowingNames
     def __contains__(self, k):
         return k in self._map
 
@@ -108,12 +112,14 @@ class StatesMachine(object):
         self.len = 0
         self.pool = UEMPTY
 
+    # noinspection PyShadowingNames
     def clone(self, pool):
         new = deepcopy(self)
         new.state = WAIT_TAIL
         new.pool = pool
         return new
 
+    # noinspection PyShadowingNames
     def feed(self, char, map):
         node = map[self.pool+char]
 
@@ -183,6 +189,7 @@ class Converter(object):
         self.map = MAPS[to_encoding]
         self.start()
 
+    # noinspection PyShadowingNames
     def feed(self, char):
         branches = []
         for fsm in self.machines:

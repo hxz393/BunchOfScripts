@@ -1,10 +1,11 @@
 from pathlib import Path
 from typing import Union
 
-from my_comm import read_file_to_list
-from my_comm import sanitize_filename
+from my_module import read_file_to_list
+from my_module import sanitize_filename
 
 
+# noinspection PyShadowingNames
 def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Path]) -> None:
     """
     批量创建文件夹的函数。
@@ -38,12 +39,3 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
             folder_path.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             raise Exception(f"An error occurred while creating the folder {folder_path}. Error message: {str(e)}")
-
-if __name__ == "__main__":
-    try:
-        create_folders_batch(
-            r"resources/1",
-            r"resources/new.txt"
-        )
-    except Exception as e:
-        print(str(e))

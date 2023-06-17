@@ -1,11 +1,9 @@
-import cProfile
-
-import my_comm
+import my_module
 import my_scripts
 
 
 if __name__ == '__main__':
-    logger = my_comm.logging_config(console_output=True, log_level='INFO')
+    logger = my_module.logging_config(console_output=True, log_level='INFO')
 
     ########## 正常使用  ##############
 
@@ -29,22 +27,17 @@ if __name__ == '__main__':
 
 
     ############## 性能分析 #########
-    profiler = cProfile.Profile()
-    profiler.enable()
-
     来源目录 = r'B:\1.临时'
     目标目录 = r'B:\2.脚本'
     要筛选文件类型列表 = ['.mp3', '.flaC']
     删除文件列表 = ['新建 RTF 文档.rtf', '新建... Microsoft PowerPoint Presentation.pptx', '啊123v']
     文本文件 = r'D:\Software\Programming\Python\BunchOfScripts\my_scripts\resources\new.txt'
     try:
-        返回 = my_scripts.move_duplicates(source_path=来源目录, target_path=目标目录)
+        返回 = my_module.get_file_paths(target_path=来源目录)
         # print(返回)
     except Exception as e:
         logger.exception(e)
 
-    profiler.disable()
-    profiler.print_stats()
 
 
 

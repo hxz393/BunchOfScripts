@@ -1,4 +1,5 @@
 import re
+import shutil
 from unidecode import unidecode
 from pathlib import Path
 from typing import Dict
@@ -23,6 +24,7 @@ def custom_unidecode(input_string: str) -> str:
     return ''.join(char if char in EXCLUDE_CHARS else unidecode(char) for char in input_string)
 
 
+# noinspection PyShadowingNames
 def rename_folder_to_common(source_path: str, target_path: str) -> Dict[str, str]:
     """
     将源目录下的文件夹按照预设规则重命名并移动到目标目录。
@@ -58,9 +60,11 @@ def rename_folder_to_common(source_path: str, target_path: str) -> Dict[str, str
             final_path = target / new_folder_name
             if final_path.exists():
                 raise Exception(f"Folder with the same name already exists in the target directory '{new_folder_name}'.")
-
-            folder.rename(final_path)
-            final_path_dict[str(folder)] = str(final_path)
+            try:
+                shutil.move(str(folder), str(final_path))
+                final_path_dict[str(folder)] = str(final_path)
+            except OSError as e:
+                print(f"Error moving directory: {e}")
 
     return final_path_dict
 

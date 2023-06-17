@@ -4,7 +4,9 @@ __pycache__
 /dist/
 /*.spec
 /build
-/my_comm/module_use/logs/
-/my_comm/module_use/config/
-/my_comm/file_ops/resources/
+/my_module/module_use/logs/
+/my_module/module_use/config/
+/my_module/file_ops/resources/
 /my_scripts/resources/
+/tests/test_my_module/resources
+/tests/test_my_scripts/resources

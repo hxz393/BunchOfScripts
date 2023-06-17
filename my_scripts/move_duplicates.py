@@ -7,6 +7,7 @@ SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
               " vs ", "⁄", " x ", "(1)"]
 
 
+# noinspection PyShadowingNames
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Dict[str, str]:
     """
     检查并移动源目录中的重复文件夹。
@@ -31,7 +32,7 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
     if not os.path.isdir(target_path):
         raise NotADirectoryError(f"'{target_path}' is not a valid directory.")
 
-    file_dict = {str.lower(i): os.path.join(source_path, i) for i in os.listdir(source_path)}
+    file_dict = {i.lower(): os.path.normpath(os.path.join(source_path, i)) for i in os.listdir(source_path)}
     final_path_dict = {}
 
     for file_name, file_path in file_dict.items():
