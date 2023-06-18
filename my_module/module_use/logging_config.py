@@ -5,7 +5,6 @@ import os
 from typing import Optional
 
 
-# noinspection PyShadowingNames
 def logging_config(log_file: Optional[str] = None,
                    console_output: bool = False,
                    log_level: str = 'INFO',
@@ -29,14 +28,12 @@ def logging_config(log_file: Optional[str] = None,
     :param default_log_format: 日志的默认格式
     :type default_log_format: str
     :rtype: logging.Logger
-    :raise ValueError: 如果日志等级不在允许的列表中，将抛出此异常
     :return: 配置后的日志记录器实例
     """
     log_levels = ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"]
-    if log_level.upper() not in log_levels:
-        raise ValueError(f"Invalid log level: {log_level}, it must be one of {log_levels}")
+    log_level = log_level if log_level.upper() in log_levels else 'INFO'
 
-    logger = getLogger(__name__)
+    logger = getLogger()
     logger.setLevel(getattr(logging, log_level.upper()))
     formatter = Formatter(default_log_format)
 

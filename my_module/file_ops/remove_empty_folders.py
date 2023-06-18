@@ -1,19 +1,18 @@
 import os
-from typing import Union, List
+import logging
+from typing import Union, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
-# noinspection PyShadowingNames
-def remove_empty_folders(target_path: Union[str, os.PathLike]) -> List[str]:
+def remove_empty_folders(target_path: Union[str, os.PathLike]) -> Optional[List[str]]:
     """
     删除指定路径下搜索到的所有空目录，并返回被删除的目录路径列表。
 
-    :param target_path: 需要处理的目录路径，可以是字符串或 Path 对象。
-    :type target_path: Union[str, Path]
-    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
-    :raise NotADirectoryError: 如果路径不是一个目录，抛出 NotADirectoryError。
-    :raise OSError: 如果在处理过程中出现其他错误，抛出 OSError。
-    :return: 一个列表，包含所有被删除的空目录的路径。
-    :rtype: List[str]
+    :param target_path: 需要处理的目录路径，可以是字符串或 os.PathLike 对象。
+    :type target_path: Union[str, os.PathLike]
+    :return: 成功时返回一个列表，包含所有被删除的空目录的路径，如果遇到错误则返回None。
+    :rtype: Optional[List[str]]
     """
     removed_dirs = []
 
@@ -22,15 +21,20 @@ def remove_empty_folders(target_path: Union[str, os.PathLike]) -> List[str]:
         for entry in entries:
             if entry.is_dir(follow_symlinks=False):
                 removed_dirs.extend(remove_empty_folders(entry.path))
-
         if not entries:
             os.rmdir(target_path)
             removed_dirs.append(str(target_path))
     except FileNotFoundError:
-        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
+        logger.error(f"The path '{target_path}' does not exist.")
+        return None
     except NotADirectoryError:
-        raise NotADirectoryError(f"'{target_path}' is not a valid directory.")
+        logger.error(f"'{target_path}' is not a valid directory.")
+        return None
     except OSError as e:
-        raise OSError(f"Cannot delete directory '{target_path}': {str(e)}")
+        logger.error(f"Cannot delete directory '{target_path}': {str(e)}")
+        return None
+    except Exception as e:
+        logger.error(f"An error occurred while deleting empty directories: {e}")
+        return None
 
     return removed_dirs

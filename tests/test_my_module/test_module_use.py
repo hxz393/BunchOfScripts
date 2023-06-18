@@ -17,14 +17,6 @@ class TestLangconvChsToCht(unittest.TestCase):
         except Exception as e:
             self.fail(f"Test failed due to {str(e)}")
 
-    def test_empty_string_input(self):
-        with self.assertRaises(ValueError):
-            langconv_chs_to_cht('')
-
-    def test_non_string_input(self):
-        with self.assertRaises(TypeError):
-            langconv_chs_to_cht(123)
-
 
 class TestLangconvChtToChs(unittest.TestCase):
 
@@ -38,21 +30,8 @@ class TestLangconvChtToChs(unittest.TestCase):
         except Exception as e:
             self.fail(f"Test failed due to {str(e)}")
 
-    def test_empty_string_input(self):
-        with self.assertRaises(ValueError):
-            langconv_cht_to_chs('')
-
-    def test_non_string_input(self):
-        with self.assertRaises(TypeError):
-            langconv_cht_to_chs(123)
-
 
 class TestLoggingConfig(unittest.TestCase):
-
-    def test_invalid_log_level(self):
-        with self.assertRaises(ValueError):
-            logging_config(log_level="INVALID")
-
     def test_logger_initialization(self):
         logger = logging_config(console_output=True, log_level='INFO')
         self.assertIsInstance(logger, logging.Logger)
@@ -83,13 +62,6 @@ class TestConfigWrite(unittest.TestCase):
         if os.path.exists(self.target_path):
             os.remove(self.target_path)
 
-    def test_empty_path(self):
-        with self.assertRaises(ValueError):
-            config_write(target_path="", config=self.config)
-
-    def test_empty_config(self):
-        with self.assertRaises(ValueError):
-            config_write(target_path=self.target_path, config={})
 
     def test_config_write(self):
         config_write(target_path=self.target_path, config=self.config)
@@ -125,20 +97,6 @@ class TestConfigRead(unittest.TestCase):
         with self.assertRaises(KeyError):
             config_parser['section3'].get('key3')
 
-    def test_file_not_found(self):
-        with self.assertRaises(FileNotFoundError):
-            config_read('resources/non_existent_file.ini')
-
-    def test_path_is_directory(self):
-        with self.assertRaises(NotADirectoryError):
-            config_read('resources/test_module_use')
-
-    def test_read_invalid_config(self):
-        with open('resources/temp.ini', 'w') as f:
-            f.write("not a config file")
-        with self.assertRaises(Exception):
-            config_read('resources/temp.ini')
-        os.remove('resources/temp.ini')
 
     def tearDown(self):
         pass

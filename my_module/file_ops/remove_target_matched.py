@@ -1,11 +1,12 @@
 import os
-from typing import List, Union
+import logging
+from typing import List, Union, Optional
 
 from my_module.file_ops.remove_target import remove_target
 
+logger = logging.getLogger(__name__)
 
-# noinspection PyShadowingNames
-def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List[str]) -> List[str]:
+def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List[str]) -> Optional[List[str]]:
     """
     删除目标路径下与给定匹配列表中任一名字完全匹配的文件或文件夹。
 
@@ -13,17 +14,16 @@ def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List
     :type target_path: Union[str, os.PathLike]
     :param match_list: 需要匹配的目标列表，列表中的每个元素是一个字符串。
     :type match_list: List[str]
-    :rtype: List[str]
-    :return: 一个包含被删除路径的列表。
-    :raise FileNotFoundError: 如果指定的目标路径不存在，则抛出此异常。
-    :raise ValueError: 如果匹配目标列表为空，则抛出此异常。
-    :raise Exception: 如果在处理过程中遇到任何其它问题，抛出一般性的 Exception。
+    :return: 一个包含被删除路径的列表，如果遇到错误则返回 None。
+    :rtype: Optional[List[str]]
     """
     if not os.path.exists(target_path):
-        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
+        logger.error(f"The path '{target_path}' does not exist.")
+        return None
 
     if not match_list:
-        raise ValueError(f"Match list is empty.")
+        logger.error(f"Match list is empty.")
+        return None
 
     try:
         matched_paths = [
@@ -34,7 +34,7 @@ def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List
         ]
         for path in matched_paths:
             remove_target(path)
+        return matched_paths
     except Exception as e:
-        raise Exception(f"An error occurred while removing matched targets. Error message: {e}")
-
-    return matched_paths
+        logger.error(f"An error occurred while removing matched targets. Error message: {e}")
+        return None

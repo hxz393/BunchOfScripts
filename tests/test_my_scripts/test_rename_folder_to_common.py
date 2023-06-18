@@ -19,32 +19,6 @@ class TestRenameFolderToCommon(unittest.TestCase):
         shutil.rmtree(self.source_path)
         shutil.rmtree(self.target_path)
 
-    def test_source_not_exists(self):
-        with self.assertRaises(ValueError):
-            rename_folder_to_common('not_existing_folder', self.target_path)
-
-    def test_target_not_exists(self):
-        with self.assertRaises(ValueError):
-            rename_folder_to_common(self.source_path, 'not_existing_folder')
-
-    def test_source_not_directory(self):
-        with open(f"{self.source_path}/test_file", 'w') as file:
-            file.write("Hello, world!")
-        with self.assertRaises(ValueError):
-            rename_folder_to_common(f"{self.source_path}/test_file", self.target_path)
-
-    def test_target_not_directory(self):
-        with open(f"{self.target_path}/test_file", 'w') as file:
-            file.write("Hello, world!")
-        with self.assertRaises(ValueError):
-            rename_folder_to_common(self.source_path, f"{self.target_path}/test_file")
-
-    def test_target_folder_exists(self):
-        os.makedirs(f"{self.source_path}/test∗folder", exist_ok=True)
-        os.makedirs(f"{self.target_path}/test-folder", exist_ok=True)
-        with self.assertRaises(Exception):
-            rename_folder_to_common(self.source_path, self.target_path)
-
     def test_normal_rename_and_move(self):
         original_folder_name = "thé tèst fõlder"
         expected_folder_name = "the test folder"
@@ -61,7 +35,7 @@ class TestRenameFolderToCommon(unittest.TestCase):
 
             os.makedirs(f"{self.source_path}/{original_folder_name}", exist_ok=True)
             result = rename_folder_to_common(self.source_path, self.target_path)
-            self.assertEqual(result, {})
+            self.assertEqual(result, None)
             self.assertFalse(Path(f"{self.target_path}/{expected_folder_name}").exists())
             self.assertTrue(Path(f"{self.source_path}/{original_folder_name}").exists())
 

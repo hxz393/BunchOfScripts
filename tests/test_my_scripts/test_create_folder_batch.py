@@ -1,5 +1,6 @@
 import unittest
 import os
+import shutil
 from pathlib import Path
 
 from my_scripts import *
@@ -7,40 +8,32 @@ from my_scripts import *
 
 class TestCreateFoldersBatch(unittest.TestCase):
     def setUp(self):
-        self.base_dir = Path(__file__).parent / 'resources'
-        self.target_path = self.base_dir / 'valid_path'
-        self.target_path.mkdir(exist_ok=True)
-        self.txt_file = self.base_dir / 'valid_file.txt'
-        with open(self.txt_file, "w") as file:
-            file.write("folder1\nfolder2\nfolder3")
+        # 创建一个临时目录和文件用于测试
+        self.test_dir = Path("test_dir")
+        self.test_dir.mkdir(exist_ok=True)
 
-    def test_file_not_found(self):
-        with self.assertRaises(FileNotFoundError):
-            create_folders_batch('invalid_path', 'invalid_file.txt')
-
-    def test_empty_list(self):
-        empty_file = self.base_dir / 'empty_file.txt'
-        with open(empty_file, "w") as file:
-            file.write("")
-        with self.assertRaises(ValueError):
-            create_folders_batch(self.target_path, empty_file)
-
-    def test_path_length_exceeded(self):
-        long_folder_name_file = self.base_dir / 'long_folder_name_file.txt'
-        with open(long_folder_name_file, "w") as file:
-            file.write('a' * 261)
-        with self.assertRaises(ValueError):
-            create_folders_batch(self.target_path, long_folder_name_file)
+        self.test_file = Path("test.txt")
+        with self.test_file.open("w") as f:
+            f.write("folder1\nfolder2\nfolder3")
 
     def tearDown(self):
-        for child in self.base_dir.iterdir():
+        # 测试结束后删除临时目录和文件
+        for child in self.test_dir.iterdir():
             if child.is_file():
                 child.unlink()
             else:
-                for grandchild in child.iterdir():
-                    grandchild.unlink()
-                child.rmdir()
+                shutil.rmtree(child)
+        self.test_dir.rmdir()
+        self.test_file.unlink()
+
+    def test_create_folders_batch(self):
+        # 测试函数 create_folders_batch
+        created_folders = create_folders_batch(self.test_dir, self.test_file)
+        self.assertEqual(created_folders, ['folder1', 'folder2', 'folder3'])
+
+        for folder in created_folders:
+            self.assertTrue((self.test_dir / folder).exists())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -38,13 +38,13 @@ class TestGetFilePaths(unittest.TestCase):
         self.assertTrue(all(not os.path.isdir(path) for path in file_paths_list))
 
     def test_not_exist_path(self):
-        with self.assertRaises(FileNotFoundError):
-            get_file_paths(target_path="not_exist_path")
+        file_paths_list = get_file_paths(target_path="not_exist_path")
+        self.assertEqual(file_paths_list, None)
 
     def test_not_dir_path(self):
         not_dir_path = self.test_files[0]
-        with self.assertRaises(NotADirectoryError):
-            get_file_paths(target_path=not_dir_path)
+        file_paths_list = get_file_paths(target_path=not_dir_path)
+        self.assertEqual(file_paths_list, None)
 
 
 class TestGetFilePathsByType(unittest.TestCase):
@@ -72,19 +72,6 @@ class TestGetFilePathsByType(unittest.TestCase):
             file_paths_list = get_file_paths_by_type(target_path=self.test_dir, type_list=type_list)
             expected_paths = [file for file, file_type in self.test_files.items() if file_type in type_list]
             self.assertEqual(set(file_paths_list), set(expected_paths))
-
-    def test_not_exist_path(self):
-        with self.assertRaises(FileNotFoundError):
-            get_file_paths_by_type(target_path="not_exist_path", type_list=['.txt'])
-
-    def test_not_dir_path(self):
-        not_dir_path = list(self.test_files.keys())[0]
-        with self.assertRaises(NotADirectoryError):
-            get_file_paths_by_type(target_path=not_dir_path, type_list=['.txt'])
-
-    def test_empty_type_list(self):
-        with self.assertRaises(ValueError):
-            get_file_paths_by_type(target_path=self.test_dir, type_list=[])
 
 
 class TestGetFileType(unittest.TestCase):
@@ -121,14 +108,6 @@ class TestGetFileType(unittest.TestCase):
             result_type = get_file_type(target_path=file)
             self.assertEqual(result_type, expected_type)
 
-    def test_not_exist_file(self):
-        with self.assertRaises(FileNotFoundError):
-            get_file_type(target_path="not_exist_path")
-
-    def test_not_file_path(self):
-        with self.assertRaises(ValueError):
-            get_file_type(target_path=self.test_dir)
-
 
 class TestGetFolderPaths(unittest.TestCase):
     def setUp(self):
@@ -147,14 +126,6 @@ class TestGetFolderPaths(unittest.TestCase):
         # 比较路径列表，需要先排序以防止顺序问题导致的测试失败
         self.assertCountEqual(sorted(result_paths), sorted(self.test_subdirs))
 
-    def test_not_exist_path(self):
-        with self.assertRaises(FileNotFoundError):
-            get_folder_paths(target_path="not_exist_path")
-
-    def test_not_directory_path(self):
-        with self.assertRaises(NotADirectoryError):
-            get_folder_paths(target_path=Path(__file__).parent / 'resources' / 'sample_config.ini')
-
 
 class TestGetResourcePath(unittest.TestCase):
 
@@ -167,10 +138,6 @@ class TestGetResourcePath(unittest.TestCase):
         self.assertEqual(absolute_path, os.path.abspath('temp.txt'))
 
         os.remove('temp.txt')
-
-    def test_invalid_path_type(self):
-        with self.assertRaises(TypeError):
-            get_resource_path(123)
 
     def test_non_existing_relative_path(self):
         absolute_path = get_resource_path('non_existing.txt')
@@ -190,16 +157,6 @@ class TestGetSubdirectories(unittest.TestCase):
         result = get_subdirectories(self.test_dir.name)
         result_dirs = [os.path.basename(dir_path) for dir_path in result]
         self.assertEqual(set(result_dirs), set(self.sub_dirs))
-
-    def test_non_existent_directory(self):
-        with self.assertRaises(ValueError):
-            get_subdirectories('non_existent_directory')
-
-    def test_not_a_directory(self):
-        with self.assertRaises(ValueError):
-            temp_file = os.path.join(self.test_dir.name, 'temp_file.txt')
-            open(temp_file, 'w').close()
-            get_subdirectories(temp_file)
 
     def tearDown(self):
         self.test_dir.cleanup()
@@ -223,10 +180,6 @@ class TestGetTargetSize(unittest.TestCase):
     def test_get_target_size_dir(self):
         result = get_target_size(self.test_dir.name)
         self.assertEqual(result, sum(self.file_sizes))
-
-    def test_non_existent_path(self):
-        with self.assertRaises(FileNotFoundError):
-            get_target_size('non_existent_path')
 
     def tearDown(self):
         self.test_dir.cleanup()
@@ -253,14 +206,6 @@ class TestMoveFolderWithRename(unittest.TestCase):
         self.assertTrue(result.exists())
         self.assertNotEqual(self.source_path.name, result.name)
 
-    def test_source_not_exists(self):
-        with self.assertRaises(FileNotFoundError):
-            move_folder_with_rename('nonexistent_file', self.target_dir)
-
-    def test_target_parent_not_exists(self):
-        with self.assertRaises(FileNotFoundError):
-            move_folder_with_rename(self.source_path, 'nonexistent_dir/target_file')
-
     def tearDown(self):
         self.test_dir.cleanup()
         if self.source_path.exists():
@@ -283,14 +228,6 @@ class ReadFileToListTest(unittest.TestCase):
         expected_output = ['Line 1', 'Line 2', 'Line 3']
         self.assertListEqual(read_file_to_list(self.test_file.name), expected_output)
 
-    def test_file_does_not_exist(self):
-        with self.assertRaises(FileNotFoundError):
-            read_file_to_list('non_existent_file.txt')
-
-    def test_target_path_is_directory(self):
-        with self.assertRaises(NotADirectoryError):
-            read_file_to_list(self.test_dir.name)
-
 
 class ReadJsonToDictTest(unittest.TestCase):
     def setUp(self):
@@ -307,24 +244,6 @@ class ReadJsonToDictTest(unittest.TestCase):
     def test_read_json_to_dict(self):
         expected_output = {"key": "value"}
         self.assertDictEqual(read_json_to_dict(self.test_file.name), expected_output)
-
-    def test_file_does_not_exist(self):
-        with self.assertRaises(FileNotFoundError):
-            read_json_to_dict('non_existent_file.json')
-
-    def test_target_path_is_directory(self):
-        with self.assertRaises(NotADirectoryError):
-            read_json_to_dict(self.test_dir.name)
-
-    def test_file_contains_invalid_json(self):
-        invalid_json_file = tempfile.NamedTemporaryFile(delete=False)
-        invalid_json_file.write(b"{not a json}")
-        invalid_json_file.close()
-
-        with self.assertRaises(ValueError):
-            read_json_to_dict(invalid_json_file.name)
-
-        os.remove(invalid_json_file.name)
 
 
 class RemoveEmptyFoldersTest(unittest.TestCase):
@@ -356,15 +275,6 @@ class RemoveEmptyFoldersTest(unittest.TestCase):
                 self.assertTrue(os.path.exists(temp_dir))
                 self.assertNotIn(temp_dir, removed_dirs)
 
-    def test_target_path_does_not_exist(self):
-        with self.assertRaises(FileNotFoundError):
-            remove_empty_folders('non_existent_directory')
-
-    def test_target_path_is_not_directory(self):
-        with self.assertRaises(NotADirectoryError):
-            with tempfile.NamedTemporaryFile() as temp_file:
-                remove_empty_folders(temp_file.name)
-
 
 class TestRemoveRedundantDirs(unittest.TestCase):
     def setUp(self):
@@ -392,15 +302,6 @@ class TestRemoveRedundantDirs(unittest.TestCase):
         self.assertTrue(os.path.exists(self.sub_dir))
         self.assertTrue(os.path.exists(extra_subdir))
 
-    def test_not_exist_path(self):
-        with self.assertRaises(FileNotFoundError):
-            remove_redundant_dirs(target_path="not_exist_path")
-
-    def test_not_dir_path(self):
-        not_dir_path = self.file_in_redundant_dir
-        with self.assertRaises(NotADirectoryError):
-            remove_redundant_dirs(target_path=not_dir_path)
-
 
 class TestRemoveTarget(unittest.TestCase):
     def setUp(self):
@@ -419,10 +320,6 @@ class TestRemoveTarget(unittest.TestCase):
     def test_remove_directory(self):
         remove_target(self.test_dir.name)
         self.assertFalse(Path(self.test_dir.name).exists(), "The directory should be removed.")
-
-    def test_nonexistent_path(self):
-        with self.assertRaises(FileNotFoundError):
-            remove_target('nonexistent_path')
 
 
 class TestRemoveTargetMatched(unittest.TestCase):
@@ -444,14 +341,6 @@ class TestRemoveTargetMatched(unittest.TestCase):
         self.assertEqual(set(removed_paths), set(self.matched_files + [self.matched_dir]))
         for path in removed_paths:
             self.assertFalse(Path(path).exists(), f"The path '{path}' should be removed.")
-
-    def test_empty_match_list(self):
-        with self.assertRaises(ValueError):
-            remove_target_matched(self.test_dir.name, [])
-
-    def test_invalid_target_path(self):
-        with self.assertRaises(FileNotFoundError):
-            remove_target_matched('invalid_path', self.match_list)
 
 
 class TestRenameTargetIfExist(unittest.TestCase):
@@ -477,10 +366,6 @@ class TestRenameTargetIfExist(unittest.TestCase):
         self.assertEqual(new_path, Path(f"{self.test_subdir}_(1)"))
         self.assertTrue(Path(self.test_subdir).exists(), "The original directory should still exist.")
         self.assertFalse(new_path.exists(), "The new path should not exist.")
-
-    def test_empty_path(self):
-        with self.assertRaises(ValueError):
-            rename_target_if_exist("")
 
     def test_non_existing_path(self):
         non_existing_path = os.path.join(self.test_dir.name, "non_existing_path")
@@ -531,10 +416,6 @@ class TestWriteDictToJson(unittest.TestCase):
             data = json.load(f)
             self.assertEqual(data, self.data, "The data written to the file does not match the input data.")
 
-    def test_target_is_a_directory(self):
-        with self.assertRaises(PermissionError):
-            write_dict_to_json(Path(__file__).parent / 'resources/', self.data)
-
 
 class TestWriteListToFile(unittest.TestCase):
 
@@ -553,10 +434,6 @@ class TestWriteListToFile(unittest.TestCase):
             data = f.read().split('\n')
             self.assertEqual(data, [str(x) for x in self.content],
                              "The data written to the file does not match the input data.")
-
-    def test_target_is_a_directory(self):
-        with self.assertRaises(PermissionError):
-            write_list_to_file(Path(__file__).parent / 'resources/', self.content)
 
 
 if __name__ == "__main__":

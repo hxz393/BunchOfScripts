@@ -1,19 +1,19 @@
 from pathlib import Path
+import logging
 from typing import List, Any, Optional, Union
 
+logger = logging.getLogger(__name__)
 
 def write_list_to_file(target_path: Union[str, Path], content: List[Any]) -> Optional[bool]:
     """
     将列表的元素写入文件，每个元素占据文件的一行。
 
-    :type target_path: Union[str, Path]
     :param target_path: 文本文件的路径，可以是字符串或 pathlib.Path 对象。
-    :type content: List[Any]
+    :type target_path: Union[str, Path]
     :param content: 要写入的列表。
-    :rtype: Optional[bool]
+    :type content: List[Any]
     :return: 成功时返回True，失败时返回None。
-    :raise IsADirectoryError: 如果路径是一个目录，抛出 IsADirectoryError。
-    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
+    :rtype: Optional[bool]
     """
     try:
         target_path = Path(target_path)
@@ -22,7 +22,6 @@ def write_list_to_file(target_path: Union[str, Path], content: List[Any]) -> Opt
         with target_path.open('w', encoding="utf-8") as file:
             file.write("\n".join(str(element) for element in content))
         return True
-    except PermissionError as e:
-        raise PermissionError(f"'{target_path}' is a directory, not a valid file path: {e}")
     except Exception as e:
-        raise Exception(f"An error occurred while writing to the file at '{target_path}': {e}")
+        logger.error(f"An error occurred while writing to the file at '{target_path}': {e}")
+        return None

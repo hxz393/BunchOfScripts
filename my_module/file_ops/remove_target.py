@@ -1,7 +1,11 @@
 from pathlib import Path
 import shutil
-import os, stat
-from typing import Callable, Any, Union, NoReturn
+import os
+import stat
+import logging
+from typing import Callable, Any, Union, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def remove_permissions(func: Callable[[Path], Any], path: Path, _: Any) -> None:
@@ -20,32 +24,35 @@ def remove_permissions(func: Callable[[Path], Any], path: Path, _: Any) -> None:
     func(path)
 
 
-# noinspection PyShadowingNames
-def remove_target(path: Union[str, Path]) -> NoReturn:
+def remove_target(path: Union[str, Path]) -> Optional[Path]:
     """
     删除指定文件或目录。
 
     :param path: 要删除的文件或目录的路径。
     :type path: Union[str, Path]
-    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
-    :raise ValueError: 如果路径不是一个有效的文件或目录，抛出 ValueError。
-    :raise PermissionError: 如果权限不足，抛出 PermissionError。
-    :raise Exception: 如果在处理过程中出现其它问题，抛出一般性的 Exception。
+    :return: 如果操作成功则返回删除的文件或目录的路径，遇到错误则返回 None。
+    :rtype: Optional[Path]
     """
     path = Path(path)
 
-    if not path.exists():
-        raise FileNotFoundError(f"Path '{path}' does not exist.")
-
     try:
+        if not path.exists():
+            logger.error(f"Path '{path}' does not exist.")
+            return None
+
         if path.is_dir():
             shutil.rmtree(path, onerror=remove_permissions)
+            return path
         elif path.is_file():
             path.unlink()
+            return path
         else:
-            raise ValueError(f"'{path}' is neither a file nor a directory.")
+            logger.error(f"'{path}' is neither a file nor a directory.")
+            return None
     except PermissionError:
         remove_permissions(lambda x: None, path, None)
         path.unlink()
+        return path
     except Exception as e:
-        raise Exception(f"An error occurred while removing path '{path}': {e}.")
+        logger.error(f"An error occurred while removing path '{path}': {e}.")
+        return None

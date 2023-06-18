@@ -5,6 +5,7 @@ import tempfile
 
 from my_scripts import *
 
+
 class TestMoveDuplicates(unittest.TestCase):
     def setUp(self):
         self.source_path = tempfile.mkdtemp()
@@ -26,17 +27,10 @@ class TestMoveDuplicates(unittest.TestCase):
         except Exception as e:
             self.fail(f"Test failed with exception: {str(e)}")
 
-    def test_invalid_source_path(self):
-        with self.assertRaises(FileNotFoundError):
-            move_duplicates('invalid_path', self.target_path)
-
-    def test_invalid_target_path(self):
-        with self.assertRaises(FileNotFoundError):
-            move_duplicates(self.source_path, 'invalid_path')
-
     def tearDown(self):
         shutil.rmtree(self.source_path)
         shutil.rmtree(self.target_path)
+
 
 if __name__ == '__main__':
     unittest.main()

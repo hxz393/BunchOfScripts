@@ -1,8 +1,11 @@
 import re
 import shutil
+import logging
 from unidecode import unidecode
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 EXCLUDE_CHARS = {'æ', 'Æ', 'џ', '®'}
 MODIFY_RULES = [
@@ -14,7 +17,7 @@ MODIFY_RULES = [
 
 def custom_unidecode(input_string: str) -> str:
     """
-    自定义的字符串转换函数，将特殊字符转换为ASCII字符，但排除一些特定字符。排除不以ASCII字符开头的文件名。
+    自定义的字符串转换函数，将特殊字符转换为ASCII字符，但排除一些特定字符。
 
     :type input_string: str
     :param input_string: 需要转换的原始字符串。
@@ -24,28 +27,24 @@ def custom_unidecode(input_string: str) -> str:
     return ''.join(char if char in EXCLUDE_CHARS else unidecode(char) for char in input_string)
 
 
-# noinspection PyShadowingNames
-def rename_folder_to_common(source_path: str, target_path: str) -> Dict[str, str]:
+def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[str, Path]) -> Optional[Dict[str, str]]:
     """
     将源目录下的文件夹按照预设规则重命名并移动到目标目录。
 
-    :type source_path: str
     :param source_path: 需要整理的源目录。
-    :type target_path: str
     :param target_path: 用于存放重命名后文件夹的目标目录。
-    :rtype: Dict[str, str]
-    :return: 包含原文件夹路径和重命名后的文件夹路径的字典。
-    :raise ValueError: 如果源目录或目标目录不存在，或者不是有效的目录路径，将抛出异常。
-    :raise Exception: 如果移动文件夹时出现问题，将抛出异常。
+    :return: 包含原文件夹路径和重命名后的文件夹路径的字典。如果出现错误，返回 None。
     """
     source = Path(source_path)
     target = Path(target_path)
 
     if not source.exists() or not source.is_dir():
-        raise ValueError(f"Source directory: '{source}' does not exist or is not a valid directory path.")
+        logger.error(f"Source directory: '{source}' does not exist or is not a valid directory path.")
+        return None
 
     if not target.exists() or not target.is_dir():
-        raise ValueError(f"Target directory: '{target}' does not exist or is not a valid directory path.")
+        logger.error(f"Target directory: '{target}' does not exist or is not a valid directory path.")
+        return None
 
     final_path_dict = {}
 
@@ -59,21 +58,12 @@ def rename_folder_to_common(source_path: str, target_path: str) -> Dict[str, str
         if folder.name != new_folder_name:
             final_path = target / new_folder_name
             if final_path.exists():
-                raise Exception(f"Folder with the same name already exists in the target directory '{new_folder_name}'.")
+                logger.error(f"Folder with the same name already exists in the target directory '{new_folder_name}'.")
+                continue
             try:
                 shutil.move(str(folder), str(final_path))
                 final_path_dict[str(folder)] = str(final_path)
             except OSError as e:
-                print(f"Error moving directory: {e}")
+                logger.error(f"Error moving directory: {e}")
 
-    return final_path_dict
-
-
-if __name__ == "__main__":
-    source_path = r"resources/1"
-    target_path = r"resources/2"
-    try:
-        final_path_dict = rename_folder_to_common(source_path=source_path, target_path=target_path)
-        print(final_path_dict)
-    except Exception as e:
-        print(str(e))
+    return final_path_dict if final_path_dict else None

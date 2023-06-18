@@ -1,32 +1,33 @@
 import os
-from typing import List, Union
 import uuid
+import logging
+from typing import List, Union, Optional
 
+logger = logging.getLogger(__name__)
 
-def remove_redundant_dirs(target_path: Union[str, os.PathLike]) -> List[str]:
+def remove_redundant_dirs(target_path: Union[str, os.PathLike]) -> Optional[List[str]]:
     """
     移除冗余目录结构。
 
     如果一个目录只有一个子目录，且该子目录的名称与父目录名称相同，
     且父目录没有其他文件，则删除子目录，并将其内容移至父目录。
 
-    :type target_path: Union[str, os.PathLike]
     :param target_path: 需要进行处理的目录路径。
-    :rtype: List[str]
-    :return: 一个列表，包含所有被移除的子目录的路径。
-    :raise FileNotFoundError: 如果路径不存在，抛出 FileNotFoundError。
-    :raise NotADirectoryError: 如果路径不是一个有效的目录，抛出 NotADirectoryError。
-    :raise Exception: 如果在处理过程中出现其他问题，抛出一般性的 Exception。
+    :type target_path: Union[str, os.PathLike]
+    :return: 成功时返回一个列表，包含所有被移除的子目录的路径。如果遇到错误则返回 None。
+    :rtype: Optional[List[str]]
     """
-    if not os.path.exists(target_path):
-        raise FileNotFoundError(f"The path '{target_path}' does not exist.")
-
-    if not os.path.isdir(target_path):
-        raise NotADirectoryError(f"'{target_path}' is not a valid directory.")
-
     removed_dirs = []
 
     try:
+        if not os.path.exists(target_path):
+            logger.error(f"The path '{target_path}' does not exist.")
+            return None
+
+        if not os.path.isdir(target_path):
+            logger.error(f"'{target_path}' is not a valid directory.")
+            return None
+
         for subdir in os.scandir(target_path):
             if subdir.is_dir():
                 subdir_path = subdir.path
@@ -47,8 +48,8 @@ def remove_redundant_dirs(target_path: Union[str, os.PathLike]) -> List[str]:
                             os.rmdir(temp_dir)
 
                         removed_dirs.append(os.path.normpath(sub_subdir_path))
-
     except Exception as e:
-        raise Exception(f"An error occurred while removing redundant directories: {e}")
+        logger.error(f"An error occurred while removing redundant directories: {e}")
+        return None
 
     return removed_dirs
