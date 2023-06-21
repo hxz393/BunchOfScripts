@@ -32,7 +32,7 @@ def config_write(target_path: Union[str, Path], config: Dict[str, Union[str, Any
 
         path = Path(target_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('w') as f:
+        with path.open('w', encoding="utf-8") as f:
             config_parser.write(f)
 
         return True

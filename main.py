@@ -1,10 +1,10 @@
-import my_module
-import my_scripts
+from my_module import *
+from my_scripts import *
 import logging
 
 logger = logging.getLogger(__name__)
 
-my_module.logging_config(console_output=True, log_level='INFO')
+logging_config(console_output=True, log_level='INFO')
 
 if __name__ == '__main__':
 
@@ -27,12 +27,12 @@ if __name__ == '__main__':
 
     ############## 性能分析 #########
     来源目录 = r'B:\1.临时'
-    目标目录 = r'B:\2.脚本'
+    目标目录 = r'B:\2.脚本1'
     要筛列表 = ['.mp3', '.flaC']
     删除列表 = ['新建 RTF 文档.rtf', '新建... Microsoft PowerPoint Presentation.pptx', '啊123v']
     文本文件 = r'tests/test_my_module/resources/sample_config.ini'
     try:
-        返回 = my_scripts.move_duplicates(来源目录, 目标目录)
-        print(返回)
+        返回 = get_file_paths(目标目录)
+        # print(返回)
     except Exception as e:
         logger.exception(e)

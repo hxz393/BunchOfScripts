@@ -1,10 +1,20 @@
 import base64
+import os
 import tempfile
+import atexit
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def remove_temp_file(path: str):
+    """删除临时文件"""
+    try:
+        os.remove(path)
+    except Exception as e:
+        logger.error(f"Error when remove temp file: {e}")
+        pass
 
 def convert_base64_to_ico(base64_string: str) -> Optional[str]:
     """
@@ -24,6 +34,7 @@ def convert_base64_to_ico(base64_string: str) -> Optional[str]:
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.ico') as temp_file:
             temp_file.write(icon_data)
+        atexit.register(remove_temp_file, temp_file.name)
         return temp_file.name
     except Exception as e:
         logger.error(f"An error occurred while writing the .ico file: {str(e)}")

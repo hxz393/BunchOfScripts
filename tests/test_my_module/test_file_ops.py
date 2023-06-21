@@ -260,7 +260,7 @@ class RemoveEmptyFoldersTest(unittest.TestCase):
         self.test_dir_with_subdirs.cleanup()
 
     def test_remove_empty_folders(self):
-        removed_dirs = remove_empty_folders(self.test_dir_with_subdirs.name)
+        removed_dirs = remove_empty_dirs(self.test_dir_with_subdirs.name)
 
         self.assertIn(self.empty_subdir_1, removed_dirs)
         self.assertIn(self.empty_subdir_2, removed_dirs)
@@ -270,7 +270,7 @@ class RemoveEmptyFoldersTest(unittest.TestCase):
     def test_directory_with_file_is_not_removed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with tempfile.NamedTemporaryFile(dir=temp_dir):
-                removed_dirs = remove_empty_folders(temp_dir)
+                removed_dirs = remove_empty_dirs(temp_dir)
 
                 self.assertTrue(os.path.exists(temp_dir))
                 self.assertNotIn(temp_dir, removed_dirs)

@@ -37,7 +37,6 @@ def remove_target(path: Union[str, Path]) -> Optional[Path]:
 
     try:
         if not path.exists():
-            logger.error(f"Path '{path}' does not exist.")
             return None
 
         if path.is_dir():

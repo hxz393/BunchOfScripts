@@ -10,7 +10,6 @@ SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
               " vs ", "⁄", " x ", "(1)"]
 
 
-# noinspection PyShadowingNames
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Optional[Dict[str, str]]:
     """
     检查并移动源目录中的重复文件夹。

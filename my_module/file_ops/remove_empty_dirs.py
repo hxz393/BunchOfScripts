@@ -5,7 +5,7 @@ from typing import Union, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def remove_empty_folders(target_path: Union[str, os.PathLike]) -> Optional[List[str]]:
+def remove_empty_dirs(target_path: Union[str, os.PathLike]) -> Optional[List[str]]:
     """
     删除指定路径下搜索到的所有空目录，并返回被删除的目录路径列表。
 
@@ -20,7 +20,7 @@ def remove_empty_folders(target_path: Union[str, os.PathLike]) -> Optional[List[
         entries = list(os.scandir(target_path))
         for entry in entries:
             if entry.is_dir(follow_symlinks=False):
-                removed_dirs.extend(remove_empty_folders(entry.path))
+                removed_dirs.extend(remove_empty_dirs(entry.path))
         if not entries:
             os.rmdir(target_path)
             removed_dirs.append(str(target_path))
