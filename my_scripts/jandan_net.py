@@ -73,7 +73,7 @@ def monitor_process(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def jandan_header_modified(script_path: str) -> None:
+def jandan_net(script_path: str = "my_scripts\jandan_net.py") -> None:
     """
     启动并监控 mitmproxy。
 
@@ -88,8 +88,8 @@ def jandan_header_modified(script_path: str) -> None:
 if __name__ == '__main__':
     '''
     在终端运行 
-    mitmproxy --set keep_alive=120 -p 10808 -s my_scripts/jandan_header_modified.py
+    mitmproxy --set keep_alive=120 -p 10808 -s my_scripts/jandan_net.py
     '''
-    process = run_mitmproxy(r"jandan_header_modified.py")
-    if process:
-        monitor_process(process)
+    main_process = run_mitmproxy(r"jandan_net.py")
+    if main_process:
+        monitor_process(main_process)

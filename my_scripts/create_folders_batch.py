@@ -1,11 +1,16 @@
-from pathlib import Path
+# coding=utf-8
+"""
+批量创建文件夹的函数
+"""
 import logging
+from pathlib import Path
 from typing import Union, Optional, List
 
 from my_module import read_file_to_list
 from my_module import sanitize_filename
 
 logger = logging.getLogger(__name__)
+MAX_PATH_LENGTH = 260
 
 
 def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Path]) -> Optional[List[str]]:
@@ -20,7 +25,6 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
     :rtype: Optional[List[str]]
     """
     target_directory_path = Path(target_path)
-    MAX_PATH_LENGTH = 260
 
     if not target_directory_path.exists():
         logger.error(f"The target directory {target_path} does not exist.")

@@ -10,3 +10,4 @@ __pycache__
 /my_scripts/resources/
 /tests/test_my_module/resources
 /tests/test_my_scripts/resources
+/config
