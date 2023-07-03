@@ -1,3 +1,6 @@
+"""
+自用脚本
+"""
 from .create_folders_batch import create_folders_batch
 from .rename_folder_to_common import rename_folder_to_common
 from .move_duplicates import move_duplicates

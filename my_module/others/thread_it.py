@@ -1,10 +1,33 @@
-import time
-from typing import Any, Callable, Optional, Tuple
+"""
+这是一个Python文件，提供一个函数 `thread_it`，它允许在新的线程中运行任何指定的函数。这对于处理需要并行处理或需要在后台运行的长时间运行任务非常有用。
+
+函数接受以下参数：
+- `func`：需要在新线程中运行的函数。
+- `*args`：传递给函数的参数，可以是任意数量和类型的参数。
+- `daemon`：是否为后台线程，默认为 True。
+- `name`：新线程的名字，如果没有指定，则默认为 None。
+
+此函数不返回任何值。如果在执行给定的函数时发生任何错误，该错误将被捕获并记录到日志中。
+
+此文件也包含一个主程序，该程序演示了如何使用 `thread_it` 函数。主程序首先定义了两个示例函数，然后在新的线程中运行这些函数。在此期间，主线程继续执行其自己的任务。
+
+此文件依赖于以下Python库：
+- `time`
+- `logging`
+- `threading`
+
+该文件使用日志记录器来记录在执行给定函数时可能发生的任何错误。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
 import logging
 from threading import Thread
+from typing import Any, Callable, Optional, Tuple
 
-# 初始化日志记录器
 logger = logging.getLogger(__name__)
+
 
 def thread_it(func: Callable[..., Any], *args: Any, daemon: Optional[bool] = True, name: Optional[str] = None) -> None:
     """
@@ -22,37 +45,21 @@ def thread_it(func: Callable[..., Any], *args: Any, daemon: Optional[bool] = Tru
     :rtype: None
     :raise: 不会抛出异常，所有异常都被记录到日志中。
     """
-    def wrapper(*args: Tuple[Any]) -> None:
+
+    def wrapper(*arg: Tuple[Any]) -> None:
+        """
+        一个封装了给定函数的内部函数，用于在新线程中运行。它接收一个可变数量的参数并将其传递给给定的函数。 
+        如果在执行给定函数时发生错误，该错误将被捕获并记录到日志中。
+
+        :param arg: 传递给函数的参数，可以是任意类型和数量。
+        :type arg: Tuple[Any]
+        :return: 无返回值
+        :rtype: None
+        """
         try:
-            func(*args)
+            func(*arg)
         except Exception as e:
             logger.error(f"Error occurred in thread {name}: {e}")
 
     t = Thread(target=wrapper, args=args, daemon=daemon, name=name)
     t.start()
-
-if __name__ == '__main__':
-    # 这是一个示例函数
-    def example_func(x: int, y: int) -> int:
-        print(x + y)
-        return x + y
-    thread_it(example_func, 1, 2, name='example_thread')
-
-
-    # 这是一个需要较长时间完成的函数
-    def long_running_task(duration: int, task_name: str) -> None:
-        for i in range(duration):
-            print(f"{task_name}: {i + 1}/{duration}")
-            time.sleep(1)  # 等待一秒
-        print(f"{task_name} finished.")
-
-    # 启动新线程运行这个函数
-    thread_it(long_running_task, 5, 'Task 1', name='TaskThread1')
-    thread_it(long_running_task, 7, 'Task 2', name='TaskThread2')
-    thread_it(long_running_task, 3, 'Task 3', name='TaskThread3')
-
-    # 主线程继续执行
-    for i in range(10):
-        print(f"Main thread: {i + 1}/10")
-        time.sleep(1)
-    print("Main thread finished.")

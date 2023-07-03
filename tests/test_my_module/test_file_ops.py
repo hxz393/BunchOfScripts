@@ -194,7 +194,7 @@ class TestMoveFolderWithRename(unittest.TestCase):
 
     def test_move_file_with_rename(self):
         target_path = self.target_dir / self.source_path.name
-        result = move_folder_with_rename(self.source_path, target_path)
+        result = Path(move_folder_with_rename(self.source_path, target_path))
         self.assertTrue(result.exists())
         self.assertFalse(self.source_path.exists())
 
@@ -202,7 +202,7 @@ class TestMoveFolderWithRename(unittest.TestCase):
         target_path = self.target_dir / self.source_path.name
         with open(target_path, 'w') as f:
             f.write('dummy text')
-        result = move_folder_with_rename(self.source_path, target_path)
+        result = Path(move_folder_with_rename(self.source_path, target_path))
         self.assertTrue(result.exists())
         self.assertNotEqual(self.source_path.name, result.name)
 

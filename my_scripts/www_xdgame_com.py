@@ -1,88 +1,95 @@
 # coding=utf-8
+"""
+这是一个Python文件，该文件包含了几个函数，用于处理网页链接的抓取、解析以及结果的存储。
+
+函数 handle_result 处理结果并进行存储，接收结果对象和链接作为输入参数，没有返回值。
+
+函数 error_callback 处理进程中的错误，接收错误对象和链接作为输入参数，没有返回值。
+
+函数 www_xdgame_com 对指定文件中的链接进行处理，接收包含链接的输入文件和线程数作为输入参数，没有返回值。
+
+函数 main 作为主程序运行，接收一个网页链接，返回链接，标题和百度链接带提取码。
+
+函数 fetch_web_page 获取网页HTML内容，接收要访问的网页链接，返回网页的HTML内容或者在发生错误时返回空字符串。
+
+函数 parse_web_content 解析网页内容，接收网页链接和HTML内容，返回一个包含链接、标题、提取码、获取链接的字典。
+
+函数 fetch_baidu_link 获取百度链接，接收包含链接信息的字典，返回一个包含百度链接和提取码的字符串，或者在发生错误时返回 None。
+
+函数 write_results 将结果写入文件，接收包含要写入的结果的列表和输出文件的路径，如果写入成功返回True，否则返回False。
+
+这个模块主要用于网页信息的抓取和解析，并存储结果。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
+import concurrent.futures
 import logging
 import os
 import random
 import re
-from multiprocessing import Pool, freeze_support
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple, Any, Optional, Union
 
 import requests
 from lxml import etree
 from retrying import retry
 
-from my_module import config_read, read_file_to_list
+from my_module import read_json_to_dict, read_file_to_list
 
 logger = logging.getLogger(__name__)
 # noinspection PyUnresolvedReferences
 requests.packages.urllib3.disable_warnings()
 
 # 初始化配置
-CP = config_read('config/config.ini')
-INPUT_TXT = CP.get('www_xdgame_com', 'input_txt')  # 一行一个链接
-OUTPUT_TXT = CP.get('www_xdgame_com', 'output_txt')  # 每个结果写 4 行
-USER_COOKIE = CP.get('www_xdgame_com', 'user_cookie')  # 帐号 cookie
-PROCESS_NUMBER = CP.getint('www_xdgame_com', 'process_number')  # 进程数
-
-REQUEST_HEAD = {
-    'Host': 'www.xdgame.com',
-    'Connection': 'keep-alive',
-    'sec-ch-ua': '"Google Chrome";v="105", "Not)A;Brand";v="8", "Chromium";v="105"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'Upgrade-Insecure-Requests': '1',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-User': '?1',
-    'Sec-Fetch-Dest': 'document',
-    'Referer': 'https://www.xdgame.com',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7,en-GB;q=0.6,ru;q=0.5',
-    'Cache-Control': 'max-age=0',
-    'Cookie': USER_COOKIE
-}
-PROXIES_LIST = [
-    # {"http": "http://192.168.2.102:808", "https": "http://192.168.2.102:808"},
-    {"http": "http://192.168.2.204:8888", "https": "http://192.168.2.204:8888"},
-]
+config = read_json_to_dict('config/www_xdgame_com.json')
+INPUT_TXT = config['www_xdgame_com']['input_txt']  # 一行一个链接
+OUTPUT_TXT = config['www_xdgame_com']['output_txt']  # 每个结果写 4 行
+THREAD_NUMBER = config['www_xdgame_com']['thread_number']  # 线程数
+PROXIES_LIST = config['www_xdgame_com']['proxies_list']  # 代理池
+REQUEST_HEAD = config['www_xdgame_com']['request_head']  # 请求标头，包含帐号 cookie
 
 
-def handle_result(result: Any) -> None:
+def handle_result(result: Any, link: str) -> None:
     """
     处理结果并进行存储。
 
     :type result: Any
     :param result: 结果对象
+    :param link: 网页链接
+    :type link: str
     :rtype: None
     :return: 无返回值
     """
     try:
         write_results([result])
     except Exception as e:
-        logger.error(f"在处理结果时发生错误: {e}")
+        logger.error(f"链接：{link} 在写入结果时发生错误: {e}")
 
 
-def error_callback(e: Exception) -> None:
+def error_callback(e: Exception, link: str) -> None:
     """
     处理进程中的错误。
 
     :type e: Exception
     :param e: 发生的错误对象
+    :param link: 网页链接
+    :type link: str
     :rtype: None
     :return: 无返回值
     """
-    logger.error(f"在进程中发生错误: {e}")
+    logger.error(f"链接：{link} 在处理进程中发生错误: {e}")
 
 
-def www_xdgame_com(input_txt: Union[str, os.PathLike] = INPUT_TXT, process_number: int = PROCESS_NUMBER) -> None:
+def www_xdgame_com(input_txt: Union[str, os.PathLike] = INPUT_TXT, thread_number: int = THREAD_NUMBER) -> None:
     """
     对指定文件中的链接进行处理。
 
     :type input_txt: Union[str, os.PathLike]
     :param input_txt: 包含链接的输入文件
-    :type process_number: int
-    :param process_number: 进程数
+    :type thread_number: int
+    :param thread_number: 线程数
     :rtype: None
     :return: 无返回值
     """
@@ -93,13 +100,17 @@ def www_xdgame_com(input_txt: Union[str, os.PathLike] = INPUT_TXT, process_numbe
         return
 
     try:
-        with Pool(processes=process_number) as pool:
-            for link in links:
-                pool.apply_async(main, args=(link,), callback=handle_result, error_callback=error_callback)
-            pool.close()
-            pool.join()
+        with ThreadPoolExecutor(max_workers=thread_number) as executor:
+            futures = {executor.submit(main, link): link for link in links}
+            for future in concurrent.futures.as_completed(futures):
+                link = futures[future]
+                try:
+                    result = future.result()
+                    handle_result(result, link)
+                except Exception as e:
+                    error_callback(e, link)
     except Exception as e:
-        logger.error(f"分配进程时发生错误：{e}")
+        logger.error(f"链接：{link} 在分配线程时发生错误：{e}")
 
 
 def main(link: str) -> Tuple[str, str, Optional[str]]:
@@ -225,11 +236,3 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
     except Exception as e:
         logger.error(f"写入结果时发生错误：{e}")
         return False
-
-
-if __name__ == '__main__':
-    freeze_support()
-    try:
-        www_xdgame_com()
-    except Exception as error:
-        logger.error(error)

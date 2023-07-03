@@ -35,7 +35,7 @@ def write_dict_to_json(target_path: Union[str, Path], data: Dict[str, Any]) -> O
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         with target_path.open('w', encoding='utf-8') as file:
-            json.dump(data, file, ensure_ascii=False, indent=4)
+            json.dump(data, file, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         logger.error(f"An error occurred while writing to the JSON file at '{target_path}': {e}")

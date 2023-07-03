@@ -1,3 +1,29 @@
+"""
+此 Python 文件主要用于控制和监控 mitmproxy，并修改 HTTP 请求的 'Referer' 字段。主要包含以下几个函数：
+
+`request` 函数用于修改 HTTP 请求的 'Referer' 字段。
+
+`run_mitmproxy` 函数用于启动 mitmproxy 并加载指定的 Python 脚本。
+
+`monitor_process` 函数用于实时监控和打印 mitmproxy 的输出。
+
+`jandan_net` 函数则是启动并监控 mitmproxy 的高级接口，用于执行特定的 Python 脚本。
+
+主要使用方法如下：
+
+首先，将需要执行的 Python 脚本文件的路径作为参数传递给 `run_mitmproxy` 函数。该函数将启动 mitmproxy，并加载该脚本。
+
+然后，将 `run_mitmproxy` 返回的 Popen 对象传递给 `monitor_process` 函数。这个函数将实时监控 mitmproxy 的输出，并打印到终端。
+
+你也可以直接使用 `jandan_net` 函数，只需传入 Python 脚本的路径即可。该函数将调用上述两个函数，并自动处理错误和异常。
+
+注意：所有的路径都是相对于本 Python 文件所在目录的。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
+
 import logging
 import os
 import signal
@@ -73,7 +99,7 @@ def monitor_process(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def jandan_net(script_path: str = "my_scripts\jandan_net.py") -> None:
+def jandan_net(script_path: str = "my_scripts/jandan_net.py") -> None:
     """
     启动并监控 mitmproxy。
 

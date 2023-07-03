@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 logging_config(console_output=True, log_level='INFO')
 
 if __name__ == '__main__':
+    return_dict = {}
 
     ########## 正常使用 ##############
 
@@ -29,7 +30,7 @@ if __name__ == '__main__':
 
 
 
-        if 'return_dict' in locals() or 'return_dict' in globals():
+        if return_dict:
             for k, v in return_dict.items():
                 print(f"{k} 移动到 {v}")
         else:

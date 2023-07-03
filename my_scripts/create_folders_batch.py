@@ -1,6 +1,29 @@
-# coding=utf-8
 """
-批量创建文件夹的函数
+此 Python 文件包含一个名为 `create_folders_batch` 的函数，用于根据文本文件中的名称列表在指定目录中批量创建文件夹。
+
+`create_folders_batch` 函数接收两个参数，`target_path` 和 `txt_file`。`target_path` 是期望创建文件夹的目标目录，
+而 `txt_file` 是包含希望创建的文件夹名称的文本文件的路径。
+
+函数首先会检查 `target_path` 是否存在，如果不存在，则记录错误日志并返回 None。然后，它将从 `txt_file` 中读取文件夹名称，
+并对名称进行清理处理，移除任何可能对文件系统造成问题的字符。在创建文件夹时，函数会检查完整的文件夹路径长度是否超过 Windows 的路径长度限制，
+如果超过，将会跳过此文件夹的创建并记录错误日志。
+
+最后，函数返回一个列表，包含成功创建的所有文件夹的名称。如果在执行过程中发生任何错误或异常，函数将记录错误日志并返回 None。
+
+在调试和排查问题时，可以参考此文件生成的日志信息。
+
+函数的典型用法如下：
+
+```python
+folder_names = create_folders_batch("/target/directory/path", "/path/to/txt_file")
+if folder_names:
+    for name in folder_names:
+        print(name)
+```
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
 from pathlib import Path

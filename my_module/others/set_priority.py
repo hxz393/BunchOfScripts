@@ -1,9 +1,31 @@
-import os
-import psutil
-from typing import Optional
+"""
+这是一个Python文件，包含一个函数：`set_priority`。
+
+`set_priority`函数的目标是设置指定进程的优先级。如果没有指定进程ID，则默认为当前进程。函数接受两个参数：
+- `pid`：进程ID，如果没有指定，则为当前进程。
+- `priority`：进程优先级，默认为实时优先级。
+
+函数将返回 True 如果成功设置了优先级，否则在出现错误时返回 None。需要注意的是，此函数可能会抛出`ValueError`、`psutil.AccessDenied`和`psutil.NoSuchProcess`等异常。
+
+此文件依赖于以下Python库：
+- `os`
+- `psutil`
+- `logging`
+
+函数使用了日志记录器记录任何在设置进程优先级过程中发生的错误。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
 import logging
+import os
+from typing import Optional
+
+import psutil
 
 logger = logging.getLogger(__name__)
+
 
 def set_priority(pid: Optional[int] = None, priority: int = psutil.REALTIME_PRIORITY_CLASS) -> Optional[bool]:
     """

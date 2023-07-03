@@ -1,6 +1,27 @@
-from pathlib import Path
+"""
+这是一个Python文件，包含一个函数：`config_write`。
+
+`config_write`函数的目标是将配置字典写入配置文件。如果文件成功写入，它将返回True。如果写入失败，它将返回None。
+
+这个函数接受两个参数：
+- `target_path`：配置文件的路径，可以是字符串或`pathlib.Path`对象。
+- `config`：配置字典，其中键为节名，值为包含该节配置项的字典。
+
+此文件依赖于以下Python库：
+- `pathlib`
+- `configparser`
+- `logging`
+- `typing`
+
+函数使用了日志记录器记录任何在写入过程中发生的错误。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
 import configparser
 import logging
+from pathlib import Path
 from typing import Dict, Any, Union, Optional
 
 logger = logging.getLogger(__name__)

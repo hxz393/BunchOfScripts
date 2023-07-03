@@ -1,3 +1,18 @@
+"""
+这是一个Python文件，包含一个函数：`process_input`。
+
+`process_input`函数的目标是处理用户输入，去除空行和重复行。如果输入字符串在处理过程中出现错误，函数会返回 None。函数接受一个参数：
+- `input_str`：待处理的用户输入字符串。
+
+此文件依赖于以下Python库：
+- `logging`
+
+函数使用了日志记录器记录任何在处理输入过程中发生的错误。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
 import logging
 from typing import Optional
 

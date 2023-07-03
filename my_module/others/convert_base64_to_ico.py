@@ -1,8 +1,31 @@
+"""
+这是一个Python文件，包含两个函数：`remove_temp_file`和`convert_base64_to_ico`。
+
+`remove_temp_file`函数的目标是删除指定路径的临时文件。它接受一个参数：
+- `path`：需要被删除的临时文件的路径。
+
+`convert_base64_to_ico`函数的目标是将Base64字符串解码并保存为.ico文件。它接受一个参数：
+- `base64_string`：Base64编码的字符串。
+函数返回生成的.ico文件的路径，如果过程中有错误发生，返回 None。
+
+此文件依赖于以下Python库：
+- `base64`
+- `os`
+- `tempfile`
+- `atexit`
+- `logging`
+
+函数使用了日志记录器记录任何在转换过程中发生的错误。
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2023, hxz393. 保留所有权利。
+"""
+import atexit
 import base64
+import logging
 import os
 import tempfile
-import atexit
-import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -15,6 +38,7 @@ def remove_temp_file(path: str):
     except Exception as e:
         logger.error(f"Error when remove temp file: {e}")
         pass
+
 
 def convert_base64_to_ico(base64_string: str) -> Optional[str]:
     """
