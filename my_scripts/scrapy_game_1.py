@@ -6,7 +6,7 @@
 
 函数 error_callback 处理进程中的错误，接收错误对象和链接作为输入参数，没有返回值。
 
-函数 scrapy_game_1 对指定文件中的链接进行处理，接收包含链接的输入文件和线程数作为输入参数，没有返回值。
+函数 scrapy_game_1 对指定的链接进行处理，接收包含链接的范围和线程数作为输入参数，没有返回值。
 
 函数 main 作为主程序运行，接收一个网页链接，返回链接，标题和百度链接带提取码。
 
@@ -29,6 +29,7 @@ import logging
 import os
 import random
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -100,7 +101,9 @@ def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, st
     :rtype: None
     :return: 无返回值
     """
-    failed = 0
+    failed = threading.Lock()
+    failed_count = 0
+
     try:
         links = [f"{base_url}/game/{item}.html" for item in [str(i) for i in range(start_number + 1, stop_number + 1)]]
     except Exception as e:
@@ -114,14 +117,16 @@ def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, st
                 link = futures[future]
                 try:
                     result = future.result()
+                    if any(not item for item in result):
+                        with failed:
+                            failed_count += 1
                     handle_result(result, link)
-                    failed += 1 if any(not item for item in result) else 0
                 except Exception as e:
                     error_callback(e, link)
     except Exception as e:
         logger.error(f"链接：{link} 在分配线程时发生错误：{e}")
     finally:
-        logger.info(f"总计数量：{stop_number - start_number}，失败数量：{failed}")
+        logger.info(f"总计数量：{stop_number - start_number}，失败数量：{failed_count}")
 
 
 def main(link: str) -> Tuple[str, str, Optional[str]]:
@@ -152,7 +157,7 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
         return link, '', ''
 
 
-@retry(stop_max_attempt_number=100, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=10, wait_random_min=100, wait_random_max=1200)
 def fetch_web_page(link: str) -> Optional[str]:
     """
     获取网页HTML内容
@@ -199,7 +204,7 @@ def parse_web_content(link: str, html: str) -> Dict[str, str]:
         return {'link': link, 'title': '', 'password': '', 'fetched_link': ''}
 
 
-@retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
 def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_URL) -> Optional[str]:
     """
     获取百度链接。
