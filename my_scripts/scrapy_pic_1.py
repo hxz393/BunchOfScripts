@@ -7,7 +7,7 @@
 
 `monitor_process` 函数用于实时监控和打印 mitmproxy 的输出。
 
-`jandan_net` 函数则是启动并监控 mitmproxy 的高级接口，用于执行特定的 Python 脚本。
+`scrapy_pic_1` 函数则是启动并监控 mitmproxy 的高级接口，用于执行特定的 Python 脚本。
 
 主要使用方法如下：
 
@@ -15,7 +15,7 @@
 
 然后，将 `run_mitmproxy` 返回的 Popen 对象传递给 `monitor_process` 函数。这个函数将实时监控 mitmproxy 的输出，并打印到终端。
 
-你也可以直接使用 `jandan_net` 函数，只需传入 Python 脚本的路径即可。该函数将调用上述两个函数，并自动处理错误和异常。
+你也可以直接使用 `scrapy_pic_1` 函数，只需传入 Python 脚本的路径即可。该函数将调用上述两个函数，并自动处理错误和异常。
 
 注意：所有的路径都是相对于本 Python 文件所在目录的。
 
@@ -32,17 +32,24 @@ from typing import Optional
 
 from mitmproxy import http
 
+from my_module import read_json_to_dict
+
 logger = logging.getLogger(__name__)
 
+CONFIG = read_json_to_dict('config/scrapy_pic_1.json')
+BASE_URL = CONFIG['scrapy_pic_1']['base_url']  # 网站域名
 
-def request(flow: http.HTTPFlow) -> None:
+
+def request(flow: http.HTTPFlow, base_url: str = BASE_URL) -> None:
     """
     修改 HTTP 请求中的 'Referer' 字段。
 
+    :type base_url: str
+    :param base_url: 网站域名
     :type flow: http.HTTPFlow
     :param flow: mitmproxy 的 HTTPFlow 对象，包含了 HTTP 请求和响应的信息。
     """
-    flow.request.headers["Referer"] = "http://jandan.net/"
+    flow.request.headers["Referer"] = base_url
 
 
 def run_mitmproxy(script_path: str) -> Optional[subprocess.Popen]:
@@ -99,7 +106,7 @@ def monitor_process(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def jandan_net(script_path: str = "my_scripts/jandan_net.py") -> None:
+def scrapy_pic_1(script_path: str = "my_scripts/scrapy_pic_1.py") -> None:
     """
     启动并监控 mitmproxy。
 
@@ -114,8 +121,8 @@ def jandan_net(script_path: str = "my_scripts/jandan_net.py") -> None:
 if __name__ == '__main__':
     '''
     在终端运行 
-    mitmproxy --set keep_alive=120 -p 10808 -s my_scripts/jandan_net.py
+    mitmproxy --set keep_alive=120 -p 10808 -s my_scripts/scrapy_pic_1.py
     '''
-    main_process = run_mitmproxy(r"jandan_net.py")
+    main_process = run_mitmproxy(r"scrapy_pic_1.py")
     if main_process:
         monitor_process(main_process)

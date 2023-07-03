@@ -6,7 +6,7 @@
 
 函数 error_callback 处理进程中的错误，接收错误对象和链接作为输入参数，没有返回值。
 
-函数 www_xdgame_com 对指定文件中的链接进行处理，接收包含链接的输入文件和线程数作为输入参数，没有返回值。
+函数 scrapy_game_1 对指定文件中的链接进行处理，接收包含链接的输入文件和线程数作为输入参数，没有返回值。
 
 函数 main 作为主程序运行，接收一个网页链接，返回链接，标题和百度链接带提取码。
 
@@ -30,25 +30,28 @@ import os
 import random
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Tuple, Any, Optional, Union
+from typing import Dict, List, Tuple, Any, Optional
 
 import requests
 from lxml import etree
 from retrying import retry
 
-from my_module import read_json_to_dict, read_file_to_list
+from my_module import read_json_to_dict
 
 logger = logging.getLogger(__name__)
-# noinspection PyUnresolvedReferences
 requests.packages.urllib3.disable_warnings()
 
 # 初始化配置
-config = read_json_to_dict('config/www_xdgame_com.json')
-INPUT_TXT = config['www_xdgame_com']['input_txt']  # 一行一个链接
-OUTPUT_TXT = config['www_xdgame_com']['output_txt']  # 每个结果写 4 行
-THREAD_NUMBER = config['www_xdgame_com']['thread_number']  # 线程数
-PROXIES_LIST = config['www_xdgame_com']['proxies_list']  # 代理池
-REQUEST_HEAD = config['www_xdgame_com']['request_head']  # 请求标头，包含帐号 cookie
+CONFIG = read_json_to_dict('config/scrapy_game_1.json')
+BASE_URL = CONFIG['scrapy_game_1']['base_url']  # 网站域名
+START_NUMBER = CONFIG['scrapy_game_1']['start_number']  # 开始计数
+STOP_NUMBER = CONFIG['scrapy_game_1']['stop_number']  # 停止计数
+OUTPUT_TXT = CONFIG['scrapy_game_1']['output_txt']  # 每个结果写 4 行
+USER_COOKIE = CONFIG['scrapy_game_1']['user_cookie']  # 帐号 cookie
+THREAD_NUMBER = CONFIG['scrapy_game_1']['thread_number']  # 线程数
+PROXIES_LIST = CONFIG['scrapy_game_1']['proxies_list']  # 代理池
+REQUEST_HEAD = CONFIG['scrapy_game_1']['request_head']  # 请求标头，不含帐号 cookie
+REQUEST_HEAD["Cookie"] = USER_COOKIE  # 请求标头，更新帐号 cookie
 
 
 def handle_result(result: Any, link: str) -> None:
@@ -82,21 +85,26 @@ def error_callback(e: Exception, link: str) -> None:
     logger.error(f"链接：{link} 在处理进程中发生错误: {e}")
 
 
-def www_xdgame_com(input_txt: Union[str, os.PathLike] = INPUT_TXT, thread_number: int = THREAD_NUMBER) -> None:
+def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, stop_number: int = STOP_NUMBER, thread_number: int = THREAD_NUMBER) -> None:
     """
-    对指定文件中的链接进行处理。
+    对指定链接进行处理。
 
-    :type input_txt: Union[str, os.PathLike]
-    :param input_txt: 包含链接的输入文件
+    :type base_url: str
+    :param base_url: 网站域名
+    :type start_number: int
+    :param start_number: 启动计数
+    :type stop_number: int
+    :param stop_number: 停止计数
     :type thread_number: int
     :param thread_number: 线程数
     :rtype: None
     :return: 无返回值
     """
+    failed = 0
     try:
-        links = read_file_to_list(input_txt)
+        links = [f"{base_url}/game/{item}.html" for item in [str(i) for i in range(start_number + 1, stop_number + 1)]]
     except Exception as e:
-        logger.error(f"读取输入文件发生错误：{e}")
+        logger.error(f"生成链接列表发生错误：{e}")
         return
 
     try:
@@ -107,15 +115,18 @@ def www_xdgame_com(input_txt: Union[str, os.PathLike] = INPUT_TXT, thread_number
                 try:
                     result = future.result()
                     handle_result(result, link)
+                    failed += 1 if any(not item for item in result) else 0
                 except Exception as e:
                     error_callback(e, link)
     except Exception as e:
         logger.error(f"链接：{link} 在分配线程时发生错误：{e}")
+    finally:
+        logger.info(f"总计数量：{stop_number - start_number}，失败数量：{failed}")
 
 
 def main(link: str) -> Tuple[str, str, Optional[str]]:
     """
-    主程序。
+    爬虫主流程。
 
     :param link: 网页链接
     :type link: str
@@ -135,7 +146,6 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
         if not baidu_link:
             return link, parse_web_result["title"], ''
 
-        logger.info(f'成功抓取：{link}, {parse_web_result["title"]}, {baidu_link}')
         return parse_web_result["link"], parse_web_result["title"], baidu_link
     except Exception as e:
         logger.error(f"链接：{link} 获取下载时运行错误: {e}")
@@ -190,10 +200,12 @@ def parse_web_content(link: str, html: str) -> Dict[str, str]:
 
 
 @retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
-def fetch_baidu_link(fetch_web_response: Dict[str, str]) -> Optional[str]:
+def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_URL) -> Optional[str]:
     """
     获取百度链接。
 
+    :param base_url: 网站域名
+    :type base_url: str
     :param fetch_web_response: 一个包含链接信息的字典。
     :type fetch_web_response: Dict[str, str]
     :rtype: Optional[str]
@@ -201,7 +213,7 @@ def fetch_baidu_link(fetch_web_response: Dict[str, str]) -> Optional[str]:
     """
     try:
         proxy_server = random.choice(PROXIES_LIST)
-        link = f'https://www.xdgame.com{fetch_web_response["fetched_link"]}'
+        link = f'{base_url}{fetch_web_response["fetched_link"]}'
         response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
         response.raise_for_status()
         baidu_link = response.headers.get('location')
@@ -232,6 +244,7 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
         with open(output_file, "a", encoding='utf-8') as file:
             for link, title, baidu_link_code in results:
                 file.write(f'{link}\n{title}\n{baidu_link_code}\n{"*" * 52}\n')
+                logger.info(f'成功抓取：{link}, {title}, {baidu_link_code}') if title else None
         return True
     except Exception as e:
         logger.error(f"写入结果时发生错误：{e}")
