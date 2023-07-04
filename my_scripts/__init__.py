@@ -6,3 +6,4 @@ from .rename_folder_to_common import rename_folder_to_common
 from .move_duplicates import move_duplicates
 from .scrapy_pic_1 import scrapy_pic_1
 from .scrapy_game_1 import scrapy_game_1
+from .sort_local import sort_local

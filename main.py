@@ -17,7 +17,7 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        scrapy_game_1()
+        # scrapy_game_1()
 
 
         ########## 整理 ##############
@@ -26,6 +26,9 @@ if __name__ == '__main__':
 
         # 根据分隔符分割后，检查并移动重复文件夹。完成后手动将文件夹从 target_dir 移回 source_dir。
         # return_dict = move_duplicates(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
+
+        # 整理本地目录到完成
+        return_dict = sort_local(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
 
 
 
