@@ -50,13 +50,13 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
     target_directory_path = Path(target_path)
 
     if not target_directory_path.exists():
-        logger.error(f"The target directory {target_path} does not exist.")
+        logger.error(f"目标目录不存在：{target_path}")
         return None
 
     name_list = read_file_to_list(txt_file)
 
     if not name_list:
-        logger.error(f"The list of folder names read from the file {txt_file} is empty.")
+        logger.error(f"来源文档为空：{txt_file}")
         return None
 
     name_list = [sanitize_filename(i) for i in name_list]
@@ -65,12 +65,13 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
     for name in name_list:
         folder_path = target_directory_path / name
         if len(str(folder_path)) > MAX_PATH_LENGTH:
-            logger.error(f"The length of the folder path {folder_path} exceeds the maximum supported length in Windows.")
+            logger.error(f"路径长度超出 Windows 最大限制：{folder_path}")
             continue
         try:
             folder_path.mkdir(parents=True, exist_ok=True)
             successfully_created.append(name)
+            logger.info(f"成功建立文件夹：{folder_path}")
         except Exception as e:
-            logger.error(f"An error occurred while creating the folder {folder_path}. Error message: {str(e)}")
+            logger.error(f"建立文件夹时出错：{folder_path}，错误消息：{str(e)}")
 
     return successfully_created if successfully_created else None

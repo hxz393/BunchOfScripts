@@ -86,18 +86,10 @@ def error_callback(e: Exception, link: str) -> None:
     logger.error(f"链接：{link} 在处理进程中发生错误: {e}")
 
 
-def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, stop_number: int = STOP_NUMBER, thread_number: int = THREAD_NUMBER) -> None:
+def scrapy_game_1() -> None:
     """
     对指定链接进行处理。
 
-    :type base_url: str
-    :param base_url: 网站域名
-    :type start_number: int
-    :param start_number: 启动计数
-    :type stop_number: int
-    :param stop_number: 停止计数
-    :type thread_number: int
-    :param thread_number: 线程数
     :rtype: None
     :return: 无返回值
     """
@@ -105,13 +97,13 @@ def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, st
     failed_count = 0
 
     try:
-        links = [f"{base_url}/game/{item}.html" for item in [str(i) for i in range(start_number + 1, stop_number + 1)]]
+        links = [f"{BASE_URL}/game/{item}.html" for item in [str(i) for i in range(START_NUMBER + 1, STOP_NUMBER + 1)]]
     except Exception as e:
         logger.error(f"生成链接列表发生错误：{e}")
         return
 
     try:
-        with ThreadPoolExecutor(max_workers=thread_number) as executor:
+        with ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
             futures = {executor.submit(main, link): link for link in links}
             for future in concurrent.futures.as_completed(futures):
                 link = futures[future]
@@ -126,7 +118,7 @@ def scrapy_game_1(base_url: str = BASE_URL, start_number: int = START_NUMBER, st
     except Exception as e:
         logger.error(f"链接：{link} 在分配线程时发生错误：{e}")
     finally:
-        logger.info(f"总计数量：{stop_number - start_number}，失败数量：{failed_count}")
+        logger.info(f"总计数量：{STOP_NUMBER - START_NUMBER}，失败数量：{failed_count}")
 
 
 def main(link: str) -> Tuple[str, str, Optional[str]]:

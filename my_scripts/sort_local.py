@@ -16,7 +16,7 @@ import logging
 import os
 from multiprocessing import Pool
 from shutil import move
-from typing import List
+from typing import List, Optional, Dict
 
 from my_module import get_subdirectories, create_directories, read_json_to_dict
 
@@ -27,55 +27,68 @@ SOURCE_PATH = CONFIG['sort_local']['source_path']  # 原始目录
 TARGET_PATH = CONFIG['sort_local']['target_path']  # 目标目录
 COMP_LIST = CONFIG['sort_local']['comp_list']  # 比较列表
 SEPT_LIST = CONFIG['sort_local']['sep_list']  # 符号列表
+PROCESSES_NUMBER = CONFIG['sort_local']['processes_number']  # 进程数
 
 
-def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str], sept_list=SEPT_LIST):
+def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -> Optional[Dict[str, str]]:
     """
-    将满足条件的源文件移动到目标目录，并返回单条字典，其中包含源文件和目标文件的路径。
+    将满足条件的源文件夹移动到目标目录，并返回单条字典，其中包含源文件和目标文件的路径。
 
     :param source_to_move: 需要移动的源文件路径。
+    :type source_to_move: str
     :param target_root_dir: 目标根目录。
+    :type target_root_dir: str
     :param camp_names: 包含目标文件名的列表。
-    :param sept_list: 分隔符列表，默认为全局变量SEPT_LIST。
+    :type camp_names: List[str]
     :return: 如果文件移动成功，返回一个包含源文件和目标文件路径的字典；否则返回None。
+    :rtype: Optional[Dict[str, str]]
     """
 
     try:
         source_org_name = os.path.basename(source_to_move)
         target_to_move = os.path.join(target_root_dir, source_org_name)
 
-        source_fix = source_org_name.lower().replace('. ', '.')
-        source_sept = next((source_fix.split(sept)[0] for sept in sept_list if sept in source_fix), None)
+        source_fix = source_org_name.lower().replace('. ', '.').replace('  ', ' ').strip()
+        source_sept = [source_fix.split(sept)[0].strip().rstrip('.') for sept in SEPT_LIST if sept in source_fix]
 
-        if source_fix in camp_names or source_sept in camp_names:
+        if source_fix in camp_names or any(sept in camp_names for sept in source_sept):
             move(source_to_move, target_to_move)
-            logger.info(f'{source_to_move} --> {target_to_move}')
+            logger.info(f'{source_to_move} 移动到：{target_to_move}')
             return {source_to_move: target_to_move}
     except Exception as e:
-        logger.error(f"An error occurred while moving source file: {e}")
+        logger.error(f"出错了：{e}")
         return None
 
 
-def sort_local(source_path=SOURCE_PATH, target_path=TARGET_PATH, comp_list=COMP_LIST):
+def sort_local(source_path: str = SOURCE_PATH, target_path: str = TARGET_PATH) -> Dict[str, str]:
     """
     分类本地文件并移动到相应的目标目录，并返回最终字典，其中包含所有被移动的文件的原始路径和目标路径。
 
     :param source_path: 原始目录，默认为全局变量SOURCE_PATH。
+    :type source_path: str
     :param target_path: 目标目录，默认为全局变量TARGET_PATH。
-    :param comp_list: 比较列表，默认为全局变量COMP_LIST。
+    :type target_path: str
     :return: 返回最终字典，其中包含所有被移动的文件的原始路径和目标路径。
+    :rtype: Dict[str, str]
     """
 
     final_path_dict = {}
+    if not os.path.isdir(source_path):
+        logger.error(f"源目录不存在：{source_path}")
+        return final_path_dict
+    elif not os.path.isdir(target_path):
+        logger.error(f"目标目录不存在：{target_path}")
+        return final_path_dict
+
     try:
-        comp_subdirs = {comp_dir: [os.path.basename(path).lower().replace('. ', '.') for path in get_subdirectories(comp_dir)] for comp_dir in comp_list}
+        comp_subdirs = {comp_dir: [name.lower().replace('. ', '.') for name in os.listdir(comp_dir)] for comp_dir in COMP_LIST}
 
         for comp_dir, camp_names in comp_subdirs.items():
             target_dir_name = os.path.basename(comp_dir) if os.path.basename(comp_dir) != 'Mirror' else 'done'
             target_root_dir = os.path.join(target_path, target_dir_name)
             source_paths = get_subdirectories(source_path)
 
-            with Pool(processes=16) as pool:
+            with Pool(processes=PROCESSES_NUMBER) as pool:
                 results = pool.starmap(run_sort, [(source_to_move, target_root_dir, camp_names) for source_to_move in source_paths])
                 for result in results:
                     final_path_dict.update(result) if result is not None else None
@@ -84,5 +97,5 @@ def sort_local(source_path=SOURCE_PATH, target_path=TARGET_PATH, comp_list=COMP_
                 create_directories([path.replace('done', 'mirror') for path in target_dirs])
         return final_path_dict
     except Exception as e:
-        logger.error(f"An error occurred while sorting local files: {e}")
+        logger.error(f"出错了：{e}")
         return final_path_dict

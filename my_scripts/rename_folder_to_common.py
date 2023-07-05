@@ -67,11 +67,11 @@ def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[st
     target = Path(target_path)
 
     if not source.exists() or not source.is_dir():
-        logger.error(f"Source directory: '{source}' does not exist or is not a valid directory path.")
+        logger.error(f"源目录不正确：{source}")
         return None
 
     if not target.exists() or not target.is_dir():
-        logger.error(f"Target directory: '{target}' does not exist or is not a valid directory path.")
+        logger.error(f"目标目录不正确：{target}")
         return None
 
     final_path_dict = {}
@@ -86,12 +86,13 @@ def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[st
         if folder.name != new_folder_name:
             final_path = target / new_folder_name
             if final_path.exists():
-                logger.error(f"Folder with the same name already exists in the target directory '{new_folder_name}'.")
+                logger.error(f"移不动，目标已存在：{new_folder_name}")
                 continue
             try:
                 shutil.move(str(folder), str(final_path))
                 final_path_dict[str(folder)] = str(final_path)
+                logger.info(f"{folder} 移动到 {final_path}")
             except OSError as e:
-                logger.error(f"Error moving directory: {e}")
+                logger.error(f"移动时出错：{new_folder_name}，错误信息：{e}")
 
     return final_path_dict if final_path_dict else None

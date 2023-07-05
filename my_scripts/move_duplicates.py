@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
               " featuring ", " b2b ", " ft ", " ft. ", " vs. ",
-              " vs ", "⁄", " x ", "(1)"]
+              " vs ", "⁄", " x ", "(1)", " with ", " & "]
 
 
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Optional[Dict[str, str]]:
@@ -48,16 +48,16 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
     :rtype: Optional[Dict[str, str]]
     """
     if not os.path.exists(source_path):
-        logger.error(f"Source directory '{source_path}' does not exist.")
+        logger.error(f"源目录不存在：{source_path}")
         return None
     if not os.path.isdir(source_path):
-        logger.error(f"'{source_path}' is not a valid directory.")
+        logger.error(f"源目录不正确：{source_path}")
         return None
     if not os.path.exists(target_path):
-        logger.error(f"Target directory '{target_path}' does not exist.")
+        logger.error(f"目标目录不存在：{target_path}")
         return None
     if not os.path.isdir(target_path):
-        logger.error(f"'{target_path}' is not a valid directory.")
+        logger.error(f"目标目录不正确：{target_path}'")
         return None
 
     file_dict = {i.lower(): os.path.normpath(os.path.join(source_path, i)) for i in os.listdir(source_path)}
@@ -77,7 +77,8 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
         try:
             shutil.move(file_path, new_target_path)
             final_path_dict[file_path] = new_target_path
+            logger.info(f"{file_path} 移动到 {new_target_path}")
         except Exception as e:
-            logger.error(f"An error occurred while moving the folder '{file_path}': {e}")
+            logger.error(f"移动目录是发生错误：{file_path}，错误信息：{e}")
 
     return final_path_dict if final_path_dict else None
