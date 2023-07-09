@@ -34,9 +34,7 @@ requests.packages.urllib3.disable_warnings()
 CONFIG = read_json_to_dict('config/sort_ru.json')  # 配置文件
 
 THREAD_NUMBER = CONFIG['sort_ru']['thread_number']  # 线程数
-URL_LOGIN = CONFIG['sort_ru']['url_login']  # 登录地址
 URL_SEARCH = CONFIG['sort_ru']['url_search']  # 搜索地址
-DATA_LOGIN = CONFIG['sort_ru']['data_login']  # 登录信息
 USER_COOKIE = CONFIG['sort_ru']['user_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['sort_ru']['request_head']  # 请求头
 
@@ -57,12 +55,9 @@ def sort_ru(source_path: str, target_path: str) -> Dict[str, str]:
     final_path_dict = {}
     name_list = os.listdir(source_path)
 
-    # 登录账号
-    session = ru_login()
-
     with ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
         # 提交每个任务并获取Future对象
-        futures = [executor.submit(ru_search, name, session) for name in name_list]
+        futures = [executor.submit(ru_search, name) for name in name_list]
 
         # 在每个任务完成时获取和处理结果
         for future in as_completed(futures):
@@ -80,35 +75,18 @@ def sort_ru(source_path: str, target_path: str) -> Dict[str, str]:
     return final_path_dict
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=300, wait_random_max=3000)
-def ru_login() -> requests.Session:
+@retry(stop_max_attempt_number=30, wait_random_min=30, wait_random_max=300)
+def ru_search(name: str) -> Optional[Tuple[str, int]]:
     """
-    登录账户并返回会话。
-
-    :rtype: requests.Session
-    :return: 返回一个已登录的会话
-    """
-    session = requests.session()
-    # 无法判断是否登录成功，默认为成功。
-    session.post(url=URL_LOGIN, headers=REQUEST_HEAD, data=DATA_LOGIN, timeout=60, verify=False, allow_redirects=True)
-    logger.info('登录完成')
-    return session
-
-
-@retry(stop_max_attempt_number=300, wait_random_min=30, wait_random_max=300)
-def ru_search(name: str, session: requests.Session) -> Optional[Tuple[str, int]]:
-    """
-    通过session搜索名字，并返回搜索结果。
+    通过session搜索名字，并返回搜索结果。不加入错误处理，让出错后自动重试。
 
     :param name: 搜索的名字
     :type name: str
-    :param session: 已登录的会话
-    :type session: requests.Session
     :rtype: Optional[Tuple[str, int]]
     :return: 返回一个元组，包含名字和搜索结果的数量
     """
     data = {"nm": name}
-    response = session.post(url=URL_SEARCH, headers=REQUEST_HEAD, data=data, timeout=30, verify=False, allow_redirects=True)
+    response = requests.post(url=URL_SEARCH, headers=REQUEST_HEAD, data=data, timeout=30, verify=False, allow_redirects=True)
     return name, int(re.search(r'Результатов поиска: (\d+)', response.text).group(1))
 
 
@@ -123,7 +101,7 @@ def dir_move(source_path: str, target_path: str, response: Tuple[str, int]) -> D
     :param response: 包含名字和搜索结果的元组
     :type response: Tuple[str, int]
     :rtype: Dict[str, str]
-    :return: 返回一个字典，包含源文件和目标文件的路径映射
+    :return: 返回字典，包含源文件和目标文件的路径映射
     """
     name, result = response
     source = os.path.join(source_path, name)
