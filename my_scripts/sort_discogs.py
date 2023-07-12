@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple, Union, Optional, Any
 
 import discogs_client
 import mutagen
+import chardet
 from retrying import retry
 
 from my_module import remove_readonly_recursive, read_json_to_dict
@@ -24,6 +25,7 @@ UNSUPPORTED_STR = CONFIG['sort_discogs']['unsupported_str']  # 不支持的字�
 VA_LIST = CONFIG['sort_discogs']['va_list']  # 合集标记
 USER_TOKEN = CONFIG['sort_discogs']['user_token']  # discogs 个人 token
 FAILED_PATH = CONFIG['sort_discogs']['failed_path']  # 失败目录
+RATE_LIMIT = CONFIG['sort_discogs']['rate_limit']  # 正确率限制
 
 
 def sort_audio_file(source_dir: Union[str, os.PathLike]) -> Optional[Tuple[Dict[str, List[str]], List[str]]]:
@@ -132,12 +134,13 @@ def fix_string(source_str: str) -> str:
     """
     对输入的字符串进行规则替换。
 
-    本函数定义了一系列正则表达式的模式与替换值，将会对输入的字符串按照这些规则进行处理。处理后的字符串将被用作返回值。
+    本函数定义了一系列正则表达式的模式与替换值，将会对输入的字符串按照这些规则进行处理。
+    处理后的字符串将被用作返回值。
 
     :param source_str: 输入的字符串，需要被处理的字符串
     :type source_str: str
-    :rtype: str
     :return: 经过处理后的字符串
+    :rtype: str
     """
     patterns = [
         (r'^various\sartists|^va\s', 'various'),
@@ -186,7 +189,7 @@ def fix_title_list(title_list: List[str], audio_file_list: List[str]) -> Optiona
         return None
 
 
-def sort_discogs(source_path: str, target_path: str, no_query: bool = False) -> Dict[str, str]:
+def sort_discogs(source_path: str, target_path: str, no_query: bool = False):
     """
     通过查询 Discogs 音乐库整理本地下载文件夹。
 
@@ -196,8 +199,6 @@ def sort_discogs(source_path: str, target_path: str, no_query: bool = False) -> 
     :param target_path: 排序后的音乐库的目标路径。
     :type no_query: bool
     :param no_query: 是否进行联网查询。如果为 True，则不进行联网查询。
-    :rtype: Dict[str, str]
-    :return: 返回字典，包含源文件和目标文件的路径映射
     """
     source_names = os.listdir(source_path)
     for source_name in source_names:
@@ -294,18 +295,22 @@ def sort_discogs(source_path: str, target_path: str, no_query: bool = False) -> 
         else:
             logger.info(f"奇怪的目录：{source_name}")
 
-        if os.path.exists(target_dir):
-            logger.warning(f"目标已存在，不移动：{source_dir}")
-        elif not target_dir:
-            shutil.move(source_dir, FAILED_PATH)
-            logger.warning(f"没有结果，目标：{source_dir} 移动到 {FAILED_PATH}")
-        else:
-            shutil.move(source_dir, target_dir)
-            logger.info(f"目标：{source_dir} 移动到 {target_dir}")
-        logger.info('#' * 166)
+        try:
+            if os.path.exists(target_dir):
+                logger.warning(f"目标已存在，不移动：{source_dir}")
+            elif not target_dir:
+                shutil.move(source_dir, FAILED_PATH)
+                logger.warning(f"没有结果，目标：{source_dir} 移动到 {FAILED_PATH}")
+            else:
+                shutil.move(source_dir, target_dir)
+                logger.info(f"目标：{source_dir} 移动到 {target_dir}")
+        except Exception as e:
+            logger.error(f'移动文件时发生错误：{source_dir}')
+        finally:
+            logger.info('#' * 166)
 
 
-@retry(stop_max_attempt_number=1200, wait_random_min=100, wait_random_max=1200)
+# @retry(stop_max_attempt_number=1200, wait_random_min=100, wait_random_max=1200)
 def search_discogs(search_data: List[str], title_list: List[str]) -> str:
     """
     在 Discogs 上搜索专辑并筛选。
@@ -320,6 +325,7 @@ def search_discogs(search_data: List[str], title_list: List[str]) -> str:
     artist = ''
     searched_ids = []
     client = discogs_client.Client('ExampleApplication/0.1', user_token=USER_TOKEN)
+    logger.debug(f"搜索字段集：{search_data}")
     try:
         for data in search_data:
             logger.info(f'开始在discogs上搜索专辑：{data}')
@@ -381,7 +387,7 @@ def filter_response(response: List, title_list: List[str], searched_ids: List[st
         result_artist = response[i].artists[0].name if response[i].artists else ''
         hits, hits_rate = get_hits_rate(track_count, result_tracklist, title_list)
 
-        if hits_rate > 0.9:
+        if hits_rate > RATE_LIMIT:
             artist = response[i].labels[0].name if result_artist == 'Various' else result_artist
             artist = re.sub(UNSUPPORTED_STR, "_", artist)
             artist = re.sub(r'\s\(\d+\)', "", artist)
@@ -451,7 +457,7 @@ def get_hits_rate(track_count: int, result_tracklist: Any, title_list: List[str]
             if result_hit > 0:
                 hits += 1
             else:
-                logger.info(f'第{j + 1}首歌标题不匹配，线上曲目标题为：{result_title}')
+                logger.debug(f'第{j + 1}首歌标题不匹配，线上曲目标题为：{result_title}')
         hits_rate = hits / track_count
     except Exception as e:
         logger.error(f"计算正确率时发生错误：{e}")

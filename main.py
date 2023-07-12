@@ -21,7 +21,7 @@ if __name__ == '__main__':
 
         ########## 整理 ##############
         # 整理下载文件夹，移动到目标目录。
-        sort_discogs(source_path=r'B:\0.整理\jd\wc', target_path=r'B:\2.脚本', no_query=False)
+        sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
 
         # 整理临时文件夹，修改文件夹名中的特殊字符。将修改后的文件夹移动到 target_path，完成后手动将文件夹从 target_path 移回 source_path。
         # return_dict = rename_folder_to_common(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
