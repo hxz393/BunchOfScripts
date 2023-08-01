@@ -35,11 +35,19 @@ from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
 
-EXCLUDE_CHARS = {'æ', 'Æ', 'џ', '®'}
+EXCLUDE_CHARS = {'æ', 'Æ', '®', 'º', 'ß'}
 MODIFY_RULES = [
-    (r'^the\s|\s\s|, the$', ' '),
-    (r'[`∶∗]', '-'),
-    (r'？', '')
+    (r'^the ', ' '),
+    (r', the$', ' '),
+    (r'\s\s', ' '),
+    (r'`', '-'),
+    (r'∶', '-'),
+    (r'∗', '-'),
+    (r'⁄', '-'),
+    (r'│', '-'),
+    (r'“', ''),
+    (r'”', ''),
+    (r'•', ' ')
 ]
 
 

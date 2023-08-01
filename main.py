@@ -17,11 +17,11 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        # scrapy_game_1()
+        scrapy_game_1()
 
         ########## 整理 ##############
         # 整理下载文件夹，移动到目标目录。
-        sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
+        # sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
 
         # 整理临时文件夹，修改文件夹名中的特殊字符。将修改后的文件夹移动到 target_path，完成后手动将文件夹从 target_path 移回 source_path。
         # return_dict = rename_folder_to_common(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
@@ -31,7 +31,7 @@ if __name__ == '__main__':
 
         # 整理本地目录到完成。剩下文件夹手动检查后，再次运行。处理 target_path 下面的子目录，之后运行 sort_ru 整理。
         # return_dict = sort_local(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
-
+        #
         # 获取来源目录下所有文件夹名，到目标网站搜索。根据搜索结果把文件夹移动到不同目录下。
         # return_dict = sort_ru(source_path=r'B:\2.脚本', target_path=r'B:\0.整理\结果目录')
 

@@ -241,7 +241,7 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
         with open(output_file, "a", encoding='utf-8') as file:
             for link, title, baidu_link_code in results:
                 file.write(f'{link}\n{title}\n{baidu_link_code}\n{"*" * 52}\n')
-                logger.info(f'成功抓取：{link}, {title}, {baidu_link_code}') if title else None
+                logger.info(f'完成抓取：{link}, {title}, {baidu_link_code}') if title else None
         return True
     except Exception as e:
         logger.error(f"写入结果时发生错误：{e}")

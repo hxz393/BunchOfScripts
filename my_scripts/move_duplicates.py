@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
               " featuring ", " b2b ", " ft ", " ft. ", " vs. ",
-              " vs ", "⁄", " x ", "(1)", " with ", " & "]
+              " vs ", "⁄", " x ", "(1)", " with "]
 
 
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Optional[Dict[str, str]]:

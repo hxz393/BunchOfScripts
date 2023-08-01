@@ -48,8 +48,9 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
         source_org_name = os.path.basename(source_to_move)
         target_to_move = os.path.join(target_root_dir, source_org_name)
 
-        source_fix = source_org_name.lower().replace('. ', '.').replace('  ', ' ').strip()
+        source_fix = source_org_name.lower().replace('.', ' ').replace('  ', ' ').strip()
         source_sept = [source_fix.split(sept)[0].strip().rstrip('.') for sept in SEPT_LIST if sept in source_fix]
+        # print(source_sept)
 
         if source_fix in camp_names or any(sept in camp_names for sept in source_sept):
             move(source_to_move, target_to_move)
@@ -81,7 +82,7 @@ def sort_local(source_path: str = SOURCE_PATH, target_path: str = TARGET_PATH) -
         return final_path_dict
 
     try:
-        comp_subdirs = {comp_dir: [name.lower().replace('. ', '.') for name in os.listdir(comp_dir)] for comp_dir in COMP_LIST}
+        comp_subdirs = {comp_dir: [name.lower().replace('.', ' ') for name in os.listdir(comp_dir)] for comp_dir in COMP_LIST}
 
         for comp_dir, camp_names in comp_subdirs.items():
             target_dir_name = os.path.basename(comp_dir) if os.path.basename(comp_dir) != 'Mirror' else 'done'
