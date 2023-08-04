@@ -10,6 +10,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,5 +33,5 @@ def format_time(seconds: Union[int, float]) -> Optional[str]:
         minutes, seconds = divmod(rem, 60)
         return f"{hours}h {minutes}m {seconds}s"
     except Exception as e:
-        logger.error(f"An error occurred while formatting time: {e}")
+        logger.error(f"An error occurred while formatting time: {e}\n{traceback.format_exc()}")
         return None

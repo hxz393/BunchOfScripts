@@ -13,6 +13,7 @@
 """
 import json
 import logging
+import traceback
 import os
 from typing import Dict, Any, Union, Optional
 
@@ -42,8 +43,8 @@ def read_json_to_dict(target_path: Union[str, os.PathLike]) -> Optional[Dict[str
         logger.error(f"Cannot access file '{target_path}', permission denied.")
         return None
     except json.JSONDecodeError as e:
-        logger.error(f"Cannot decode JSON file '{target_path}': {e}")
+        logger.error(f"Cannot decode JSON file '{target_path}': {e}\n{traceback.format_exc()}")
         return None
     except Exception as e:
-        logger.error(f"An error occurred while reading the JSON file '{target_path}': {e}")
+        logger.error(f"An error occurred while reading the JSON file '{target_path}': {e}\n{traceback.format_exc()}")
         return None

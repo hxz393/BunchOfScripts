@@ -26,6 +26,7 @@
 """
 import concurrent.futures
 import logging
+import traceback
 import os
 import random
 import re
@@ -69,7 +70,7 @@ def handle_result(result: Any, link: str) -> None:
     try:
         write_results([result])
     except Exception as e:
-        logger.error(f"链接：{link} 在写入结果时发生错误: {e}")
+        logger.error(f"链接：{link} 在写入结果时发生错误: {e}\n{traceback.format_exc()}")
 
 
 def error_callback(e: Exception, link: str) -> None:
@@ -83,7 +84,7 @@ def error_callback(e: Exception, link: str) -> None:
     :rtype: None
     :return: 无返回值
     """
-    logger.error(f"链接：{link} 在处理进程中发生错误: {e}")
+    logger.error(f"链接：{link} 在处理进程中发生错误: {e}\n{traceback.format_exc()}")
 
 
 def scrapy_game_1() -> None:
@@ -98,11 +99,6 @@ def scrapy_game_1() -> None:
 
     try:
         links = [f"{BASE_URL}/game/{item}.html" for item in [str(i) for i in range(START_NUMBER + 1, STOP_NUMBER + 1)]]
-    except Exception as e:
-        logger.error(f"生成链接列表发生错误：{e}")
-        return
-
-    try:
         with ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
             futures = {executor.submit(main, link): link for link in links}
             for future in concurrent.futures.as_completed(futures):
@@ -116,7 +112,7 @@ def scrapy_game_1() -> None:
                 except Exception as e:
                     error_callback(e, link)
     except Exception as e:
-        logger.error(f"链接：{link} 在分配线程时发生错误：{e}")
+        logger.error(f"链接：{link} 在分配线程时发生错误：{e}\n{traceback.format_exc()}")
     finally:
         logger.info(f"总计数量：{STOP_NUMBER - START_NUMBER}，失败数量：{failed_count}")
 
@@ -145,7 +141,7 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
 
         return parse_web_result["link"], parse_web_result["title"], baidu_link
     except Exception as e:
-        logger.error(f"链接：{link} 获取下载时运行错误: {e}")
+        logger.error(f"链接：{link} 获取下载时运行错误: {e}\n{traceback.format_exc()}")
         return link, '', ''
 
 
@@ -159,14 +155,10 @@ def fetch_web_page(link: str) -> Optional[str]:
     :rtype: Optional[str]
     :return: 网页的HTML内容，或者在发生错误时返回空字符串
     """
-    try:
-        proxy_server = random.choice(PROXIES_LIST)
-        response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        logger.error(f"链接：{link} 请求失败: {e}")
-        return ''
+    proxy_server = random.choice(PROXIES_LIST)
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
+    response.raise_for_status()
+    return response.text
 
 
 def parse_web_content(link: str, html: str) -> Dict[str, str]:
@@ -192,11 +184,11 @@ def parse_web_content(link: str, html: str) -> Dict[str, str]:
         fetched_link = re.findall(r'data-url="(.+)"><i', download_info_new)[0]
         return {'link': link, 'title': title, 'password': password, 'fetched_link': fetched_link}
     except Exception as e:
-        logger.error(f"链接：{link} 解析HTML内容失败: {e}")
+        logger.error(f"链接：{link} 解析HTML内容失败: {e}\n{traceback.format_exc()}")
         return {'link': link, 'title': '', 'password': '', 'fetched_link': ''}
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=5, wait_random_min=100, wait_random_max=1200)
 def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_URL) -> Optional[str]:
     """
     获取百度链接。
@@ -208,20 +200,15 @@ def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_UR
     :rtype: Optional[str]
     :return: 一个字符串，包含百度链接和提取码，或者在发生错误时返回 None。
     """
-    try:
-        proxy_server = random.choice(PROXIES_LIST)
-        link = f'{base_url}{fetch_web_response["fetched_link"]}'
-        response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
-        response.raise_for_status()
-        baidu_link = response.headers.get('location')
-        if baidu_link:
-            return f'{baidu_link} {fetch_web_response["password"]}'
-        else:
-            logger.error(f'链接：{fetch_web_response["link"]} 没获取到百度下载链接，帐号问题？')
-            return ''
-
-    except Exception as e:
-        logger.error(f'链接：{fetch_web_response["link"]} 获取百度下载链接时发生错误：{e}')
+    proxy_server = random.choice(PROXIES_LIST)
+    link = f'{base_url}{fetch_web_response["fetched_link"]}'
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
+    response.raise_for_status()
+    baidu_link = response.headers.get('location')
+    if baidu_link:
+        return f'{baidu_link} {fetch_web_response["password"]}'
+    else:
+        logger.error(f'链接：{fetch_web_response["link"]} 没获取到百度下载链接，帐号问题？')
         return ''
 
 
@@ -244,5 +231,5 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
                 logger.info(f'完成抓取：{link}, {title}, {baidu_link_code}') if title else None
         return True
     except Exception as e:
-        logger.error(f"写入结果时发生错误：{e}")
+        logger.error(f"写入结果时发生错误：{e}\n{traceback.format_exc()}")
         return False

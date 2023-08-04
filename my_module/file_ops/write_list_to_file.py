@@ -12,6 +12,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from pathlib import Path
 from typing import List, Any, Optional, Union
 
@@ -37,5 +38,5 @@ def write_list_to_file(target_path: Union[str, Path], content: List[Any]) -> Opt
             file.write("\n".join(str(element) for element in content))
         return True
     except Exception as e:
-        logger.error(f"An error occurred while writing to the file at '{target_path}': {e}")
+        logger.error(f"An error occurred while writing to the file at '{target_path}': {e}\n{traceback.format_exc()}")
         return None

@@ -14,6 +14,7 @@
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
+import traceback
 from pathlib import Path
 from shutil import move
 from typing import Union, Optional
@@ -50,7 +51,7 @@ def move_folder_with_rename(source_path: Union[str, Path], target_path: Union[st
     try:
         move(str(source_path), str(target_path))
     except Exception as e:
-        logger.error(f"An error occurred while moving the file or folder. Error message: {str(e)}")
+        logger.error(f"An error occurred while moving the file or folder. Error message: {e}\n{traceback.format_exc()}")
         return None
 
     return target_path

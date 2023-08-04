@@ -23,6 +23,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from threading import Thread
 from typing import Any, Callable, Optional, Tuple
 
@@ -59,7 +60,7 @@ def thread_it(func: Callable[..., Any], *args: Any, daemon: Optional[bool] = Tru
         try:
             func(*arg)
         except Exception as e:
-            logger.error(f"Error occurred in thread {name}: {e}")
+            logger.error(f"Error occurred in thread {name}: {e}\n{traceback.format_exc()}")
 
     t = Thread(target=wrapper, args=args, daemon=daemon, name=name)
     t.start()

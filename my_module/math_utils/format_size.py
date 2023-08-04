@@ -12,6 +12,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,5 +46,5 @@ def format_size(size: Union[int, float], is_disk: bool = False, precision: int =
 
         return f"{size:.{precision}f} {units[-1]}"
     except Exception as e:
-        logger.error(f"An error occurred while formatting size: {e}")
+        logger.error(f"An error occurred while formatting size: {e}\n{traceback.format_exc()}")
         return None

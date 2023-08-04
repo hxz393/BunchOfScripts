@@ -13,6 +13,7 @@
 """
 import json
 import logging
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
@@ -38,5 +39,5 @@ def write_dict_to_json(target_path: Union[str, Path], data: Dict[str, Any]) -> O
             json.dump(data, file, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
-        logger.error(f"An error occurred while writing to the JSON file at '{target_path}': {e}")
+        logger.error(f"An error occurred while writing to the JSON file at '{target_path}': {e}\n{traceback.format_exc()}")
         return None

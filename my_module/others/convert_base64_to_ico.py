@@ -24,6 +24,7 @@
 import atexit
 import base64
 import logging
+import traceback
 import os
 import tempfile
 from typing import Optional
@@ -36,7 +37,7 @@ def remove_temp_file(path: str):
     try:
         os.remove(path)
     except Exception as e:
-        logger.error(f"Error when remove temp file: {e}")
+        logger.error(f"Error when remove temp file: {e}\n{traceback.format_exc()}")
         pass
 
 
@@ -52,7 +53,7 @@ def convert_base64_to_ico(base64_string: str) -> Optional[str]:
     try:
         icon_data = base64.b64decode(base64_string)
     except Exception as e:
-        logger.error(f"The input string cannot be decoded by Base64: {str(e)}")
+        logger.error(f"The input string cannot be decoded by Base64: {e}\n{traceback.format_exc()}")
         return None
 
     try:
@@ -61,5 +62,5 @@ def convert_base64_to_ico(base64_string: str) -> Optional[str]:
         atexit.register(remove_temp_file, temp_file.name)
         return temp_file.name
     except Exception as e:
-        logger.error(f"An error occurred while writing the .ico file: {str(e)}")
+        logger.error(f"An error occurred while writing the .ico file: {e}\n{traceback.format_exc()}")
         return None

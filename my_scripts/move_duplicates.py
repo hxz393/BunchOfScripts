@@ -25,6 +25,7 @@ if duplicates_moved:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
+import traceback
 import os
 import shutil
 from typing import Dict, Union, Optional
@@ -79,6 +80,6 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
             final_path_dict[file_path] = new_target_path
             logger.info(f"{file_path} 移动到 {new_target_path}")
         except Exception as e:
-            logger.error(f"移动目录是发生错误：{file_path}，错误信息：{e}")
+            logger.error(f"移动目录是发生错误：{file_path}，错误信息：{e}\n{traceback.format_exc()}")
 
     return final_path_dict if final_path_dict else None

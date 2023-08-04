@@ -10,6 +10,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from pathlib import Path
 from typing import Union
 
@@ -41,5 +42,5 @@ def rename_target_if_exist(path: Union[str, Path]) -> Union[str, None]:
 
         return str(path)
     except Exception as e:
-        logger.error(f"An error occurred while renaming the target: {e}")
+        logger.error(f"An error occurred while renaming the target: {e}\n{traceback.format_exc()}")
         return None

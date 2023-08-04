@@ -21,6 +21,7 @@ if file_paths:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
+import traceback
 import os
 from typing import List, Union, Optional
 
@@ -45,5 +46,5 @@ def get_file_paths(target_path: Union[str, os.PathLike]) -> Optional[List[str]]:
             return None
         return [os.path.normpath(os.path.join(root, file)) for root, _, files in os.walk(target_path) for file in files]
     except Exception as e:
-        logger.error(f"An error occurred while retrieving file paths: {e}")
+        logger.error(f"An error occurred while retrieving file paths: {e}\n{traceback.format_exc()}")
         return None

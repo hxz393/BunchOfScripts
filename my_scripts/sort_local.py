@@ -13,6 +13,7 @@
 """
 
 import logging
+import traceback
 import os
 from multiprocessing import Pool
 from shutil import move
@@ -57,7 +58,7 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
             logger.info(f'{source_to_move} 移动到：{target_to_move}')
             return {source_to_move: target_to_move}
     except Exception as e:
-        logger.error(f"出错了：{e}")
+        logger.error(f"出错了：{e}\n{traceback.format_exc()}")
         return None
 
 
@@ -98,5 +99,5 @@ def sort_local(source_path: str = SOURCE_PATH, target_path: str = TARGET_PATH) -
                 create_directories([path.replace('done', 'mirror') for path in target_dirs])
         return final_path_dict
     except Exception as e:
-        logger.error(f"出错了：{e}")
+        logger.error(f"出错了：{e}\n{traceback.format_exc()}")
         return final_path_dict

@@ -12,6 +12,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 import os
 import stat
 from typing import Union, List, Optional
@@ -46,10 +47,10 @@ def remove_empty_dirs(target_path: Union[str, os.PathLike]) -> Optional[List[str
         logger.error(f"'{target_path}' is not a valid directory.")
         return None
     except OSError as e:
-        logger.error(f"Cannot delete directory '{target_path}': {str(e)}")
+        logger.error(f"Cannot delete directory '{target_path}': {e}\n{traceback.format_exc()}")
         return None
     except Exception as e:
-        logger.error(f"An error occurred while deleting empty directories: {e}")
+        logger.error(f"An error occurred while deleting empty directories: {e}\n{traceback.format_exc()}")
         return None
 
     return removed_dirs

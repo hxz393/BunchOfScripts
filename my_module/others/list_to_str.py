@@ -15,6 +15,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from typing import List, Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -35,5 +36,5 @@ def list_to_str(my_list: Optional[List[Union[str, int]]]) -> Optional[str]:
         else:
             return None
     except Exception as e:
-        logger.error(f"An error occurred while converting list to string: {e}")
+        logger.error(f"An error occurred while converting list to string: {e}\n{traceback.format_exc()}")
         return None

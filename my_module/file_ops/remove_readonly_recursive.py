@@ -14,6 +14,7 @@
 
 import logging
 import os
+import traceback
 from typing import Optional, Union
 
 import win32api
@@ -39,7 +40,7 @@ def remove_readonly(target_path: Union[str, os.PathLike]) -> Optional[bool]:
         win32api.SetFileAttributes(target_path, win32con.FILE_ATTRIBUTE_NORMAL)
         return True
     except Exception as e:
-        logger.error(f"An error occurred while removing read-only attribute: {e}")
+        logger.error(f"An error occurred while removing read-only attribute: {e}\n{traceback.format_exc()}")
         return None
 
 
@@ -68,5 +69,5 @@ def remove_readonly_recursive(target_dir: Union[str, os.PathLike]) -> Optional[b
                 remove_readonly(os.path.join(root, file))
         return True
     except Exception as e:
-        logger.error(f"An error occurred while removing read-only attribute recursively: {e}")
+        logger.error(f"An error occurred while removing read-only attribute recursively: {e}\n{traceback.format_exc()}")
         return None

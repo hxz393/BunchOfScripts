@@ -1,7 +1,7 @@
 """
-这是一个Python文件，包含一个函数：`process_input`。
+这是一个Python文件，包含一个函数：`clean_input`。
 
-`process_input`函数的目标是处理用户输入，去除空行和重复行。如果输入字符串在处理过程中出现错误，函数会返回 None。函数接受一个参数：
+`clean_input`函数的目标是处理用户输入，去除空行和重复行。如果输入字符串在处理过程中出现错误，函数会返回 None。函数接受一个参数：
 - `input_str`：待处理的用户输入字符串。
 
 此文件依赖于以下Python库：
@@ -14,12 +14,13 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def process_input(input_str: str) -> Optional[str]:
+def clean_input(input_str: str) -> Optional[str]:
     """
     处理用户输入，去除空行和重复行后返回。
 
@@ -41,5 +42,5 @@ def process_input(input_str: str) -> Optional[str]:
 
         return output_str
     except Exception as e:
-        logger.error(f"An error occurred while processing the input: {e}")
+        logger.error(f"An error occurred while processing the input: {e}\n{traceback.format_exc()}")
         return None

@@ -26,6 +26,7 @@ if folder_names:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
+import traceback
 from pathlib import Path
 from typing import Union, Optional, List
 
@@ -72,6 +73,6 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
             successfully_created.append(name)
             logger.info(f"成功建立文件夹：{folder_path}")
         except Exception as e:
-            logger.error(f"建立文件夹时出错：{folder_path}，错误消息：{str(e)}")
+            logger.error(f"建立文件夹时出错：{folder_path}，错误消息：{e}\n{traceback.format_exc()}")
 
     return successfully_created if successfully_created else None

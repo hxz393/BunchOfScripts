@@ -26,6 +26,7 @@ if renamed_folders:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
+import traceback
 import re
 import shutil
 from pathlib import Path
@@ -101,6 +102,6 @@ def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[st
                 final_path_dict[str(folder)] = str(final_path)
                 logger.info(f"{folder} 移动到 {final_path}")
             except OSError as e:
-                logger.error(f"移动时出错：{new_folder_name}，错误信息：{e}")
+                logger.error(f"移动时出错：{new_folder_name}，错误信息：{e}\n{traceback.format_exc()}")
 
     return final_path_dict if final_path_dict else None

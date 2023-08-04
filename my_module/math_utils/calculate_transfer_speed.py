@@ -12,6 +12,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -48,5 +49,5 @@ def calculate_transfer_speed(size_bytes: int, elapsed_time_seconds: Union[int, f
 
         return f"{speed:.2f} {units[-1]}/s"
     except Exception as e:
-        logger.error(f"An error occurred while calculating transfer speed: {e}")
+        logger.error(f"An error occurred while calculating transfer speed: {e}\n{traceback.format_exc()}")
         return None

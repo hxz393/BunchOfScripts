@@ -17,7 +17,17 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        scrapy_game_1()
+        # scrapy_game_1()
+
+        ########## BANDCAMP.COM ##############
+        # 新专辑处理。
+        # recording_new_album()
+
+        # 新乐队处理。
+        recording_new_artist()
+
+        # 整理下载的音频。
+        # ()
 
         ########## 整理 ##############
         # 整理下载文件夹，移动到目标目录。

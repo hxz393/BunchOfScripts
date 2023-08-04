@@ -6,6 +6,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import traceback
 import os
 import re
 import shutil
@@ -65,7 +66,7 @@ def sort_audio_file(source_dir: Union[str, os.PathLike]) -> Optional[Tuple[Dict[
                     audio_file_dict[file_ext].append(file_path)
                     audio_file_list.append(file_path)
     except Exception as e:
-        logger.error(f"An error occurred while sorting audio files: {e}")
+        logger.error(f"An error occurred while sorting audio files: {e}\n{traceback.format_exc()}")
 
     logger.info(f'获取到文件列表：{audio_file_list}')
     return audio_file_dict, audio_file_list
@@ -117,7 +118,7 @@ def get_audio_infos(audio_file_list: List[str]) -> Tuple[List[str], List[str], L
         except KeyError:
             pass
         except Exception as e:
-            logger.error(f"An error occurred while processing '{audio_file}': {e}")
+            logger.error(f"An error occurred while processing '{audio_file}': {e}\n{traceback.format_exc()}")
             continue
 
     if abs(len(artist_list) - len(audio_file_list)) > 2:
@@ -162,7 +163,7 @@ def fix_string(source_str: str) -> str:
         for pattern, replacement in patterns:
             new_str = re.sub(pattern, replacement, new_str).strip()
     except Exception as e:
-        logger.error(f"An error occurred while fixing string: {e}")
+        logger.error(f"An error occurred while fixing string: {e}\n{traceback.format_exc()}")
 
     return new_str
 
@@ -185,7 +186,7 @@ def fix_title_list(title_list: List[str], audio_file_list: List[str]) -> Optiona
         else:
             return [fix_string(os.path.splitext(os.path.basename(audio_file).lower())[0]) for audio_file in audio_file_list]
     except Exception as e:
-        logger.error(f"An error occurred while fixing the title list: {e}")
+        logger.error(f"An error occurred while fixing the title list: {e}\n{traceback.format_exc()}")
         return None
 
 
@@ -305,7 +306,7 @@ def sort_discogs(source_path: str, target_path: str, no_query: bool = False):
                 shutil.move(source_dir, target_dir)
                 logger.info(f"目标：{source_dir} 移动到 {target_dir}")
         except Exception as e:
-            logger.error(f'移动文件时发生错误：{source_dir}')
+            logger.error(f'移动文件 {source_dir} 时发生错误：{e}\n{traceback.format_exc()}')
         finally:
             logger.info('#' * 166)
 
@@ -343,11 +344,11 @@ def search_discogs(search_data: List[str], title_list: List[str]) -> str:
             else:
                 logger.error(f'没见过的错误？？：{data}')
     except Exception as e:
-        logger.error(f"搜索错误？？：{e}")
+        logger.error(f"搜索错误？？：{e}\n{traceback.format_exc()}")
     return artist
 
 
-# @retry(stop_max_attempt_number=1200, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=1200, wait_random_min=100, wait_random_max=1200)
 def filter_response(response: List, title_list: List[str], searched_ids: List[str]) -> Tuple[Optional[str], List[str]]:
     """
     根据指定的响应，标题列表和已搜索ID列表过滤响应。
@@ -428,7 +429,7 @@ def get_search_limit(result_len: Union[int, float]) -> int:
         return int(search_limit)
 
     except Exception as e:
-        logger.error(f"An error occurred while calculating search limit: {e}")
+        logger.error(f"An error occurred while calculating search limit: {e}\n{traceback.format_exc()}")
         return 1
 
 
@@ -460,5 +461,5 @@ def get_hits_rate(track_count: int, result_tracklist: Any, title_list: List[str]
                 logger.debug(f'第{j + 1}首歌标题不匹配，线上曲目标题为：{result_title}')
         hits_rate = hits / track_count
     except Exception as e:
-        logger.error(f"计算正确率时发生错误：{e}")
+        logger.error(f"计算正确率时发生错误：{e}\n{traceback.format_exc()}")
     return hits, hits_rate
