@@ -11,3 +11,4 @@ from .sort_ru import sort_ru
 from .sort_discogs import sort_discogs
 from .scrapy_bandcamp import recording_new_album
 from .scrapy_bandcamp import recording_new_artist
+from .scrapy_bandcamp import sort_bandcamp_files

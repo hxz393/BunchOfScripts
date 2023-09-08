@@ -1,25 +1,24 @@
-import requests
+import datetime
+import json
+import logging
+import os
 import re
-from lxml import etree
-import random
+import shutil
+import traceback
+from collections import defaultdict
+from multiprocessing import Pool
+from typing import List, Union, Optional, Any, Dict, Tuple
+from urllib.parse import urlparse
 
+import requests
+from lxml import etree
+from pymongo import MongoClient
 from requests import RequestException
 from retrying import retry
-from multiprocessing import Pool
-from urllib.parse import urlparse
-import time
-import json
-from pymongo import MongoClient
-import shutil
-import os
-import datetime
-import logging
-from typing import List, Union, Optional, Any, Dict, Tuple
-import traceback
 
+from my_module import clean_input
 from my_module import read_json_to_dict
 from my_module import write_list_to_file
-from my_module import clean_input
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -36,16 +35,23 @@ REQUEST_HEAD = CONFIG['scrapy_bandcamp']['request_head']  # 请求标头，不�
 LOGIN_URL = CONFIG['scrapy_bandcamp']['login_url']  # 登录地址
 UNSUPPORTED_STR = CONFIG['scrapy_bandcamp']['unsupported_str']  # 非法字符串
 POOL_NUMBER = CONFIG['scrapy_bandcamp']['pool_number']  # 线程池数量
+PROXIES = CONFIG['scrapy_bandcamp']['proxies']  # 本地代理服务器
 FULL_PAGE_STYLE = CONFIG['scrapy_bandcamp']['full_page_style']  # 全信息页面风格
 SINGLE_PAGE_STYLE = CONFIG['scrapy_bandcamp']['single_page_style']  # 单页信息页面风格
+
+## 处理各种风格名称配置
+NAME_STYLE_VA = CONFIG['scrapy_bandcamp']['name_style_va']
+NAME_STYLE_0 = CONFIG['scrapy_bandcamp']['name_style_0']
+NAME_STYLE_1 = CONFIG['scrapy_bandcamp']['name_style_1']
+NAME_STYLE_2 = CONFIG['scrapy_bandcamp']['name_style_2']
+NAME_STYLE_3 = CONFIG['scrapy_bandcamp']['name_style_3']
+NAME_STYLE_5 = CONFIG['scrapy_bandcamp']['name_style_5']
 
 MONGO_CLIENT = MongoClient(host=MONGO_IP, port=MONGO_PORT)  # 数据库客户端
 BAND_INFO = MONGO_CLIENT.bandcamp.Bandinfo  # 乐队信息
 ALBUM_INFO = MONGO_CLIENT.bandcamp.Albuminfo  # 专辑信息
 REF_TOKEN = re.findall(r'%5B%22(.+?)%22%2C', USER_COOKIE)[0]  # 参考认证
 REQUEST_HEAD["Cookie"] = USER_COOKIE  # 请求标头，更新帐号 cookie
-
-
 
 
 def prune_link(line: str) -> Optional[str]:
@@ -60,7 +66,7 @@ def prune_link(line: str) -> Optional[str]:
     try:
         return f"https://{urlparse(line).netloc}" if line else None
     except Exception as e:
-        logger.error(f"处理链接出现错误: {e}\n{traceback.format_exc()}")
+        logger.error(f"处理链接出现错误: {line}，错误信息：{e}\n{traceback.format_exc()}")
         return None
 
 
@@ -95,7 +101,7 @@ def init_txt(path: Union[str, os.PathLike], album_type: int = 0) -> Optional[Lis
 
         return return_list
     except Exception as e:
-        logger.error(f"初始化文本文件时出错: {e}\n{traceback.format_exc()}")
+        logger.error(f"初始化文本文件时出现错误: {path}，错误信息：{e}\n{traceback.format_exc()}")
         return None
 
 
@@ -113,9 +119,7 @@ def request_get(url: str, headers: Dict[str, str]) -> Optional[requests.Response
     :raise RequestException: 在发起请求时可能出现的异常。
     """
     try:
-        # proxies = {'http': 'http://192.168.2.102:808', 'https': 'http://192.168.2.102:808'}
-        proxies = {'http': 'socks5://127.0.0.1:7890', 'https': 'socks5://127.0.0.1:7890'}
-        response = requests.get(url=url, headers=headers, timeout=15, verify=False, allow_redirects=False, proxies=proxies)
+        response = requests.get(url=url, headers=headers, timeout=15, verify=False, allow_redirects=False, proxies=PROXIES)
         # response = requests.get(url=url, headers=headers, timeout=15, verify=False, allow_redirects=False)
         # print(url)
         # print(response.status_code)
@@ -133,7 +137,7 @@ def request_get(url: str, headers: Dict[str, str]) -> Optional[requests.Response
                 return request_get(redirect_url, headers)
         return response
     except RequestException as e:
-        logger.error(f"Error occurred while requesting {url}: {str(e)}")
+        logger.error(f"发送 GET 请求时出现错误: {url}，错误信息：{e}\n{traceback.format_exc()}")
         raise
 
 
@@ -156,7 +160,7 @@ def request_post(url: str, headers: Dict[str, str], data: Union[str, Dict[str, s
         response = requests.post(url=url, headers=headers, data=data, timeout=15, verify=False, allow_redirects=True)
         return response
     except RequestException as e:
-        logger.error(f"Error occurred while requesting {url}: {str(e)}")
+        logger.error(f"发送 POST 请求时出现错误: {url}，错误信息：{e}\n{traceback.format_exc()}")
         raise
 
 
@@ -190,7 +194,7 @@ def post_action(output_dict: Dict[str, Union[str, List[str]]]) -> Optional[bool]
 
         return True
     except Exception as e:
-        logger.error(f"修改输出文本时发生错误: {e}\n{traceback.format_exc()}")
+        logger.error(f"修改输出文本时出现错误: {output_dict}，错误信息：{e}\n{traceback.format_exc()}")
         return False
 
 
@@ -254,10 +258,6 @@ def recording_new_album() -> None:
         pool.join()
     except Exception as e:
         logger.error(f"记录新专辑时发生错误：{e}\n{traceback.format_exc()}")
-
-
-
-
 
 
 def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]:
@@ -434,7 +434,6 @@ def follow_band(artist_url: str, follow_post_data: Dict[str, Any]) -> Optional[b
     :return: 成功返回 True，否则 None
     """
     try:
-        parsed_url = urlparse(artist_url)
         index_url = re.findall(r'https://[^/]+', artist_url)[0]
         request_head_follow = REQUEST_HEAD.copy()
         request_head_follow['Host'] = urlparse(index_url).netloc
@@ -545,3 +544,230 @@ def recording_new_artist() -> None:
             pool.join()
     except Exception as e:
         logger.error(f"记录新乐队时发生错误：{e}\n{traceback.format_exc()}")
+
+
+# noinspection PyTypeChecker
+def get_file_info(source_dir: str) -> Optional[List[dict]]:
+    """
+    解析文件名中包含信息，按艺术家和专辑分类。
+
+    :param source_dir: 源目录的路径。
+    :type source_dir: str
+    :rtype: Optional[List[dict]]
+    :return: 包含文件信息的字典列表，或者在发生错误时返回 None。
+    """
+    try:
+        file_list = os.listdir(source_dir)
+        temp_dict = defaultdict(lambda: {'file_artist': None, 'file_album': None, 'files': []})
+
+        for file_name in file_list:
+            parts = file_name.split(' $$ ')
+            if len(parts) < 3:
+                logger.warning(f"分割文件名字段时失败，“$$” 少于 3：{file_name}")
+                continue
+
+            file_artist = parts[0]
+            file_album = parts[1]
+            key = (file_artist, file_album)
+
+            file_album = re.sub(" \\(\\d{4}\\)$| \\(_date_\\)$", '', file_album)
+
+            temp_dict[key]['file_artist'] = file_artist
+            temp_dict[key]['file_album'] = file_album
+            temp_dict[key]['files'].append(os.path.join(source_dir, file_name))
+
+        return list(temp_dict.values())
+    except Exception as e:
+        logger.error(f"解析文件名中信息时出现错误: {source_dir}，错误信息：{e}\n{traceback.format_exc()}")
+        return None
+
+
+def search_mongo(file_info: Dict[str, str]) -> Optional[Dict[str, str]]:
+    """
+    在MongoDB中搜索专辑信息。
+
+    :type file_info: Dict[str, str]
+    :param file_info: 包含艺术家名、专辑名和文件列表的字典。
+    :rtype: Optional[Dict[str, str]]
+    :return: 如果搜索成功，则返回一个字典，其中包括MongoDB中找到的专辑信息和文件列表；否则返回None。
+    """
+    try:
+        # 转义所有特殊字符，然后将转义的点号替换为正常的点号以匹配任意字符
+        artist_name_pattern = re.compile(re.escape(file_info['file_artist'].replace("_", ".").replace("   ", " . ")).replace("\\.", "."), re.IGNORECASE)
+        album_name_pattern = re.compile(re.escape(file_info['file_album'].replace("_", ".").replace("   ", " . ")).replace("\\.", "."), re.IGNORECASE)
+
+        queries = [
+            {
+                'query': {
+                    '$and': [
+                        {'BandName': artist_name_pattern},
+                        {'AlbumName': album_name_pattern}
+                    ]
+                },
+                'label': 'normal'
+            },
+            {
+                'query': {
+                    '$and': [
+                        {'Label': artist_name_pattern},
+                        {'AlbumName': album_name_pattern}
+                    ]
+                },
+                'label': 'abnormal'
+            },
+            # {
+            #     'query': {'AlbumName': album_name_pattern},
+            #     'label': 'only-album'
+            # }
+        ]
+
+        for query_info in queries:
+            logger.debug(f'查询条件：{query_info}')
+            query = query_info['query']
+            count = ALBUM_INFO.count_documents(query)
+
+            if count > 0:
+                mongo_result = ALBUM_INFO.find_one(query)
+                mongo_result['files'] = file_info['files']
+                return mongo_result
+
+        album_count = ALBUM_INFO.count_documents({"AlbumName": {"$regex": album_name_pattern, "$options": "i"}})
+        if album_count == 1:
+            mongo_result = ALBUM_INFO.find_one({"AlbumName": {"$regex": album_name_pattern, "$options": "i"}})
+            mongo_result['BandName'] = file_info['file_artist']
+            return mongo_result
+
+        logger.warning(f"在 mongo 中没搜索到数据：{file_info}")
+        return None
+
+    except Exception as e:
+        logger.error(f"在 Mongo 中搜索专辑信息时出现错误: {file_info}，错误信息：{e}\n{traceback.format_exc()}")
+        return None
+
+
+def get_target_name(mongo_result: Dict[str, Union[str, list]]) -> Optional[str]:
+    """
+    根据 MongoDB 结果获取目标名称。
+
+    :type mongo_result: Dict[str, Union[str, list]]
+    :param mongo_result: MongoDB 的查询结果。
+    :rtype: Optional[str]
+    :return: 艺术家名称或标签名称，如果匹配错误，则返回 None。
+    """
+    try:
+        artist_name = mongo_result['BandName']
+        album_name = mongo_result['AlbumName']
+        label_name = mongo_result['Label']
+
+        if label_name in NAME_STYLE_0:  # 艺术家 - 专辑 or 艺术家 ~ 专辑 or 艺术家 – 专辑
+            album_name = album_name.replace('–', '-')
+            album_name = album_name.replace('~', '-')
+            artist_name = album_name.split(' - ')[0].strip()
+        elif label_name in NAME_STYLE_1:  # 标签 艺术家 - 专辑
+            artist_name = re.sub(r'^\S+\s([^-]+)\s-\s.+', r'\1', album_name)
+        elif label_name in NAME_STYLE_2:  # 标签 - 艺术家 - 专辑
+            artist_name = re.sub(r'^\S+\s-\s([^-]+)\s-\s.+', r'\1', album_name)
+        elif label_name in NAME_STYLE_3:  # 艺术家 "专辑"
+            artist_name = album_name.split(' "')[0].strip()
+        elif label_name in NAME_STYLE_5:  # 标签 - 艺术家 "专辑"
+            artist_name = re.sub(r'^[^-]+\s-\s([^"]+)\s"[^"]+".+', r'\1', album_name)
+
+        return label_name if artist_name.lower() in NAME_STYLE_VA else artist_name
+    except Exception as e:
+        logger.error(f"匹配艺术家名时出现错误: {mongo_result}，错误信息：{e}\n{traceback.format_exc()}")
+        return None
+
+
+def move_file(target_name: str, target_dir: str, file_info: Dict[str, Union[str, list]]) -> bool:
+    """
+    将文件移动到目标目录，并将目标目录名中在 Windows 上不合法的字符替换掉。
+
+    :type target_name: str
+    :param target_name: 目标原始文件名。
+    :type target_dir: str
+    :param target_dir: 目标目录。
+    :type file_info: Dict[str, Union[str, list]]
+    :param file_info: 包含源文件路径的信息。
+    :rtype: bool
+    :return: 如果移动成功返回 True，否则返回 False。
+    """
+    try:
+        illegal_characters = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+        replace_mapping = ['&', '-', '-', '-', '', '', '_', '_', '&']
+        for char, replacement in zip(illegal_characters, replace_mapping):
+            target_name = target_name.replace(char, replacement)
+
+        target_name = re.sub(UNSUPPORTED_STR, "_", target_name)
+        target_name = re.sub("\\.+$", "", target_name).strip()
+
+        target_path = os.path.join(target_dir, target_name)
+        os.makedirs(target_path, exist_ok=True)
+
+        for source_path in file_info['files']:
+            shutil.move(source_path, target_path)
+            logger.debug(f"文件移动完成：{source_path} 到 {target_path}")
+
+        return True
+    except Exception as e:
+        logger.error(f"移动文件时出现错误: {target_name}，错误信息：{e}\n{traceback.format_exc()}")
+        return False
+
+
+def process_file_info(file_info: Dict[str, Union[str, int]], target_dir: str) -> Optional[bool]:
+    """
+    处理文件流程，包括搜索mongo数据库，获取目标名，移动文件。
+
+    :type file_info: Dict[str, Union[str, int]]
+    :param file_info: 包括文件的信息
+    :type target_dir: str
+    :param target_dir: 目标目录
+    :rtype: Optional[bool]
+    :return: 如果处理成功返回 True，否则返回 None。
+    """
+    try:
+        logger.debug(f"处理文件信息：{file_info}")
+        if not file_info:
+            return
+
+        mongo_result = search_mongo(file_info)
+        logger.debug(f"mongo 数据库返回结果：{mongo_result}")
+        if not mongo_result:
+            return
+
+        target_name = get_target_name(mongo_result)
+        logger.debug(f"匹配艺术家名返回结果：{target_name}")
+        if not target_name:
+            return
+
+        move_result = move_file(target_name, target_dir, file_info)
+        if move_result:
+            logger.info(f"专辑 {file_info['file_artist']} - {file_info['file_album']} 处理完成。")
+            return True
+    except Exception as e:
+        logger.error(f"处理文件流程发生错误：{e}\n{traceback.format_exc()}")
+        return None
+
+
+def sort_bandcamp_files(source_dir: str, target_dir: str) -> Optional[bool]:
+    """
+    整理 Bandcamp 的文件。
+
+    :type source_dir: str
+    :param source_dir: 源目录的路径。
+    :type target_dir: str
+    :param target_dir: 目标目录的路径。
+    :rtype: Optional[bool]
+    :return: 如果整理成功返回 True，否则返回 None。
+    """
+    try:
+        file_info_lists = get_file_info(source_dir)
+        with Pool(processes=POOL_NUMBER) as pool:
+            for file_info in file_info_lists:
+                pool.apply_async(process_file_info, args=(file_info, target_dir))
+            pool.close()
+            pool.join()
+
+        return True
+    except Exception as e:
+        logger.error(f"整理文件时发生错误：{e}\n{traceback.format_exc()}")
+        return None

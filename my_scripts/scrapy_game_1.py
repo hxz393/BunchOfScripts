@@ -145,7 +145,7 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
         return link, '', ''
 
 
-@retry(stop_max_attempt_number=10, wait_random_min=100, wait_random_max=1200)
+# @retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
 def fetch_web_page(link: str) -> Optional[str]:
     """
     获取网页HTML内容
@@ -156,7 +156,7 @@ def fetch_web_page(link: str) -> Optional[str]:
     :return: 网页的HTML内容，或者在发生错误时返回空字符串
     """
     proxy_server = random.choice(PROXIES_LIST)
-    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False)
     response.raise_for_status()
     return response.text
 
@@ -188,7 +188,7 @@ def parse_web_content(link: str, html: str) -> Dict[str, str]:
         return {'link': link, 'title': '', 'password': '', 'fetched_link': ''}
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=100, wait_random_max=1200)
+# @retry(stop_max_attempt_number=5, wait_random_min=100, wait_random_max=1200)
 def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_URL) -> Optional[str]:
     """
     获取百度链接。
@@ -202,7 +202,7 @@ def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_UR
     """
     proxy_server = random.choice(PROXIES_LIST)
     link = f'{base_url}{fetch_web_response["fetched_link"]}'
-    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False)
     response.raise_for_status()
     baidu_link = response.headers.get('location')
     if baidu_link:

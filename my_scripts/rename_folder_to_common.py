@@ -36,7 +36,7 @@ from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
 
-EXCLUDE_CHARS = {'æ', 'Æ', '®', 'º', 'ß'}
+EXCLUDE_CHARS = {'æ', 'Æ', '®', 'º', 'ß', 'Þ', '·', '±', '°', '©', '¡', '▲', 'Ξ', '™', 'Ɔ', 'Σ', '²', '∞'}
 MODIFY_RULES = [
     (r'^the ', ' '),
     (r', the$', ' '),
@@ -48,6 +48,7 @@ MODIFY_RULES = [
     (r'│', '-'),
     (r'“', ''),
     (r'”', ''),
+    (r'·', '-'),
     (r'•', ' ')
 ]
 
@@ -95,7 +96,7 @@ def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[st
         if folder.name != new_folder_name:
             final_path = target / new_folder_name
             if final_path.exists():
-                logger.error(f"移不动，目标已存在：{new_folder_name}")
+                logger.error(f"移不动 {folder.name}，目标已存在：{new_folder_name}")
                 continue
             try:
                 shutil.move(str(folder), str(final_path))

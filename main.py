@@ -17,17 +17,17 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        # scrapy_game_1()
+        scrapy_game_1()
 
         ########## BANDCAMP.COM ##############
         # 新专辑处理。
         # recording_new_album()
 
         # 新乐队处理。
-        recording_new_artist()
+        # recording_new_artist()
 
         # 整理下载的音频。
-        # ()
+        # sort_bandcamp_files(source_dir=r'B:\0.整理\01', target_dir=r'B:\2.脚本')
 
         ########## 整理 ##############
         # 整理下载文件夹，移动到目标目录。
@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
         # 根据分隔符分割后，检查并移动重复文件夹。完成后手动将文件夹从 target_dir 移回 source_dir。
         # return_dict = move_duplicates(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
-
+        #
         # 整理本地目录到完成。剩下文件夹手动检查后，再次运行。处理 target_path 下面的子目录，之后运行 sort_ru 整理。
         # return_dict = sort_local(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
         #

@@ -50,6 +50,7 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
         target_to_move = os.path.join(target_root_dir, source_org_name)
 
         source_fix = source_org_name.lower().replace('.', ' ').replace('  ', ' ').strip()
+        # print(source_fix)
         source_sept = [source_fix.split(sept)[0].strip().rstrip('.') for sept in SEPT_LIST if sept in source_fix]
         # print(source_sept)
 
@@ -57,6 +58,9 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
             move(source_to_move, target_to_move)
             logger.info(f'{source_to_move} 移动到：{target_to_move}')
             return {source_to_move: target_to_move}
+        # else:
+        #     print(source_fix)
+        #     print(camp_names)
     except Exception as e:
         logger.error(f"出错了：{e}\n{traceback.format_exc()}")
         return None
@@ -83,7 +87,8 @@ def sort_local(source_path: str = SOURCE_PATH, target_path: str = TARGET_PATH) -
         return final_path_dict
 
     try:
-        comp_subdirs = {comp_dir: [name.lower().replace('.', ' ') for name in os.listdir(comp_dir)] for comp_dir in COMP_LIST}
+        comp_subdirs = {comp_dir: [name.lower().replace('.', ' ').replace('  ', ' ') for name in os.listdir(comp_dir)] for comp_dir in COMP_LIST}
+        # print(comp_subdirs)
 
         for comp_dir, camp_names in comp_subdirs.items():
             target_dir_name = os.path.basename(comp_dir) if os.path.basename(comp_dir) != 'Mirror' else 'done'
