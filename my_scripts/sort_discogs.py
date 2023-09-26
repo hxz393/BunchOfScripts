@@ -6,6 +6,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
+import time
 import traceback
 import os
 import re
@@ -343,6 +344,7 @@ def search_discogs(search_data: List[str], title_list: List[str]) -> str:
                     logger.info(f'没有匹配结果：{data}')
             else:
                 logger.error(f'没见过的错误？？：{data}')
+            time.sleep(1)
     except Exception as e:
         logger.error(f"搜索错误？？：{e}\n{traceback.format_exc()}")
     return artist

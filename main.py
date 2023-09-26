@@ -17,7 +17,7 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        scrapy_game_1()
+        # scrapy_game_1()
 
         ########## BANDCAMP.COM ##############
         # 新专辑处理。
@@ -34,7 +34,7 @@ if __name__ == '__main__':
         # sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
 
         # 整理临时文件夹，修改文件夹名中的特殊字符。将修改后的文件夹移动到 target_path，完成后手动将文件夹从 target_path 移回 source_path。
-        # return_dict = rename_folder_to_common(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
+        return_dict = rename_folder_to_common(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
 
         # 根据分隔符分割后，检查并移动重复文件夹。完成后手动将文件夹从 target_dir 移回 source_dir。
         # return_dict = move_duplicates(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')

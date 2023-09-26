@@ -11,15 +11,6 @@
 
 最后，函数返回一个字典，其中键是原始文件夹的路径，值是重命名后的新文件夹路径。如果在执行过程中发生任何错误或异常，函数将记录错误日志并返回 None。
 
-在调试和排查问题时，可以参考此文件生成的日志信息。
-
-函数的典型用法如下：
-
-```python
-renamed_folders = rename_folder_to_common("/source/directory/path", "/target/directory/path")
-if renamed_folders:
-    for original_path, new_path in renamed_folders.items():
-        print(f"Renamed and moved '{original_path}' to '{new_path}'")
 
 :author: assassing
 :contact: https://github.com/hxz393
@@ -46,6 +37,8 @@ MODIFY_RULES = [
     (r'∗', '-'),
     (r'⁄', '-'),
     (r'│', '-'),
+    (r'∣', '-'),
+    (r'˃', '_'),
     (r'“', ''),
     (r'”', ''),
     (r'·', '-'),
