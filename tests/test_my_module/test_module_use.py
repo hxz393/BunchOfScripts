@@ -14,7 +14,7 @@ class TestLangconvChsToCht(unittest.TestCase):
         try:
             result = langconv_chs_to_cht(simplified_string)
             self.assertEqual(result, expected_result)
-        except Exception as e:
+        except Exception:
             self.fail(f"Test failed due to {str(e)}")
 
 
@@ -27,7 +27,7 @@ class TestLangconvChtToChs(unittest.TestCase):
         try:
             result = langconv_cht_to_chs(traditional_string)
             self.assertEqual(result, expected_result)
-        except Exception as e:
+        except Exception:
             self.fail(f"Test failed due to {str(e)}")
 
 

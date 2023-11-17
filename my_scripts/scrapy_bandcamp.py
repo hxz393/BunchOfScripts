@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import shutil
-import traceback
+
 from collections import defaultdict
 from multiprocessing import Pool
 from typing import List, Union, Optional, Any, Dict, Tuple
@@ -65,8 +65,8 @@ def prune_link(line: str) -> Optional[str]:
     """
     try:
         return f"https://{urlparse(line).netloc}" if line else None
-    except Exception as e:
-        logger.error(f"处理链接出现错误: {line}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"处理链接出现错误: {line}")
         return None
 
 
@@ -100,8 +100,8 @@ def init_txt(path: Union[str, os.PathLike], album_type: int = 0) -> Optional[Lis
         write_list_to_file(path, return_list)
 
         return return_list
-    except Exception as e:
-        logger.error(f"初始化文本文件时出现错误: {path}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"初始化文本文件时出现错误: {path}")
         return None
 
 
@@ -136,8 +136,8 @@ def request_get(url: str, headers: Dict[str, str]) -> Optional[requests.Response
                 headers['Referer'] = redirect_url
                 return request_get(redirect_url, headers)
         return response
-    except RequestException as e:
-        logger.error(f"发送 GET 请求时出现错误: {url}，错误信息：{e}\n{traceback.format_exc()}")
+    except RequestException:
+        logger.exception(f"发送 GET 请求时出现错误: {url}")
         raise
 
 
@@ -159,8 +159,8 @@ def request_post(url: str, headers: Dict[str, str], data: Union[str, Dict[str, s
     try:
         response = requests.post(url=url, headers=headers, data=data, timeout=15, verify=False, allow_redirects=True)
         return response
-    except RequestException as e:
-        logger.error(f"发送 POST 请求时出现错误: {url}，错误信息：{e}\n{traceback.format_exc()}")
+    except RequestException:
+        logger.exception(f"发送 POST 请求时出现错误: {url}")
         raise
 
 
@@ -193,8 +193,8 @@ def post_action(output_dict: Dict[str, Union[str, List[str]]]) -> Optional[bool]
             file.writelines(new_content)
 
         return True
-    except Exception as e:
-        logger.error(f"修改输出文本时出现错误: {output_dict}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"修改输出文本时出现错误: {output_dict}，错误信息：")
         return False
 
 
@@ -231,11 +231,8 @@ def collecting_new_album(album_url: str) -> dict[str, Any] | None:
 
         logger.info(f'记录完成：{album_url}')
         return {'路径': NEW_ALBUM_TXT, '链接': album_url, '专辑': [album_url]}
-    except IndexError as e:
-        logger.error(f"新专辑链接 {album_url} 没获取到数据：{e}。")
-        return None
-    except Exception as e:
-        logger.error(f"新专辑链接 {album_url} 处理失败：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"新专辑链接 {album_url} 处理失败：")
         return None
 
 
@@ -256,8 +253,8 @@ def recording_new_album() -> None:
                 pool.apply_async(collecting_new_album, args=(album_url,), callback=post_action)
         pool.close()
         pool.join()
-    except Exception as e:
-        logger.error(f"记录新专辑时发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"记录新专辑时发生错误：")
 
 
 def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]:
@@ -369,8 +366,8 @@ def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]
                 logger.warning(f'**************** 没有解析记录：{artist_url}，样式为：{page_style} ****************')
                 return
 
-    except Exception as e:
-        logger.error(f"获取专辑列表发生错误：{artist_url}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"获取专辑列表发生错误：{artist_url}，错误信息：")
         return
 
 
@@ -417,8 +414,8 @@ def get_follow_info(artist_url: str, retry_count: int = 0) -> Optional[Tuple[Uni
             is_follow = is_follow_match[0]
             return is_follow, response
 
-    except Exception as e:
-        logger.error(f"获取订阅信息时发生意外：{artist_url}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"获取订阅信息时发生意外：{artist_url}，错误信息：")
         return
 
 
@@ -445,8 +442,8 @@ def follow_band(artist_url: str, follow_post_data: Dict[str, Any]) -> Optional[b
 
         return True if response.json()['ok'] else None
 
-    except Exception as e:
-        logger.error(f"关注乐队时发生错误：{artist_url}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"关注乐队时发生错误：{artist_url}，错误信息：")
         return
 
 
@@ -522,8 +519,8 @@ def collecting_new_artist(artist_url: str) -> Optional[Dict[str, Union[str, List
         BAND_INFO.update_one(key_id, {'$set': db_data}, True)
         logger.info(f'收集乐队完成：{artist_url}')
         return return_dict
-    except Exception as e:
-        logger.error(f"收集乐队专辑时发生错误：{artist_url}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"收集乐队专辑时发生错误：{artist_url}，错误信息：")
         return
 
 
@@ -542,8 +539,8 @@ def recording_new_artist() -> None:
                     pool.apply_async(collecting_new_artist, args=(artist_url,), callback=post_action)
             pool.close()
             pool.join()
-    except Exception as e:
-        logger.error(f"记录新乐队时发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"记录新乐队时发生错误：")
 
 
 # noinspection PyTypeChecker
@@ -577,8 +574,8 @@ def get_file_info(source_dir: str) -> Optional[List[dict]]:
             temp_dict[key]['files'].append(os.path.join(source_dir, file_name))
 
         return list(temp_dict.values())
-    except Exception as e:
-        logger.error(f"解析文件名中信息时出现错误: {source_dir}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"解析文件名中信息时出现错误: {source_dir}")
         return None
 
 
@@ -640,8 +637,8 @@ def search_mongo(file_info: Dict[str, str]) -> Optional[Dict[str, str]]:
         logger.warning(f"在 mongo 中没搜索到数据：{file_info}")
         return None
 
-    except Exception as e:
-        logger.error(f"在 Mongo 中搜索专辑信息时出现错误: {file_info}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"在 Mongo 中搜索专辑信息时出现错误: {file_info}，错误信息：")
         return None
 
 
@@ -673,8 +670,8 @@ def get_target_name(mongo_result: Dict[str, Union[str, list]]) -> Optional[str]:
             artist_name = re.sub(r'^[^-]+\s-\s([^"]+)\s"[^"]+".+', r'\1', album_name)
 
         return label_name if artist_name.lower() in NAME_STYLE_VA else artist_name
-    except Exception as e:
-        logger.error(f"匹配艺术家名时出现错误: {mongo_result}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"匹配艺术家名时出现错误: {mongo_result}，错误信息：")
         return None
 
 
@@ -708,8 +705,8 @@ def move_file(target_name: str, target_dir: str, file_info: Dict[str, Union[str,
             logger.debug(f"文件移动完成：{source_path} 到 {target_path}")
 
         return True
-    except Exception as e:
-        logger.error(f"移动文件时出现错误: {target_name}，错误信息：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"移动文件时出现错误: {target_name}，错误信息：")
         return False
 
 
@@ -743,8 +740,8 @@ def process_file_info(file_info: Dict[str, Union[str, int]], target_dir: str) ->
         if move_result:
             logger.info(f"专辑 {file_info['file_artist']} - {file_info['file_album']} 处理完成。")
             return True
-    except Exception as e:
-        logger.error(f"处理文件流程发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"处理文件流程发生错误：")
         return None
 
 
@@ -768,6 +765,6 @@ def sort_bandcamp_files(source_dir: str, target_dir: str) -> Optional[bool]:
             pool.join()
 
         return True
-    except Exception as e:
-        logger.error(f"整理文件时发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"整理文件时发生错误：")
         return None

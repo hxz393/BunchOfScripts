@@ -14,7 +14,7 @@ class TestConvertBase64ToIco(unittest.TestCase):
             icon_path = convert_base64_to_ico(base64_string)
             self.assertTrue(os.path.exists(icon_path))
             os.remove(icon_path)  # clean up after test
-        except Exception as e:
+        except Exception:
             self.fail(f"Test failed due to {str(e)}")
 
 

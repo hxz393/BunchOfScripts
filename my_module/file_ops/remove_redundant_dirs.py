@@ -16,7 +16,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 import os
 import stat
 import uuid
@@ -81,8 +81,8 @@ def remove_redundant_dirs(target_path: Union[str, os.PathLike]) -> Optional[List
                     os.rmdir(temp_dir)
 
                 removed_dirs.append(os.path.normpath(sub_subdir_path))
-    except Exception as e:
-        logger.error(f"An error occurred while removing redundant directories: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while removing redundant directories")
         return None
 
     return removed_dirs

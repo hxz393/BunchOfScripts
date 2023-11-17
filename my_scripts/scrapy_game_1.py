@@ -26,7 +26,7 @@
 """
 import concurrent.futures
 import logging
-import traceback
+
 import os
 import random
 import re
@@ -69,8 +69,8 @@ def handle_result(result: Any, link: str) -> None:
     """
     try:
         write_results([result])
-    except Exception as e:
-        logger.error(f"链接：{link} 在写入结果时发生错误: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"链接：{link} 在写入结果时发生错误")
 
 
 def error_callback(e: Exception, link: str) -> None:
@@ -84,7 +84,7 @@ def error_callback(e: Exception, link: str) -> None:
     :rtype: None
     :return: 无返回值
     """
-    logger.error(f"链接：{link} 在处理进程中发生错误: {e}\n{traceback.format_exc()}")
+    logger.exception(f"链接：{link} 在处理进程中发生错误")
 
 
 def scrapy_game_1() -> None:
@@ -109,10 +109,10 @@ def scrapy_game_1() -> None:
                         with failed:
                             failed_count += 1
                     handle_result(result, link)
-                except Exception as e:
+                except Exception:
                     error_callback(e, link)
-    except Exception as e:
-        logger.error(f"链接：{link} 在分配线程时发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"链接：{link} 在分配线程时发生错误")
     finally:
         logger.info(f"总计数量：{STOP_NUMBER - START_NUMBER}，失败数量：{failed_count}")
 
@@ -140,8 +140,8 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
             return link, parse_web_result["title"], ''
 
         return parse_web_result["link"], parse_web_result["title"], baidu_link
-    except Exception as e:
-        logger.error(f"链接：{link} 获取下载时运行错误: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"链接：{link} 获取下载时运行错误")
         return link, '', ''
 
 
@@ -156,7 +156,7 @@ def fetch_web_page(link: str) -> Optional[str]:
     :return: 网页的HTML内容，或者在发生错误时返回空字符串
     """
     proxy_server = random.choice(PROXIES_LIST)
-    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False)
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
     response.raise_for_status()
     return response.text
 
@@ -183,8 +183,8 @@ def parse_web_content(link: str, html: str) -> Dict[str, str]:
         password = re.findall(r'data-info=\'(.*)\'', download_info_new)[0]
         fetched_link = re.findall(r'data-url="(.+)"><i', download_info_new)[0]
         return {'link': link, 'title': title, 'password': password, 'fetched_link': fetched_link}
-    except Exception as e:
-        logger.error(f"链接：{link} 解析HTML内容失败: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"链接：{link} 解析HTML内容失败")
         return {'link': link, 'title': '', 'password': '', 'fetched_link': ''}
 
 
@@ -202,7 +202,7 @@ def fetch_baidu_link(fetch_web_response: Dict[str, str], base_url: str = BASE_UR
     """
     proxy_server = random.choice(PROXIES_LIST)
     link = f'{base_url}{fetch_web_response["fetched_link"]}'
-    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False)
+    response = requests.get(link, headers=REQUEST_HEAD, timeout=15, verify=False, allow_redirects=False, proxies=proxy_server)
     response.raise_for_status()
     baidu_link = response.headers.get('location')
     if baidu_link:
@@ -230,6 +230,6 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
                 file.write(f'{link}\n{title}\n{baidu_link_code}\n{"*" * 52}\n')
                 logger.info(f'完成抓取：{link}, {title}, {baidu_link_code}') if title else None
         return True
-    except Exception as e:
-        logger.error(f"写入结果时发生错误：{e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"写入结果时发生错误")
         return False

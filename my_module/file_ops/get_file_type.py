@@ -19,11 +19,11 @@ if file_type:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 
-import os
-import magic
-from typing import Optional, Union
 import logging
-import traceback
+import os
+from typing import Optional, Union
+
+import magic
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,6 @@ def get_file_type(target_path: Union[str, os.PathLike]) -> Optional[str]:
     except PermissionError:
         logger.error(f"Unable to access file '{target_path}', permission denied.")
         return None
-    except Exception as e:
-        logger.error(f"An error occurred while detecting the file type: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while detecting the file type")
         return None

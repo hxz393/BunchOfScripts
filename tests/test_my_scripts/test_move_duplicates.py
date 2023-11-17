@@ -24,7 +24,7 @@ class TestMoveDuplicates(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(self.source_path, 'duplicate2 feat. duplicate1')))
             self.assertTrue(os.path.exists(os.path.join(self.source_path, 'duplicate3 ft duplicate1')))
             self.assertTrue(os.path.exists(os.path.join(self.source_path, 'duplicate3 feat. duplicate2')))
-        except Exception as e:
+        except Exception:
             self.fail(f"Test failed with exception: {str(e)}")
 
     def tearDown(self):

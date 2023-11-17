@@ -17,7 +17,7 @@ if subdirs:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
-import traceback
+
 import os
 from typing import List, Union, Optional
 
@@ -41,6 +41,6 @@ def get_subdirectories(target_path: Union[os.PathLike, str]) -> Optional[List[st
             logger.error(f"'{target_path}' is not a valid directory.")
             return None
         return [entry.path for entry in os.scandir(target_path) if entry.is_dir()]
-    except Exception as e:
-        logger.error(f"An error occurred while getting subdirectories: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while getting subdirectories")
         return None

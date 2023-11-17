@@ -10,7 +10,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 import re
 from typing import Optional
 
@@ -31,6 +31,6 @@ def sanitize_filename(filename: str) -> Optional[str]:
         if re.search(forbidden_chars, filename):
             filename = re.sub(forbidden_chars, '-', filename)
         return filename
-    except Exception as e:
-        logger.error(f"An error occurred while sanitizing the filename: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while sanitizing the filename")
         return None

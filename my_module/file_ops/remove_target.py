@@ -12,7 +12,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 import os
 import shutil
 import stat
@@ -66,6 +66,6 @@ def remove_target(path: Union[str, Path]) -> Optional[Path]:
         remove_permissions(lambda x: None, path, None)
         path.unlink()
         return path
-    except Exception as e:
-        logger.error(f"An error occurred while removing path '{path}': {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while removing path '{path}'")
         return None

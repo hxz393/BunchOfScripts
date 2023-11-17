@@ -26,7 +26,7 @@ if folder_names:
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
 import logging
-import traceback
+
 from pathlib import Path
 from typing import Union, Optional, List
 
@@ -66,13 +66,13 @@ def create_folders_batch(target_path: Union[str, Path], txt_file: Union[str, Pat
     for name in name_list:
         folder_path = target_directory_path / name
         if len(str(folder_path)) > MAX_PATH_LENGTH:
-            logger.error(f"路径长度超出 Windows 最大限制：{folder_path}")
+            logger.warning(f"路径长度超出 Windows 最大限制：{folder_path}")
             continue
         try:
             folder_path.mkdir(parents=True, exist_ok=True)
             successfully_created.append(name)
             logger.info(f"成功建立文件夹：{folder_path}")
-        except Exception as e:
-            logger.error(f"建立文件夹时出错：{folder_path}，错误消息：{e}\n{traceback.format_exc()}")
+        except Exception:
+            logger.exception(f"建立文件夹时出错：{folder_path}")
 
     return successfully_created if successfully_created else None

@@ -10,7 +10,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 import os
 from typing import List, Union, Optional
 
@@ -49,6 +49,6 @@ def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List
         for path in matched_paths:
             remove_target(path)
         return matched_paths
-    except Exception as e:
-        logger.error(f"An error occurred while removing matched targets. Error message: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while removing matched targets. Error message")
         return None

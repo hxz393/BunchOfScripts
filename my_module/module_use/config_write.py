@@ -21,7 +21,7 @@
 """
 import configparser
 import logging
-import traceback
+
 from pathlib import Path
 from typing import Dict, Any, Union, Optional
 
@@ -58,6 +58,6 @@ def config_write(target_path: Union[str, Path], config: Dict[str, Union[str, Any
             config_parser.write(f)
 
         return True
-    except Exception as e:
-        logger.error(f"Failed to write config to file {target_path}: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"Failed to write config to file {target_path}")
         return None

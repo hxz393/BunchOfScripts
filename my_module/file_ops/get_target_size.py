@@ -13,7 +13,7 @@
 """
 
 import logging
-import traceback
+
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Union, Optional
@@ -35,8 +35,8 @@ def get_file_size(file_path: Union[str, os.PathLike]) -> Optional[int]:
         return None
     try:
         return os.path.getsize(file_path)
-    except Exception as e:
-        logger.error(f"An error occurred while getting file size: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while getting file size")
         return None
 
 
@@ -62,6 +62,6 @@ def get_target_size(target_path: Union[str, os.PathLike]) -> Optional[int]:
         else:
             logger.error(f"'{target_path}' is not a file or a directory.")
             return None
-    except Exception as e:
-        logger.error(f"An error occurred while getting target size: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while getting target size")
         return None

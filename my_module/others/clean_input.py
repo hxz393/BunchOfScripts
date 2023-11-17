@@ -14,7 +14,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,6 @@ def clean_input(input_str: str) -> Optional[str]:
         output_str = "\n".join(lines)
 
         return output_str
-    except Exception as e:
-        logger.error(f"An error occurred while processing the input: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred while processing the input")
         return None

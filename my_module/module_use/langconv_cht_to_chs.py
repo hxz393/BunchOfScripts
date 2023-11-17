@@ -18,7 +18,7 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 import logging
-import traceback
+
 from typing import Optional
 
 from third_party.langconv.langconv import Converter
@@ -47,6 +47,6 @@ def langconv_cht_to_chs(word: str) -> Optional[str]:
         simplified_word = converter.convert(word)
         simplified_word.encode('utf-8')
         return simplified_word
-    except Exception as e:
-        logger.error(f"An error occurred during the conversion: {e}\n{traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"An error occurred during the conversion")
         return None
