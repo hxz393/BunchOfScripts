@@ -51,4 +51,4 @@ if __name__ == '__main__':
         print("完成!")
         pass
     except Exception:
-        logger.exception(e)
+        logger.exception('Unexpected error!')
