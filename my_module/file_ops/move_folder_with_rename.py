@@ -51,7 +51,7 @@ def move_folder_with_rename(source_path: Union[str, Path], target_path: Union[st
     try:
         move(str(source_path), str(target_path))
     except Exception:
-        logger.exception(f"An error occurred while moving the file or folder. Error message")
+        logger.exception("An error occurred while moving the file or folder.")
         return None
 
     return target_path

@@ -36,7 +36,6 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import requests
 from lxml import etree
-from retrying import retry
 
 from my_module import read_json_to_dict
 
@@ -73,20 +72,6 @@ def handle_result(result: Any, link: str) -> None:
         logger.exception(f"链接：{link} 在写入结果时发生错误")
 
 
-def error_callback(e: Exception, link: str) -> None:
-    """
-    处理进程中的错误。
-
-    :type e: Exception
-    :param e: 发生的错误对象
-    :param link: 网页链接
-    :type link: str
-    :rtype: None
-    :return: 无返回值
-    """
-    logger.exception(f"链接：{link} 在处理进程中发生错误")
-
-
 def scrapy_game_1() -> None:
     """
     对指定链接进行处理。
@@ -110,7 +95,7 @@ def scrapy_game_1() -> None:
                             failed_count += 1
                     handle_result(result, link)
                 except Exception:
-                    error_callback(e, link)
+                    logger.exception(f"链接：{link} 在处理进程中发生错误")
     except Exception:
         logger.exception(f"链接：{link} 在分配线程时发生错误")
     finally:
@@ -231,5 +216,5 @@ def write_results(results: List[Tuple[str, str, Optional[str]]], output_file: st
                 logger.info(f'完成抓取：{link}, {title}, {baidu_link_code}') if title else None
         return True
     except Exception:
-        logger.exception(f"写入结果时发生错误")
+        logger.exception("写入结果时发生错误")
         return False

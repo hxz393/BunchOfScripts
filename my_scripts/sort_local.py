@@ -62,7 +62,7 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
         #     print(source_fix)
         #     print(camp_names)
     except Exception:
-        logger.exception(f"出错了")
+        logger.exception("出错了")
         return None
 
 
@@ -104,5 +104,5 @@ def sort_local(source_path: str = SOURCE_PATH, target_path: str = TARGET_PATH) -
                 create_directories([path.replace('done', 'mirror') for path in target_dirs])
         return final_path_dict
     except Exception:
-        logger.exception(f"出错了")
+        logger.exception("出错了")
         return final_path_dict

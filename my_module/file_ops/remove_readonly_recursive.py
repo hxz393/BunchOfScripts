@@ -40,7 +40,7 @@ def remove_readonly(target_path: Union[str, os.PathLike]) -> Optional[bool]:
         win32api.SetFileAttributes(target_path, win32con.FILE_ATTRIBUTE_NORMAL)
         return True
     except Exception:
-        logger.exception(f"An error occurred while removing read-only attribute")
+        logger.exception("An error occurred while removing read-only attribute")
         return None
 
 
@@ -69,5 +69,5 @@ def remove_readonly_recursive(target_dir: Union[str, os.PathLike]) -> Optional[b
                 remove_readonly(os.path.join(root, file))
         return True
     except Exception:
-        logger.exception(f"An error occurred while removing read-only attribute recursively")
+        logger.exception("An error occurred while removing read-only attribute recursively")
         return None

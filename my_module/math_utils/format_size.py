@@ -46,5 +46,5 @@ def format_size(size: Union[int, float], is_disk: bool = False, precision: int =
 
         return f"{size:.{precision}f} {units[-1]}"
     except Exception:
-        logger.exception(f"An error occurred while formatting size")
+        logger.exception("An error occurred while formatting size")
         return None

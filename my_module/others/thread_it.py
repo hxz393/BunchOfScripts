@@ -60,7 +60,7 @@ def thread_it(func: Callable[..., Any], *args: Any, daemon: Optional[bool] = Tru
         try:
             func(*arg)
         except Exception:
-            logger.exception(f"Error occurred in thread {name}")
+            logger.exception("Error occurred in thread {name}")
 
     t = Thread(target=wrapper, args=args, daemon=daemon, name=name)
     t.start()

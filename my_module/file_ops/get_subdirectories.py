@@ -42,5 +42,5 @@ def get_subdirectories(target_path: Union[os.PathLike, str]) -> Optional[List[st
             return None
         return [entry.path for entry in os.scandir(target_path) if entry.is_dir()]
     except Exception:
-        logger.exception(f"An error occurred while getting subdirectories")
+        logger.exception("An error occurred while getting subdirectories")
         return None

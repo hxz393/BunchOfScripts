@@ -37,5 +37,5 @@ def ssh_test(ssh_config: dict) -> Optional[int]:
             ssh.connect(**ssh_config)
             return 0
     except Exception:
-        logger.exception(f"An unexpected error occurred。")
+        logger.exception("An unexpected error occurred。")
         return None

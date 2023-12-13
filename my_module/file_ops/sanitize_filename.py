@@ -32,5 +32,5 @@ def sanitize_filename(filename: str) -> Optional[str]:
             filename = re.sub(forbidden_chars, '-', filename)
         return filename
     except Exception:
-        logger.exception(f"An error occurred while sanitizing the filename")
+        logger.exception("An error occurred while sanitizing the filename")
         return None

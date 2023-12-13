@@ -42,5 +42,5 @@ def rename_target_if_exist(path: Union[str, Path]) -> Union[str, None]:
 
         return str(path)
     except Exception:
-        logger.exception(f"An error occurred while renaming the target")
+        logger.exception("An error occurred while renaming the target")
         return None

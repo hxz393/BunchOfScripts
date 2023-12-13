@@ -54,5 +54,5 @@ def get_file_paths_by_type(target_path: Union[str, os.PathLike], type_list: List
         type_list = [file_type.lower() for file_type in type_list]
         return [os.path.normpath(os.path.join(root, file)) for root, _, files in os.walk(target_path) for file in files if os.path.splitext(file)[1].lower() in type_list]
     except Exception:
-        logger.exception(f"An error occurred while retrieving file paths")
+        logger.exception("An error occurred while retrieving file paths")
         return None

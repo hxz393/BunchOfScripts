@@ -37,7 +37,7 @@ def remove_temp_file(path: str):
     try:
         os.remove(path)
     except Exception:
-        logger.exception(f"Error when remove temp file")
+        logger.exception("Error when remove temp file")
         pass
 
 
@@ -53,7 +53,7 @@ def convert_base64_to_ico(base64_string: str) -> Optional[str]:
     try:
         icon_data = base64.b64decode(base64_string)
     except Exception:
-        logger.exception(f"The input string cannot be decoded by Base64")
+        logger.exception("The input string cannot be decoded by Base64")
         return None
 
     try:
@@ -62,5 +62,5 @@ def convert_base64_to_ico(base64_string: str) -> Optional[str]:
         atexit.register(remove_temp_file, temp_file.name)
         return temp_file.name
     except Exception:
-        logger.exception(f"An error occurred while writing the .ico file")
+        logger.exception("An error occurred while writing the .ico file")
         return None

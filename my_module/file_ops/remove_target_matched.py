@@ -50,5 +50,5 @@ def remove_target_matched(target_path: Union[str, os.PathLike], match_list: List
             remove_target(path)
         return matched_paths
     except Exception:
-        logger.exception(f"An error occurred while removing matched targets. Error message")
+        logger.exception("An error occurred while removing matched targets.")
         return None

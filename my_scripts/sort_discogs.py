@@ -67,7 +67,7 @@ def sort_audio_file(source_dir: Union[str, os.PathLike]) -> Optional[Tuple[Dict[
                     audio_file_dict[file_ext].append(file_path)
                     audio_file_list.append(file_path)
     except Exception:
-        logger.exception(f"An error occurred while sorting audio files")
+        logger.exception("An error occurred while sorting audio files")
 
     logger.info(f'获取到文件列表：{audio_file_list}')
     return audio_file_dict, audio_file_list
@@ -164,7 +164,7 @@ def fix_string(source_str: str) -> str:
         for pattern, replacement in patterns:
             new_str = re.sub(pattern, replacement, new_str).strip()
     except Exception:
-        logger.exception(f"An error occurred while fixing string")
+        logger.exception("An error occurred while fixing string")
 
     return new_str
 
@@ -187,7 +187,7 @@ def fix_title_list(title_list: List[str], audio_file_list: List[str]) -> Optiona
         else:
             return [fix_string(os.path.splitext(os.path.basename(audio_file).lower())[0]) for audio_file in audio_file_list]
     except Exception:
-        logger.exception(f"An error occurred while fixing the title list")
+        logger.exception("An error occurred while fixing the title list")
         return None
 
 
@@ -346,7 +346,7 @@ def search_discogs(search_data: List[str], title_list: List[str]) -> str:
                 logger.error(f'没见过的错误？？：{data}')
             time.sleep(1)
     except Exception:
-        logger.exception(f"搜索错误？？")
+        logger.exception("搜索错误？？")
     return artist
 
 
@@ -431,7 +431,7 @@ def get_search_limit(result_len: Union[int, float]) -> int:
         return int(search_limit)
 
     except Exception:
-        logger.exception(f"An error occurred while calculating search limit")
+        logger.exception("An error occurred while calculating search limit")
         return 1
 
 
@@ -463,5 +463,5 @@ def get_hits_rate(track_count: int, result_tracklist: Any, title_list: List[str]
                 logger.debug(f'第{j + 1}首歌标题不匹配，线上曲目标题为：{result_title}')
         hits_rate = hits / track_count
     except Exception:
-        logger.exception(f"计算正确率时发生错误")
+        logger.exception("计算正确率时发生错误")
     return hits, hits_rate

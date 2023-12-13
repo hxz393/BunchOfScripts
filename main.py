@@ -17,7 +17,7 @@ if __name__ == '__main__':
         # scrapy_pic_1()
 
         # 某游戏网站百度网盘下载地址获取。
-        scrapy_game_1()
+        # scrapy_game_1()
 
         ########## BANDCAMP.COM ##############
         # 新专辑处理。
@@ -45,7 +45,9 @@ if __name__ == '__main__':
         # 获取来源目录下所有文件夹名，到目标网站搜索。根据搜索结果把文件夹移动到不同目录下。
         # return_dict = sort_ru(source_path=r'B:\2.脚本', target_path=r'B:\0.整理\结果目录')
 
-
+        ########## 定制 ##############
+        # 整理MZ博客专用任务。
+        sort_mz(source_dir=r'B:\0.整理\jd\mz', target_dir=r'B:\2.脚本')
 
 
         print("完成!")

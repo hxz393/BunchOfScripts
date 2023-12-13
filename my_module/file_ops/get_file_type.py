@@ -52,5 +52,5 @@ def get_file_type(target_path: Union[str, os.PathLike]) -> Optional[str]:
         logger.error(f"Unable to access file '{target_path}', permission denied.")
         return None
     except Exception:
-        logger.exception(f"An error occurred while detecting the file type")
+        logger.exception("An error occurred while detecting the file type")
         return None

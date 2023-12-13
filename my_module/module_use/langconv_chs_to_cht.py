@@ -48,5 +48,5 @@ def langconv_chs_to_cht(word: str) -> Optional[str]:
         traditional_word.encode('utf-8')
         return traditional_word
     except Exception:
-        logger.exception(f"An error occurred during the conversion")
+        logger.exception("An error occurred during the conversion")
         return None

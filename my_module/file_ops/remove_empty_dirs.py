@@ -41,7 +41,7 @@ def remove_empty_dirs(target_path: Union[str, os.PathLike]) -> Optional[List[str
             os.rmdir(target_path)
             removed_dirs.append(str(target_path))
     except Exception:
-        logger.exception(f"An error occurred while deleting empty directories")
+        logger.exception("An error occurred while deleting empty directories")
         return None
 
     return removed_dirs

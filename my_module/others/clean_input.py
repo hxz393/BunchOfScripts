@@ -42,5 +42,5 @@ def clean_input(input_str: str) -> Optional[str]:
 
         return output_str
     except Exception:
-        logger.exception(f"An error occurred while processing the input")
+        logger.exception("An error occurred while processing the input")
         return None

@@ -33,5 +33,5 @@ def format_time(seconds: Union[int, float]) -> Optional[str]:
         minutes, seconds = divmod(rem, 60)
         return f"{hours}h {minutes}m {seconds}s"
     except Exception:
-        logger.exception(f"An error occurred while formatting time")
+        logger.exception("An error occurred while formatting time")
         return None

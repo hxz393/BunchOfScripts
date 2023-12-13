@@ -67,5 +67,5 @@ def mysql_query_with_ssh(ssh_config: Dict[str, Any], mysql_config: Dict[str, Any
 
                 return mysql_query(mysql_config, query_sql)
     except Exception:
-        logger.exception(f"An error occurred.")
+        logger.exception("An error occurred.")
         return False

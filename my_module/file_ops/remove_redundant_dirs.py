@@ -82,7 +82,7 @@ def remove_redundant_dirs(target_path: Union[str, os.PathLike]) -> Optional[List
 
                 removed_dirs.append(os.path.normpath(sub_subdir_path))
     except Exception:
-        logger.exception(f"An error occurred while removing redundant directories")
+        logger.exception("An error occurred while removing redundant directories")
         return None
 
     return removed_dirs

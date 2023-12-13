@@ -49,5 +49,5 @@ def calculate_transfer_speed(size_bytes: int, elapsed_time_seconds: Union[int, f
 
         return f"{speed:.2f} {units[-1]}/s"
     except Exception:
-        logger.exception(f"An error occurred while calculating transfer speed")
+        logger.exception("An error occurred while calculating transfer speed")
         return None

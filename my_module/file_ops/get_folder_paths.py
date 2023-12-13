@@ -45,5 +45,5 @@ def get_folder_paths(target_path: Union[str, os.PathLike]) -> Optional[List[str]
 
         return [os.path.normpath(os.path.join(root, dir_name)) for root, dirs, _ in os.walk(target_path) for dir_name in dirs]
     except Exception:
-        logger.exception(f"An error occurred while retrieving folder paths")
+        logger.exception("An error occurred while retrieving folder paths")
         return None

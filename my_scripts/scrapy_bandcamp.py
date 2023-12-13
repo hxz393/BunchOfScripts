@@ -126,7 +126,6 @@ def request_get(url: str, headers: Dict[str, str]) -> Optional[requests.Response
         if response.status_code in [301, 302, 303]:
             redirect_url = response.headers['Location']
             logger.info(f'请求发生跳转：{redirect_url}')
-            # print(redirect_url)
             # print(response.text)
             if response.headers["location"].startswith('https://bandcamp.com/signup?new_domain'):
                 return response
@@ -254,7 +253,7 @@ def recording_new_album() -> None:
         pool.close()
         pool.join()
     except Exception:
-        logger.exception(f"记录新专辑时发生错误：")
+        logger.exception("记录新专辑时发生错误：")
 
 
 def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]:
@@ -275,7 +274,8 @@ def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]
         request_head_music['Origin'] = index_url
         request_head_music['Referer'] = index_url
 
-        response = request_get(artist_url, request_head_music)
+        # response = request_get(artist_url, request_head_music)
+        response = request_get(f'{index_url}/music', request_head_music)
 
         response_tree = etree.HTML(response.text)
         page_style_match = response_tree.xpath('/html/body/@class')
@@ -305,7 +305,7 @@ def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]
             if not all([label_name, album_urls, album_names, artist_names]):
                 # print([label_name, album_urls, album_names, artist_names])
                 if retry_count == 0:
-                    return get_album_list(f'{index_url}/music', retry_count + 1)
+                    return get_album_list(f'{index_url}', retry_count + 1)
                 elif retry_count == 1:
                     return get_album_list(f'{index_url}/merch', retry_count + 1)
                 else:
@@ -344,7 +344,7 @@ def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]
 
             if not all([label_name, album_id, album_url, album_name]):
                 if retry_count == 0:
-                    return get_album_list(f'{index_url}/music', retry_count + 1)
+                    return get_album_list(f'{index_url}', retry_count + 1)
                 elif retry_count == 1:
                     return get_album_list(f'{index_url}/merch', retry_count + 1)
                 else:
@@ -359,7 +359,7 @@ def get_album_list(artist_url: str, retry_count: int = 0) -> Optional[List[str]]
             return [album_url]
         else:
             if retry_count == 0:
-                return get_album_list(f'{index_url}/music', retry_count + 1)
+                return get_album_list(f'{index_url}', retry_count + 1)
             elif retry_count == 1:
                 return get_album_list(f'{index_url}/merch', retry_count + 1)
             else:
@@ -540,7 +540,7 @@ def recording_new_artist() -> None:
             pool.close()
             pool.join()
     except Exception:
-        logger.exception(f"记录新乐队时发生错误：")
+        logger.exception('记录新乐队时发生错误：')
 
 
 # noinspection PyTypeChecker
@@ -741,7 +741,7 @@ def process_file_info(file_info: Dict[str, Union[str, int]], target_dir: str) ->
             logger.info(f"专辑 {file_info['file_artist']} - {file_info['file_album']} 处理完成。")
             return True
     except Exception:
-        logger.exception(f"处理文件流程发生错误：")
+        logger.exception("处理文件流程发生错误：")
         return None
 
 
@@ -766,5 +766,5 @@ def sort_bandcamp_files(source_dir: str, target_dir: str) -> Optional[bool]:
 
         return True
     except Exception:
-        logger.exception(f"整理文件时发生错误：")
+        logger.exception("整理文件时发生错误：")
         return None

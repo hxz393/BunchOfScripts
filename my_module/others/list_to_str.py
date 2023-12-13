@@ -35,5 +35,5 @@ def list_to_str(my_list: Optional[List[Union[str, int]]]) -> Optional[str]:
         else:
             return None
     except Exception:
-        logger.exception(f"An error occurred while converting list to string")
+        logger.exception("An error occurred while converting list to string")
         return None

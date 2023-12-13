@@ -36,7 +36,7 @@ def get_file_size(file_path: Union[str, os.PathLike]) -> Optional[int]:
     try:
         return os.path.getsize(file_path)
     except Exception:
-        logger.exception(f"An error occurred while getting file size")
+        logger.exception("An error occurred while getting file size")
         return None
 
 
@@ -63,5 +63,5 @@ def get_target_size(target_path: Union[str, os.PathLike]) -> Optional[int]:
             logger.error(f"'{target_path}' is not a file or a directory.")
             return None
     except Exception:
-        logger.exception(f"An error occurred while getting target size")
+        logger.exception("An error occurred while getting target size")
         return None
