@@ -41,11 +41,11 @@ SINGLE_PAGE_STYLE = CONFIG['scrapy_bandcamp']['single_page_style']  # 单页信�
 
 ## 处理各种风格名称配置
 NAME_STYLE_VA = CONFIG['scrapy_bandcamp']['name_style_va']
-NAME_STYLE_0 = CONFIG['scrapy_bandcamp']['name_style_0']
-NAME_STYLE_1 = CONFIG['scrapy_bandcamp']['name_style_1']
-NAME_STYLE_2 = CONFIG['scrapy_bandcamp']['name_style_2']
-NAME_STYLE_3 = CONFIG['scrapy_bandcamp']['name_style_3']
-NAME_STYLE_5 = CONFIG['scrapy_bandcamp']['name_style_5']
+NAME_STYLE_0 = CONFIG['scrapy_bandcamp']['name_style_0']  # 艺术家 - 专辑 or 艺术家 ~ 专辑 or 艺术家 – 专辑
+NAME_STYLE_1 = CONFIG['scrapy_bandcamp']['name_style_1']  # 标签 艺术家 - 专辑
+NAME_STYLE_2 = CONFIG['scrapy_bandcamp']['name_style_2']  # 标签 - 艺术家 - 专辑
+NAME_STYLE_3 = CONFIG['scrapy_bandcamp']['name_style_3']  # 艺术家 "专辑"
+NAME_STYLE_5 = CONFIG['scrapy_bandcamp']['name_style_5']  # 标签 - 艺术家 "专辑"
 
 MONGO_CLIENT = MongoClient(host=MONGO_IP, port=MONGO_PORT)  # 数据库客户端
 BAND_INFO = MONGO_CLIENT.bandcamp.Bandinfo  # 乐队信息
@@ -656,17 +656,17 @@ def get_target_name(mongo_result: Dict[str, Union[str, list]]) -> Optional[str]:
         album_name = mongo_result['AlbumName']
         label_name = mongo_result['Label']
 
-        if label_name in NAME_STYLE_0:  # 艺术家 - 专辑 or 艺术家 ~ 专辑 or 艺术家 – 专辑
+        if label_name in NAME_STYLE_0:
             album_name = album_name.replace('–', '-')
             album_name = album_name.replace('~', '-')
             artist_name = album_name.split(' - ')[0].strip()
-        elif label_name in NAME_STYLE_1:  # 标签 艺术家 - 专辑
+        elif label_name in NAME_STYLE_1:
             artist_name = re.sub(r'^\S+\s([^-]+)\s-\s.+', r'\1', album_name)
-        elif label_name in NAME_STYLE_2:  # 标签 - 艺术家 - 专辑
+        elif label_name in NAME_STYLE_2:
             artist_name = re.sub(r'^\S+\s-\s([^-]+)\s-\s.+', r'\1', album_name)
-        elif label_name in NAME_STYLE_3:  # 艺术家 "专辑"
+        elif label_name in NAME_STYLE_3:
             artist_name = album_name.split(' "')[0].strip()
-        elif label_name in NAME_STYLE_5:  # 标签 - 艺术家 "专辑"
+        elif label_name in NAME_STYLE_5:
             artist_name = re.sub(r'^[^-]+\s-\s([^"]+)\s"[^"]+".+', r'\1', album_name)
 
         return label_name if artist_name.lower() in NAME_STYLE_VA else artist_name

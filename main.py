@@ -27,11 +27,11 @@ if __name__ == '__main__':
         # recording_new_artist()
 
         # 整理下载的音频。
-        # sort_bandcamp_files(source_dir=r'B:\0.整理\01', target_dir=r'B:\2.脚本')
+        # sort_bandcamp_files(source_dir=r'B:\0.整理\jd\rss', target_dir=r'B:\2.脚本')
 
         ########## 整理 ##############
         # 整理下载文件夹，移动到目标目录。
-        # sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
+        sort_discogs(source_path=r'B:\0.整理\01', target_path=r'B:\2.脚本', no_query=False)
 
         # 整理临时文件夹，修改文件夹名中的特殊字符。将修改后的文件夹移动到 target_path，完成后手动将文件夹从 target_path 移回 source_path。
         # return_dict = rename_folder_to_common(source_path=r'B:\1.临时', target_path=r'B:\2.脚本')
@@ -46,11 +46,10 @@ if __name__ == '__main__':
         # return_dict = sort_ru(source_path=r'B:\2.脚本', target_path=r'B:\0.整理\结果目录')
 
         ########## 定制 ##############
-        # 整理MZ博客专用任务。
-        sort_mz(source_dir=r'B:\0.整理\jd\mz', target_dir=r'B:\2.脚本')
+        # 整理MZ博客专用任务。链接列表保存在B:/mz_url.txt中。
+        # sort_mz(source_dir=r'B:\0.整理\jd\mz', target_dir=r'B:\2.脚本')
 
 
         print("完成!")
-        pass
     except Exception:
         logger.exception('Unexpected error!')

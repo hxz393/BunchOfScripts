@@ -15,8 +15,7 @@ from typing import Dict, List, Tuple, Union, Optional, Any
 
 import discogs_client
 import mutagen
-import chardet
-from retrying import retry
+from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from my_module import remove_readonly_recursive, read_json_to_dict
 
@@ -350,7 +349,7 @@ def search_discogs(search_data: List[str], title_list: List[str]) -> str:
     return artist
 
 
-@retry(stop_max_attempt_number=1200, wait_random_min=100, wait_random_max=1200)
+@retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(3))
 def filter_response(response: List, title_list: List[str], searched_ids: List[str]) -> Tuple[Optional[str], List[str]]:
     """
     根据指定的响应，标题列表和已搜索ID列表过滤响应。
