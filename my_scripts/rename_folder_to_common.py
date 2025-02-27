@@ -27,7 +27,7 @@ from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
 
-EXCLUDE_CHARS = {'æ', 'Æ', '®', 'º', 'ß', 'Þ', '·', '±', '°', '©', '¡', '▲', 'Ξ', '™', 'Ɔ', 'Σ', '²', '∞'}
+EXCLUDE_CHARS = {'æ', 'Æ', '®', 'º', 'ß', 'Þ', '·', '±', '°', '©', '¡', '▲', 'Ξ', '™', 'Ɔ', 'Σ', '²', '∞', '½', '¥', '¦', '³'}
 MODIFY_RULES = [
     (r'^the ', ' '),
     (r', the$', ' '),
@@ -37,6 +37,7 @@ MODIFY_RULES = [
     (r'：', '-'),
     (r'∗', '-'),
     (r'⁄', '-'),
+    (r'∕', '-'),
     (r'／', '-'),
     (r'│', '-'),
     (r'∣', '-'),
@@ -84,6 +85,9 @@ def rename_folder_to_common(source_path: Union[str, Path], target_path: Union[st
     folders = [f for f in source.iterdir() if f.is_dir() and ord(f.name[0]) <= 0x0250]
     for folder in folders:
         new_folder_name = folder.name
+        if new_folder_name == 'The The':
+            continue
+
         for rule, replacement in MODIFY_RULES:
             new_folder_name = re.sub(rule, replacement, new_folder_name, flags=re.IGNORECASE)
         new_folder_name = custom_unidecode(new_folder_name).strip()

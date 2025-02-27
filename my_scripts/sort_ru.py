@@ -85,7 +85,7 @@ def ru_search(name: str) -> Optional[Tuple[str, int]]:
     :rtype: Optional[Tuple[str, int]]
     :return: 返回一个元组，包含名字和搜索结果的数量
     """
-    data = {"nm": name}
+    data = {"nm": name.encode("ascii", "xmlcharrefreplace").decode("ascii")}
     response = requests.post(url=URL_SEARCH, headers=REQUEST_HEAD, data=data, timeout=30, verify=False, allow_redirects=True)
     return name, int(re.search(r'Результатов поиска: (\d+)', response.text).group(1))
 
@@ -109,7 +109,7 @@ def dir_move(source_path: str, target_path: str, response: Tuple[str, int]) -> D
         target = os.path.join(target_path, '500')
     elif 50 <= result < 500:
         target = os.path.join(target_path, '100')
-    elif 0 < result <= 50:
+    elif 0 < result < 50:
         target = os.path.join(target_path, '50')
     elif result == 0:
         target = os.path.join(target_path, '0')

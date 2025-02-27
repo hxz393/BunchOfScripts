@@ -78,7 +78,7 @@ def run_mitmproxy(script_path: str) -> Optional[subprocess.Popen]:
 
         return process
     except Exception:
-        logger.exception("启动报错: %s", str(e))
+        logger.exception("启动报错")
         return None
 
 

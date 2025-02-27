@@ -9,27 +9,23 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2023, hxz393. 保留所有权利。
+:copyright: Copyright 2024, hxz393. 保留所有权利。
 """
 import json
 import logging
-
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
-def write_dict_to_json(target_path: Union[str, Path], data: Dict[str, Any]) -> Optional[bool]:
+def write_dict_to_json(target_path: Union[str, Path], data: Dict[Any, Any]) -> Optional[bool]:
     """
     将字典数据写入到 JSON 格式文件。
 
     :param target_path: Json文件的路径，可以是字符串或 pathlib.Path 对象。
-    :type target_path: Union[str, Path]
     :param data: 要写入的字典数据。
-    :type data: Dict[str, Any]
     :return: 成功时返回True，失败时返回None。
-    :rtype: Optional[bool]
     """
     try:
         target_path = Path(target_path)

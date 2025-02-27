@@ -31,6 +31,7 @@ import os
 import random
 import re
 import threading
+from retrying import retry
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -93,6 +94,7 @@ def scrapy_game_1() -> None:
                     if any(not item for item in result):
                         with failed:
                             failed_count += 1
+                            return
                     handle_result(result, link)
                 except Exception:
                     logger.exception(f"链接：{link} 在处理进程中发生错误")
@@ -130,7 +132,7 @@ def main(link: str) -> Tuple[str, str, Optional[str]]:
         return link, '', ''
 
 
-# @retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
 def fetch_web_page(link: str) -> Optional[str]:
     """
     获取网页HTML内容

@@ -195,11 +195,11 @@ def sort_discogs(source_path: str, target_path: str, no_query: bool = False):
     通过查询 Discogs 音乐库整理本地下载文件夹。
 
     :type source_path: str
-    :param source_path: 需要排序的音乐库的源路径。
+    :param source_path: 需要整理的下载源路径。
     :type target_path: str
-    :param target_path: 排序后的音乐库的目标路径。
+    :param target_path: 整理后的目标路径。
     :type no_query: bool
-    :param no_query: 是否进行联网查询。如果为 True，则不进行联网查询。
+    :param no_query: 是否进行联网查询。如果为 True 则不进行联网查询。
     """
     source_names = os.listdir(source_path)
     for source_name in source_names:

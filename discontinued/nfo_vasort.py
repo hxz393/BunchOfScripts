@@ -81,7 +81,7 @@ def 整理音乐节(path):
                     # os.rename(原始目录, 目标目录)
                     print(f'移动到：{目标目录}')
                     print('*' * 66)
-                except Exception:
+                except Exception as e:
                     print(f'移动文件夹时发生错误: {str(e)}')
         else:
             print('没有命中.')

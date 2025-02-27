@@ -156,7 +156,7 @@ def request_post(url: str, headers: Dict[str, str], data: Union[str, Dict[str, s
     :raise RequestException: 在发起请求时可能出现的异常。
     """
     try:
-        response = requests.post(url=url, headers=headers, data=data, timeout=15, verify=False, allow_redirects=True)
+        response = requests.post(url=url, headers=headers, data=data, timeout=15, verify=False, allow_redirects=True, proxies=PROXIES)
         return response
     except RequestException:
         logger.exception(f"发送 POST 请求时出现错误: {url}")
@@ -656,10 +656,12 @@ def get_target_name(mongo_result: Dict[str, Union[str, list]]) -> Optional[str]:
         album_name = mongo_result['AlbumName']
         label_name = mongo_result['Label']
 
+        # 艺术家 - 专辑名
         if label_name in NAME_STYLE_0:
             album_name = album_name.replace('–', '-')
             album_name = album_name.replace('~', '-')
             artist_name = album_name.split(' - ')[0].strip()
+        # 标签 艺术家 - 专辑名
         elif label_name in NAME_STYLE_1:
             artist_name = re.sub(r'^\S+\s([^-]+)\s-\s.+', r'\1', album_name)
         elif label_name in NAME_STYLE_2:

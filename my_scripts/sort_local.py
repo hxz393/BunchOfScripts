@@ -49,7 +49,7 @@ def run_sort(source_to_move: str, target_root_dir: str, camp_names: List[str]) -
         source_org_name = os.path.basename(source_to_move)
         target_to_move = os.path.join(target_root_dir, source_org_name)
 
-        source_fix = source_org_name.lower().replace('.', ' ').replace('  ', ' ').strip()
+        source_fix = source_org_name.lower().replace('.', ' ').replace('  ', ' ').replace("'", '').strip()
         # print(source_fix)
         source_sept = [source_fix.split(sept)[0].strip().rstrip('.') for sept in SEPT_LIST if sept in source_fix]
         # print(source_sept)

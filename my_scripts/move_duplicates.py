@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
               " featuring ", " b2b ", " ft ", " ft. ", " vs. ",
-              " vs ", "⁄", " x ", "(1)", " with "]
+              " vs ", "⁄", " x ", "(1)", " with ", " (feat"]
 
 
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Optional[Dict[str, str]]:
@@ -80,6 +80,6 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
             final_path_dict[file_path] = new_target_path
             logger.info(f"{file_path} 移动到 {new_target_path}")
         except Exception:
-            logger.exception(f"移动目录是发生错误：{file_path}")
+            logger.exception(f"移动目录时发生错误：{file_path}")
 
     return final_path_dict if final_path_dict else None
