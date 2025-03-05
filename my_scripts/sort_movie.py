@@ -28,13 +28,14 @@ def sort_movie(path: str, tv: bool = False) -> None:
     :return: 无
     """
     path = path.strip()
-    print("开始抓取")
+    print(f"开始抓取")
     if not os.path.exists(path):
         logger.error("目录不存在")
         return
 
     # 初始化变量
     movie_ids = scan_ids(path)
+    tv = True if movie_ids["tmdb"] and movie_ids["tmdb"].find('tv') != -1 else False
     movie_info = {
         "director": "",
         "year": 0,
@@ -52,7 +53,7 @@ def sort_movie(path: str, tv: bool = False) -> None:
 
     # 三大网站处理流程
     actions = {
-        'tmdb': lambda tmdb_id: get_tmdb_movie_info(tmdb_id, movie_info, tv),
+        'tmdb': lambda tmdb_id: get_tmdb_movie_info(tmdb_id.replace("tv", ""), movie_info, tv),
         'imdb': lambda imdb_id: get_imdb_movie_info(imdb_id, movie_info),
         'douban': lambda douban_id: get_douban_movie_info(douban_id, movie_info)
     }
@@ -121,7 +122,9 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
         crew_list = credits_list.get('crew', [])
         movie_info["directors"] = [member.get('original_name') for member in crew_list if member.get('job') == 'Director']
         original_names = [creator.get('original_name') for creator in m.get('created_by', [])]
+        english_names = [creator.get('name') for creator in m.get('created_by', [])]
         movie_info["directors"].extend([name for name in original_names if name is not None])
+        movie_info["directors"].extend([name for name in english_names if name is not None])
     else:
         cast_list = m.get('casts', {})
         crew_list = cast_list.get('crew', [])

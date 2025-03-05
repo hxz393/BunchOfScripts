@@ -16,18 +16,22 @@ from pathlib import Path
 from typing import Dict
 from typing import Optional, Any
 
-from my_module import read_json_to_dict, sanitize_filename, read_file_to_list
+from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target
 
 logger = logging.getLogger(__name__)
 
 CONFIG = read_json_to_dict('config/sort_movie_ops.json')  # 配置文件
 
+TRASH_LIST = CONFIG['trash_list']  # 垃圾文件名列表
 SOURCE_LIST = CONFIG['source_list']  # 来源列表
 VIDEO_EXTENSIONS = CONFIG['video_extensions']  # 后缀名列表
 MAX_BITRATE = CONFIG['max_bitrate']  # 最大比特率
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
 RARBG_TARGET = CONFIG['rarbg_target']  # rarbg 种子移动目录
+EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
+FFPROBE_PATH = CONFIG['ffprobe_path']  # everything 路径
+MTM_PATH = CONFIG['mtm_path']  # everything 路径
 
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
@@ -44,6 +48,26 @@ RE_NAME = re.compile(
     r'$',
     re.IGNORECASE
 )
+# 编译正则，便于复用
+RE_JSON_FILE_NAME = re.compile(
+    r'^'
+    r'(?P<name>.*?)'  # 电影名 (尽量匹配少一点，直到遇到 '(' )
+    r'\('  # 匹配左括号
+    r'(?P<year>\d{4})'  # 4位年份
+    r'\)'  # 匹配右括号
+    r'\['  # 匹配 '['
+    r'(?P<quality>.*?)'  # 质量 (用非贪心匹配，直到遇到 ']')
+    r']'  # 匹配 ']'
+    r'\{'  # 匹配 '{'
+    r'(?P<id>.*?)'  # 编号 (用非贪心匹配，直到遇到 '}')
+    r'}',  # 匹配 '}'
+    re.IGNORECASE
+)
+
+
+# RE_JSON_FILE_NAME = re.compile(
+#     r'^(?P<name>.*?)\((?P<year>\d{4})\)\[(?P<quality>.*?)]\{(?P<id>.*?)}$'
+# )
 
 
 def get_ids(source_path: str) -> None:
@@ -86,9 +110,14 @@ def get_ids(source_path: str) -> None:
         # 处理 TMDB
         elif 'themoviedb.org' in line:
             # 匹配形如 https://www.themoviedb.org/person/19032-john-hough 或 https://www.themoviedb.org/movie|tv/174171
-            match = re.search(r'https?://www\.themoviedb\.org/(?:person|movie|tv)/(\d+).*', line)
+            match = re.search(r'https?://www\.themoviedb\.org/(?:person|movie)/(\d+).*', line)
+            match_tv = re.search(r'https?://www\.themoviedb\.org/tv/(\d+).*', line)
             if match:
                 tmdb_id = match.group(1)
+                out_file = os.path.join(output_dir, f"{tmdb_id}.tmdb")
+                Path(out_file).touch()
+            elif match_tv:
+                tmdb_id = match_tv.group(1) + "tv"
                 out_file = os.path.join(output_dir, f"{tmdb_id}.tmdb")
                 Path(out_file).touch()
 
@@ -372,7 +401,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     # 构造并运行 ffprobe 命令
     file_info = {"source": "未知来源", "resolution": "", "codec": "", "bitrate": ""}
     cmd = [
-        r"D:\Software\Portable\PortableApps\弹弹play\ffmpeg\ffprobe.exe",
+        FFPROBE_PATH,
         "-v", "quiet",  # 不输出调试信息
         "-print_format", "json",  # JSON格式输出
         "-show_format",
@@ -439,6 +468,26 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     return file_info
 
 
+def generate_video_contact(video_path: str) -> None:
+    """
+    用 mtn 生成视频网格缩略图，生成在视频同一目录
+
+    :param video_path: 视频路径
+    :return: 无
+    """
+    cmd = [
+        MTM_PATH,  # 可使用原始字符串，避免转义
+        "-c", "4",
+        "-r", "6",
+        "-h", "100",
+        "-P",
+        video_path
+    ]
+
+    print("执行命令：", " ".join(cmd))
+    subprocess.run(cmd, capture_output=True, text=True)
+
+
 def classify_resolution_by_pixels(resolution: str) -> str:
     """
     根据宽和高的乘积（像素数）来给分辨率分类
@@ -454,7 +503,7 @@ def classify_resolution_by_pixels(resolution: str) -> str:
 
     # 先把区间边界定义好，方便直观查看
     p240_max = 400 * 320  # = 128,000
-    p480_max = 768 * 576  # = 442,368
+    p480_max = 791 * 576  # = 442,368
     p720_max = 1280 * 960  # = 1,228,800
     p1080_max = 1950 * 1080  # = 2,106,000
     p2160_max = 3860 * 2160  # = 8,337,600
@@ -464,8 +513,14 @@ def classify_resolution_by_pixels(resolution: str) -> str:
     elif pixel_count <= p480_max:
         return "480p"
     elif pixel_count <= p720_max:
+        if h > 1000:
+            return "1080p"
+        if w > 1430:
+            return "1080p"
         return "720p"
     elif pixel_count <= p1080_max:
+        if h < 1000 and w < 1200:
+            return "720p"
         return "1080p"
     elif pixel_count <= p2160_max:
         return "2160p"
@@ -477,7 +532,7 @@ def classify_resolution_by_pixels(resolution: str) -> str:
 
 def check_folder(path: str) -> Optional[str]:
     """
-    检查流程
+    检查电影信息完整度流程
 
     :param path: 电影目录
     :return: 如有问题，返回问题
@@ -487,11 +542,11 @@ def check_folder(path: str) -> Optional[str]:
     # 检查信息文件
     movie_info_file = p / "movie_info.json5"
     if not os.path.exists(movie_info_file):
-        return f"目录中不存在 movie_info.json"
+        return f"目录中不存在 movie_info.json：{p.name}"
     movie_info = read_json_to_dict(movie_info_file)
 
     # 检查导演是否正确
-    if movie_info["director"] not in movie_info["directors"]:
+    if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
         logger.warning(f"导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
 
     # 查找多余目录
@@ -499,27 +554,29 @@ def check_folder(path: str) -> Optional[str]:
     if len(dir_list) != 0:
         return f"目录中有二级目录：{dir_list}"
 
-    # 查找垃圾文件
-    file_list = [f for f in p.iterdir() if f.is_file()]
-    trash_files = [f.name for f in file_list if RE_TRASH.search(f.name)]
-    if trash_files:
-        return f"目录中有垃圾文件：{trash_files}"
-
-    # 查找视频数量
-    video_files = [f.name for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
-    if len(video_files) > 1:
-        logger.warning(f"目录中视频数量大于 1")
-
     # 检查子目录是否符合规范
     match = RE_NAME.match(p.name)
     if not match:
-        return f"目录名格式错误或缺少必须字段"
+        return f"目录名格式错误或缺少必须字段：{p.name}"
 
     # 检查码率是否过高
     info = match.groupdict()
     file_bitrate = int(info['bitrate'].split('kbps')[0])
     if file_bitrate > MAX_BITRATE:
         logger.warning(f"码率过高：{file_bitrate}kbps")
+
+    # 查找视频数量
+    file_list = [f for f in p.iterdir() if f.is_file()]
+    video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
+    if len(video_paths) > 1:
+        logger.warning(f"目录中视频数量大于 1")
+
+    # 生成视频缩略图
+    for video_path in video_paths:
+        base, ext = os.path.splitext(video_path)
+        screen_path = base + "_s.jpg"
+        if not os.path.exists(screen_path):
+            generate_video_contact(video_path)
 
     # 检查 RARBG 库存
     imdb = movie_info['imdb']
@@ -539,11 +596,9 @@ def check_folder(path: str) -> Optional[str]:
                 shutil.move(source_file, dest_file)
                 move_counts += 1
     if move_counts:
-        logger.warning(f"请检查 RARBG 库存: {move_counts}")
+        return f"请检查 RARBG 库存: {move_counts}"
     if delete_counts:
         print(f"已删除 RARBG 库存文件 {delete_counts}")
-
-    return None
 
 
 def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
@@ -628,3 +683,112 @@ def create_aka_director(path: str, aka: list) -> None:
     for a in unique_aka:
         file_name = sanitize_filename(a).strip()
         Path(os.path.join(path, file_name).replace("\"", "")).touch()
+
+
+def get_subdirs(dir_path: str) -> dict:
+    """获取指定目录下所有直接子目录路径，不递归
+
+    :param dir_path: 来源目录
+    :return: 目录名和路径字典
+    """
+    result = {}
+    for entry in os.listdir(dir_path):
+        full_path = os.path.join(dir_path, entry)
+        if os.path.isdir(full_path):
+            result[entry] = full_path
+    return result
+
+
+def get_files_with_extensions(dir_path: str, extension: str) -> dict:
+    """
+    获取指定目录下所有符合扩展名的文件。
+
+    :param dir_path: 来源目录
+    :param extension: 扩展名
+    :return: 目录名和路径字典
+    """
+    result = {}
+    for entry in os.listdir(dir_path):
+        full_path = os.path.join(dir_path, entry)
+        if os.path.isfile(full_path):
+            # 检查该文件是否匹配任意一个扩展名
+            if entry.lower().endswith(extension):
+                result[entry] = full_path
+    return result
+
+
+def parse_jason_file_name(filename: str) -> Optional[dict]:
+    """
+    解析类似 "Sonic(2019)[1080p]{tt8108200}" 格式的文件名，
+    返回一个字典，其中包含：
+        - name: 电影名
+        - year: 年份
+        - quality: 视频质量(如 1080p)
+        - id: 编号(如 tt8108200)
+
+    :param filename: 不带扩展的文件名
+    :return: 解析结果，匹配失败返回 None
+    """
+    match = RE_JSON_FILE_NAME.match(filename)
+    if not match:
+        return None
+
+    return {
+        'name': match.group('name').strip(),
+        'year': match.group('year').strip(),
+        'quality': match.group('quality').strip(),
+        'id': match.group('id').strip(),
+    }
+
+
+def delete_trash_files(path: str) -> None:
+    """
+    删除垃圾文件
+
+    :param path: 扫描路径
+    :return: 无
+    """
+    trash_low = [i.lower() for i in TRASH_LIST]
+
+    file_paths = get_file_paths(path)
+    for file_path in file_paths:
+        file_name = os.path.basename(file_path)
+        if file_name.lower() in trash_low:
+            print(f"删除垃圾：{remove_target(file_path)}")
+
+
+def everything_search_filelist(file_path: str) -> None:
+    """
+    扫描所有文件
+
+    :param file_path: 来源文本路径
+    :return: 无
+    """
+    keys = '|'.join(read_file_to_list(file_path))
+    search_query = f'({keys})'
+
+    command = f'"{EVERYTHING_PATH}" -regex -search "{search_query}"'
+    # 使用 subprocess.run 执行命令
+    subprocess.run(command, shell=True)
+
+
+def fix_douban_name(name: str) -> str:
+    """
+    去除豆瓣名无关文字
+
+    :param name: 豆瓣名
+    :return: 合法的文件名
+    """
+    name = name.replace("(本名)", "")
+    name = name.replace("（本名）", "")
+    name = name.replace("(昵称)", "")
+    name = name.replace("（昵称）", "")
+    name = name.replace("(台)", "")
+    name = name.replace("（台）", "")
+    name = name.replace("(港)", "")
+    name = name.replace("（港）", "")
+    name = name.replace("(大陆)", "")
+    name = name.replace("（大陆）", "")
+
+    name = name.strip()
+    return name

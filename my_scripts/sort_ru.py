@@ -85,7 +85,7 @@ def ru_search(name: str) -> Optional[Tuple[str, int]]:
     :rtype: Optional[Tuple[str, int]]
     :return: 返回一个元组，包含名字和搜索结果的数量
     """
-    data = {"nm": name.encode("ascii", "xmlcharrefreplace").decode("ascii")}
+    data = {"nm": name.encode("cp1251", "xmlcharrefreplace").decode("cp1251")}
     response = requests.post(url=URL_SEARCH, headers=REQUEST_HEAD, data=data, timeout=30, verify=False, allow_redirects=True)
     return name, int(re.search(r'Результатов поиска: (\d+)', response.text).group(1))
 

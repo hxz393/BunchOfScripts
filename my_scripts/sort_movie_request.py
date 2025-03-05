@@ -41,7 +41,7 @@ DOUBAN_SEARCH_URL = CONFIG['douban_search_url']  # 豆瓣搜索地址
 DOUBAN_HEADER['Cookie'] = DOUBAN_COOKIE  # 请求头加入认证
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=600, wait_random_min=30, wait_random_max=300)
 def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     """
     从 IMDB 搜索，返回结果供解析
@@ -49,7 +49,7 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     :param search_id: 搜索 id
     :return: 成功时返回 JSON 数据
     """
-    print(f"查询 TMDB：{search_id}")
+    print(f"搜索 TMDB：{search_id}")
     url = f"{TMDB_URL}/find/{search_id}?external_source=imdb_id"
     r = requests.get(url, timeout=10, verify=False, headers=TMDB_HEADERS)
     if r.status_code != 200:
@@ -59,7 +59,7 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     return r.json()
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=600, wait_random_min=30, wait_random_max=300)
 def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> AsObj:
     """
     从 TMDB 获取电影信息，返回结果字典
@@ -75,7 +75,7 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> AsObj:
     return movie.details(movie_id)
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=600, wait_random_min=30, wait_random_max=300)
 def get_tmdb_director_details(director_id: str) -> AsObj:
     """
     从 TMDB 获取导演信息
@@ -89,7 +89,7 @@ def get_tmdb_director_details(director_id: str) -> AsObj:
     return person.details(director_id)
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=600, wait_random_min=30, wait_random_max=300)
 def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取电影信息，返回结果供解析
@@ -106,7 +106,7 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     return response
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=600, wait_random_min=30, wait_random_max=300)
 def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取导演信息，返回结果供解析
@@ -151,7 +151,7 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
         return
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=600, wait_random_min=300, wait_random_max=3000)
 def get_douban_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     从 DOUBAN 获取电影信息，返回结果供解析
@@ -170,7 +170,7 @@ def get_douban_movie_response(movie_id: str) -> Optional[requests.Response]:
     return response
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=600, wait_random_min=300, wait_random_max=3000)
 def get_douban_director_response(director_id: str) -> Optional[requests.Response]:
     """
     从 DOUBAN 获取导演信息，返回结果供解析
@@ -188,7 +188,7 @@ def get_douban_director_response(director_id: str) -> Optional[requests.Response
     return response
 
 
-@retry(stop_max_attempt_number=60, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=600, wait_random_min=300, wait_random_max=3000)
 def get_douban_search_response(search_id: str, search_type: str) -> Optional[requests.Response]:
     """
     从 DOUBAN 搜索导演信息，返回结果供解析
@@ -197,7 +197,7 @@ def get_douban_search_response(search_id: str, search_type: str) -> Optional[req
     :param search_type: 搜索类型编码
     :return: 成功时返回响应
     """
-    print(f"查询 DOUBAN：{search_id}")
+    print(f"搜索 DOUBAN：{search_id}")
     url = f"{DOUBAN_SEARCH_URL}?cat={search_type}&q={search_id}"
     response = requests.get(url, timeout=10, verify=False, headers=DOUBAN_HEADER)
     if response.status_code == 403:

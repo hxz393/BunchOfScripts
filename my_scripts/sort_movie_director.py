@@ -12,7 +12,7 @@ from typing import Dict
 import requests
 from bs4 import BeautifulSoup
 
-from sort_movie_ops import scan_ids, merge_and_dedup, split_director_name, create_aka_director
+from sort_movie_ops import scan_ids, merge_and_dedup, split_director_name, create_aka_director, fix_douban_name
 from sort_movie_request import get_tmdb_director_details, get_imdb_director_response, get_douban_director_response
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def get_douban_director_info(director_id: str) -> Dict[str, list]:
             if value_tag:
                 # 获取文本并去除两端空格，然后按 "/" 分割并去除分割后每个名字的前后空白
                 alias_text = value_tag.get_text(strip=True)
-                alias = [name.strip() for name in alias_text.split('/') if name.strip()]
+                alias = [fix_douban_name(name) for name in alias_text.split('/') if name.strip()]
                 director_info["aka"].extend(alias)
             break
 

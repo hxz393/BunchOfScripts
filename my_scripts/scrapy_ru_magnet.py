@@ -18,7 +18,7 @@ import requests
 from lxml import etree
 from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename, read_file_to_list
+from my_module import read_json_to_dict, sanitize_filename
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -39,22 +39,23 @@ THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 REQUEST_HEAD["Cookie"] = USER_COOKIE  # 请求头加入认证
 
 
-def scrapy_ru_magnet(key_word: str, target: str, ascii_encode: bool, date_order: str = "2") -> None:
+def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: bool = True) -> None:
     """
     将磁链信息保存到来源目录中。
 
     :param key_word: 关键词
     :param target: 保存目录
-    :param ascii_encode: 是否转码
     :param date_order: 参数控制按时间新旧排序，2 代表新的在前
+    :param cache: 是否验证 Redis 缓存
     :return: 无
     """
+    if not key_word:
+        return
     print(f"开始搜索：{key_word}")
     # 对于英语和俄语不要转码，其他要转码
     url = f'{SEARCH_URL}{key_word}'
-    data = {"nm": key_word, "s": date_order}
-    if ascii_encode:
-        data = {"nm": key_word.encode("ascii", "xmlcharrefreplace").decode("ascii"), "s": date_order}
+    data = {"nm": key_word.encode("cp1251", "xmlcharrefreplace").decode("cp1251"), "s": date_order}
+    print(data)
 
     # 获取搜索结果，如果没有获取到，检测别名后返回
     topic_infos = []
@@ -63,27 +64,31 @@ def scrapy_ru_magnet(key_word: str, target: str, ascii_encode: bool, date_order:
         get_aka_name(key_word, target)
         return
 
-    # 连接并查询本地 Redis，返回查询结果
-    query_urls = [d['url'] for d in topic_infos]
-    r = redis.Redis(host=REDIS_HOST, decode_responses=True)
-    results = bulk_query_ids(r, REDIS_SET_KEY, query_urls)
-    q_result = {url: exists for url, exists in zip(query_urls, results)}
-
-    # 处理 RDS 查询结果
     final_infos = []
     new_urls = []
-    for d in topic_infos:
-        # RDS 中存在的地址不做查询
-        if q_result[d['url']]:
-            continue
-        new_urls.append(d['url'])
-        d["name"] = os.path.join(target, d["name"])
-        final_infos.append(d)
-    # 当所有链接都在 RDS 中时，检测别名后返回
-    if not final_infos:
-        get_aka_name(key_word, target)
-        logger.info(f"没有新链接需要处理")
-        return
+    redis_client = redis.Redis(host=REDIS_HOST, decode_responses=True)
+    if not cache:
+        for d in topic_infos:
+            d["name"] = os.path.join(target, d["name"])
+            final_infos.append(d)
+    else:
+        # 连接并查询本地 Redis，返回查询结果
+        query_urls = [d['url'] for d in topic_infos]
+        redis_query_result_raw = bulk_query_ids(redis_client, REDIS_SET_KEY, query_urls)
+        redis_query_result = {url: exists for url, exists in zip(query_urls, redis_query_result_raw)}
+        # 处理 RDS 查询结果
+        for d in topic_infos:
+            # RDS 中存在的地址不做查询
+            if redis_query_result[d['url']]:
+                continue
+            new_urls.append(d['url'])
+            d["name"] = os.path.join(target, d["name"])
+            final_infos.append(d)
+        # 当所有链接都在 RDS 中时，检测别名后返回
+        if not final_infos:
+            get_aka_name(key_word, target)
+            print(f"{key_word} 没有新链接需要处理")
+            return
 
     # 多线程访问帖子具体内容，获取其中磁链
     print(f"开始获取信息：{key_word}")
@@ -101,8 +106,9 @@ def scrapy_ru_magnet(key_word: str, target: str, ascii_encode: bool, date_order:
                 logger.error(f"[get_magnet] 线程执行出现异常: {exc}")
 
     # 最后储存本次爬取链接和关键字，打印失败链接
-    bulk_insert_ids(r, REDIS_SET_KEY, new_urls)
-    get_aka_name(key_word, target)
+    if cache:
+        bulk_insert_ids(redis_client, REDIS_SET_KEY, new_urls)
+        get_aka_name(key_word, target)
     if failed_urls:
         print("以下链接处理失败：")
         for url in failed_urls:
@@ -117,19 +123,19 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
 
     :param data: post 数据
     :param url: 搜索地址
-    :param topic_infos: 储存列表
+    :param topic_infos: 函数修改传入列表，得到 [{'url': 'https://...', 'name': '...'}]
     :return: 无
     """
     # 请求搜索地址，总该使用 POST
     r = requests.post(url=url, headers=REQUEST_HEAD, data=data, timeout=15, verify=False, allow_redirects=True)
     if r.status_code != 200:
-        logger.error("搜索失败！")
+        logger.error(f"搜索失败！{r.status_code}")
         return
 
     # 检测搜索结果数量
     search_counts = int(re.search(r'Результатов поиска: (\d+)', r.text).group(1))
     if search_counts == 0:
-        logger.error("没有搜索结果！")
+        print("没有搜索结果！")
         return
     elif search_counts > 490:
         # 如果要强制下载，将返回注释掉，data 的 s 参数(date_order)设置为 1
@@ -173,12 +179,13 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
         file_name = replace_ru(file_name)
         file_name = file_name.replace("/", "｜").replace("\\", "｜")
         file_name = re.sub(r'\s*｜\s*', '｜', file_name)
+        file_name = russian_delete(file_name)
         file_name = sanitize_filename(file_name)
         file_name = truncate_filename(file_name)
 
         # 得到想要数据，打印出来，并插入到传入的列表 topic_infos
         info = {'url': topic_link, 'name': file_name}
-        print(f'[{group_title_org}]{title_text_org}')
+        # print(f'[{group_title_org}]{title_text_org}')
         topic_infos.append(info)
 
     # 查找下一页链接，找到了递归自身
@@ -393,7 +400,7 @@ def scrapy_magnet(topic_info: dict) -> bool:
     """
     url = topic_info['url']
     path = topic_info['name']
-    print(f"爬取：{url}")
+    # print(f"爬取：{url}")
 
     r = requests.get(url=url, headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
     if r.status_code != 200:
@@ -412,3 +419,68 @@ def scrapy_magnet(topic_info: dict) -> bool:
     with open(path, "w") as file:
         file.writelines(link)
     return True
+
+
+def contains_cyrillic(text: str) -> bool:
+    """
+    判断字符串中是否包含任何西里尔字符 (俄语字符等)
+
+    :param text: 要检查的字符串
+    :return: 检查结果，是俄语返回 True
+    """
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+
+def russian_delete(filename: str) -> str:
+    """
+    如果文件名前半部分(电影名部分)存在且仅存在一个“｜”分隔符：
+      1. 分隔出左右两部分
+      2. 判断哪部分是俄语（包含西里尔字符）
+      3. 若只有一部分包含西里尔字符，则删除那部分，保留另一部分
+    若不满足以上条件则不做处理。
+
+    :param filename: 原始文件名
+    :return: 处理后的文件名
+    """
+    # 1. 找到“电影名部分”与后续信息的分隔位置
+    #    寻找最早出现的 '(', '[', '「' 三者之一
+    split_chars = ['(', '[', '「']
+    # 先假设没有找到，index 设置成长度，表示整个串都属于电影名部分
+    cut_index = len(filename)
+
+    for ch in split_chars:
+        idx = filename.find(ch)
+        if idx != -1 and idx < cut_index:
+            cut_index = idx
+
+    # 电影名部分
+    movie_part = filename[:cut_index]
+    # 剩余部分
+    suffix_part = filename[cut_index:]
+
+    # 2. 检查 movie_part 中“｜”的数量
+    bar_count = movie_part.count('｜')
+    if bar_count == 1:
+        # 只有一个｜，则可以认为存在“俄语名｜原名”或“原名｜俄语名”
+        left, right = movie_part.split('｜', 1)
+
+        left_cyr = contains_cyrillic(left)
+        right_cyr = contains_cyrillic(right)
+
+        # 3. 判断哪侧是俄语名，哪侧是原名
+        if left_cyr and not right_cyr:
+            # left 是俄语名 -> 删除 left，保留 right
+            movie_part = right.strip()
+        elif right_cyr and not left_cyr:
+            # right 是俄语名 -> 删除 right，保留 left
+            movie_part = left.strip()
+        else:
+            # 两侧都包含或都不包含西里尔字符 -> 不处理
+            pass
+    else:
+        # 0 或多个“｜”，不处理
+        pass
+
+    # 4. 拼接回最终文件名
+    new_filename = movie_part.strip() + " " + suffix_part
+    return new_filename
