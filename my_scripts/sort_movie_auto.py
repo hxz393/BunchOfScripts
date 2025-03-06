@@ -415,9 +415,10 @@ def sort_torrents_auto(path: str) -> None:
                 json_name_old = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('id')}]"  # 旧文件名
                 json_name_org = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('quality')}]"  # 种子原始名
                 names_to_check = [json_name_no_ext, json_name_old, json_name_org]
+                names_to_check_alt = [n.replace("'", "") for n in names_to_check]
                 tag_to_check = [info_dict.get('name'), info_dict.get('year'), info_dict.get('quality'), "yts"]  # 近似匹配，只限定来源 yts
                 for film_name, film_path in film_dict.items():
-                    if any(name.lower() in film_name.lower() for name in names_to_check) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
+                    if any(name.lower() in film_name.lower() for name in names_to_check_alt) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
                         target_path = os.path.join(film_path, json_name)
                         shutil.move(json_path, target_path)
                         print(f"移动文件：{json_path} -> {target_path}")

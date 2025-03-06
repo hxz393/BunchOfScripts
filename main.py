@@ -232,6 +232,22 @@ copy(results);
             get_ids(source_file)
             sort_movie(read_file_to_list(source_file)[0], tv)
             print("=" * 255)
+        case 710:
+            print(r"从盒子 QB 获取下载任务，磁链保存到：B:\0.整理\Chrome")
+            print(r"获取文件后，可以添加到 115、PikPak 或夸克离线")
+            print("=" * 255)
+            from get_qb_downloads import get_qb_downloads
+            target_path = r'B:\0.整理\Chrome'
+            get_qb_downloads(target_path)
+            print("=" * 255)
+        case 711:
+            print(r"添加种子到 PikPak 离线服务，种子信息文件来自：B:\0.整理\Chrome")
+            print(r"离线失败的再通过 115 离线尝试")
+            print("=" * 255)
+            from add_to_pikpak import add_to_pikpak
+            source_path = r'B:\0.整理\Chrome'
+            add_to_pikpak(source_path)
+            print("=" * 255)
         case 801:
             print(r"自动整理下载目录，将下载完成的种子移动到对应目录内")
             print("来源目录一行一个路径")
@@ -317,12 +333,12 @@ https://yts.mx/movies/if-you-really-love-me-2012
         # 704 -> ru 搜索电影名，不走缓存
         # 706 -> 添加种子到盒子
         # 708 -> 整理单部电影
-        # 801 -> 批量预整理
+        # 801 -> 批量预整理，重命名目录，移动种子。要指定目录
         # 802 -> 批量整理导演
         # 803 -> 批量搜索下载
-        # 804 -> 下载整理目录空文件处理
+        # 804 -> 805 前运行，下载整理目录空文件处理
         # 805 -> 批量整理电影
-        main(601)
+        main(702)
     except Exception:
         logger.exception('Unexpected error!')
     finally:
