@@ -444,7 +444,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     matched = False
     # 先仅使用当前视频文件名做匹配
     for source in SOURCE_LIST:
-        # 使用 re.IGNORECASE（或在模式中用 (?i) ）来忽略大小写
+        # 使用 re.IGNORECASE 或在模式中用 (?i) 来忽略大小写
         # 注意 [A-Za-z] 仅排除英文字母，如果想排除数字可以改成 [A-Za-z0-9]
         pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
         if re.search(pattern, filepath):

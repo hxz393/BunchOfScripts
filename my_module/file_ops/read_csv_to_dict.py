@@ -14,7 +14,7 @@ import csv
 import logging
 import os
 
-from typing import List, Dict, Optional, Union
+from typing import List, Optional, Union
 
 logger = logging.getLogger(__name__)
 

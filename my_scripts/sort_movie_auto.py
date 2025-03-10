@@ -14,10 +14,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import requests
-from retrying import retry
-
-from my_module import read_file_to_list, write_list_to_file
+from my_module import read_file_to_list, write_list_to_file, read_json_to_dict
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
 from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files
@@ -25,7 +22,14 @@ from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response,
 from sort_ru import ru_search
 
 logger = logging.getLogger(__name__)
-requests.packages.urllib3.disable_warnings()
+
+CONFIG = read_json_to_dict('config/sort_movie.json')  # 配置文件
+
+TMDB_PERSON_URL = CONFIG['tmdb_person_url']  # tmdb 导演地址
+TMDB_MOVIE_URL = CONFIG['tmdb_movie_url']  # tmdb 电影地址
+
+IMDB_PERSON_URL = CONFIG['imdb_person_url']  # imdb 导演地址
+IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
 
 
 def sort_director_auto(path: str) -> None:
@@ -131,7 +135,7 @@ def get_imdb_director(movie_id: str, director_main: str) -> Optional[str]:
         nm_id = safe_get(credit, ["name", "id"], default="")
         directors.append({
             "name": name,
-            "link": f"https://www.imdb.com/name/{nm_id}"
+            "link": f"{IMDB_PERSON_URL}/{nm_id}"
         })
 
     # 尝试匹配传入的导演主名字，匹配到了就返回
@@ -156,7 +160,7 @@ def get_tmdb_director_aka(tmdb_id: str, director_main: str) -> Optional[str]:
     aka_org = list(p["also_known_as"])
     aka_org.append(p['name'])
     aka = [i.lower().replace(" ", "") for i in aka_org]
-    link = f"https://www.themoviedb.org/person/{tmdb_id}"
+    link = f"{TMDB_PERSON_URL}/{tmdb_id}"
     if director_main.lower().replace(" ", "") in aka:
         return link
     else:
@@ -183,7 +187,7 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
         # 一般只有一个结果
         person = persons[0]
         tmdb_id = person.get('id')
-        return f"https://www.themoviedb.org/person/{tmdb_id}"
+        return f"{TMDB_PERSON_URL}/{tmdb_id}"
     else:
         print(f"没有在 TMDB 上搜索到导演：{nm_id}，尝试通过电影获取导演")
 
@@ -205,7 +209,7 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
                     directors.append({
                         "name_id": member_id,
                         "name": member.get('name'),
-                        "link": f"https://www.themoviedb.org/person/{member_id}"
+                        "link": f"{TMDB_PERSON_URL}/{member_id}"
                     })
             # 尝试匹配 director_main
             for d in directors:
@@ -218,7 +222,6 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
     return
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=30, wait_random_max=300)
 def get_douban_director(nm_id: str) -> Optional[str]:
     """
     搜索 douban，获取导演信息
@@ -269,7 +272,7 @@ def sort_movie_auto_folder(path: str, target_file: str) -> Optional[str]:
     imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', path)) else None
     if not imdb_id:
         return f"目录缺少 IMDB 编号 {path}"
-    imdb_url = f"https://www.imdb.com/title/{imdb_id}/"
+    imdb_url = f"{IMDB_MOVIE_URL}/{imdb_id}/"
     result_list.append(imdb_url)
 
     # 搜索 tmdb，获取链接
@@ -290,7 +293,6 @@ def sort_movie_auto_folder(path: str, target_file: str) -> Optional[str]:
     write_list_to_file(target_file, result_list)
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=30, wait_random_max=300)
 def get_tmdb_id(imdb_id: str) -> dict:
     """
     搜索tmdb，获取 tmdb 电影链接
@@ -311,11 +313,10 @@ def get_tmdb_id(imdb_id: str) -> dict:
         return_dict["result"] = f"获取 tmdb id 失败"
         return return_dict
 
-    return_dict["tmdb_url"] = f"https://www.themoviedb.org/movie/{movie_id}"
+    return_dict["tmdb_url"] = f"{TMDB_MOVIE_URL}/{movie_id}"
     return return_dict
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=300, wait_random_max=900)
 def get_douban_id(imdb_id: str) -> dict:
     """
     搜索豆瓣，获取豆瓣电影链接
@@ -415,10 +416,10 @@ def sort_torrents_auto(path: str) -> None:
                 json_name_old = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('id')}]"  # 旧文件名
                 json_name_org = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('quality')}]"  # 种子原始名
                 names_to_check = [json_name_no_ext, json_name_old, json_name_org]
-                names_to_check_alt = [n.replace("'", "") for n in names_to_check]
+                names_to_check_alt = [n.translate(str.maketrans('', '', "'-,&")).replace("  ", " ") for n in names_to_check]
                 tag_to_check = [info_dict.get('name'), info_dict.get('year'), info_dict.get('quality'), "yts"]  # 近似匹配，只限定来源 yts
                 for film_name, film_path in film_dict.items():
-                    if any(name.lower() in film_name.lower() for name in names_to_check_alt) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
+                    if any(name.lower() in film_name.lower() for name in names_to_check_alt) or any(name.lower() in film_name.lower() for name in names_to_check) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
                         target_path = os.path.join(film_path, json_name)
                         shutil.move(json_path, target_path)
                         print(f"移动文件：{json_path} -> {target_path}")
@@ -465,4 +466,3 @@ def sort_aka_files(source_path: str, target_path: str) -> None:
                     dest_path = destination_dir / path_item.name
                     shutil.move(str(path_item), str(dest_path))
                     print(f"移动：{str(path_item)} -> {str(dest_path)}")
-

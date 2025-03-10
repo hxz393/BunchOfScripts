@@ -10,8 +10,8 @@
 :copyright: Copyright 2023, hxz393. 保留所有权利。
 """
 
-import time
 import logging
+import time
 from functools import wraps
 
 # 初始化日志记录器
@@ -44,13 +44,14 @@ def track_calls_and_time(func):
             return None
         end_time = time.time()
         wrapper.total_time += (end_time - start_time)
-        logger.debug(f"{func.__name__} called {wrapper.calls} times, total run time: {wrapper.total_time:.4f} seconds")
-        print(f"{func.__name__} called {wrapper.calls} times, total run time: {wrapper.total_time:.4f} seconds")
+        logger.debug(f"{func.__name__} called {wrapper.calls} times, total run time: {wrapper.total_time: .4f} seconds")
+        print(f"{func.__name__} called {wrapper.calls} times, total run time: {wrapper.total_time: .4f} seconds")
         return result
 
     wrapper.calls = 0
     wrapper.total_time = 0
     return wrapper
+
 
 if __name__ == '__main__':
     # 示例使用

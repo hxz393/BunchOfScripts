@@ -1,3 +1,11 @@
+"""
+从 bandcamp 抓取专辑和艺人信息，保存到数据库。
+整理从 bandcamp 下载的音频
+
+:author: assassing
+:contact: https://github.com/hxz393
+:copyright: Copyright 2025, hxz393. 保留所有权利。
+"""
 import datetime
 import json
 import logging

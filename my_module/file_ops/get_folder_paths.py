@@ -16,10 +16,9 @@ if folder_paths:
 :contact: https://github.com/hxz393
 :copyright: Copyright 2023, hxz393。保留所有权利。
 """
+import logging
 import os
 from typing import List, Optional, Union
-import logging
-
 
 logger = logging.getLogger(__name__)
 

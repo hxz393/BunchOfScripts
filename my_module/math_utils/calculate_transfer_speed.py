@@ -44,10 +44,10 @@ def calculate_transfer_speed(size_bytes: int, elapsed_time_seconds: Union[int, f
         units = ["Bytes", "KB", "MB", "GB", "TB"]
         for unit in units:
             if speed < 1024:
-                return f"{speed:.2f} {unit}/s"
+                return f"{speed: .2f} {unit}/s"
             speed /= 1024
 
-        return f"{speed:.2f} {units[-1]}/s"
+        return f"{speed: .2f} {units[-1]}/s"
     except Exception:
         logger.exception("An error occurred while calculating transfer speed")
         return None

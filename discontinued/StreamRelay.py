@@ -1,12 +1,13 @@
+import logging
 import os
 import queue
 import subprocess as sp
 import threading
+from typing import Tuple
+
 import cv2
 import numpy
 from PIL import Image, ImageDraw, ImageFont
-from typing import Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 捕获 = cv2.VideoCapture(直播地址)
 水印 = cv2.imread(os.path.normpath('E:/Programming/Python/os/logo.png'))
 q = queue.Queue()
+
 
 def capture_video_stream(捕获: cv2.VideoCapture) -> Tuple[int, int, int]:
     """
@@ -32,6 +34,7 @@ def capture_video_stream(捕获: cv2.VideoCapture) -> Tuple[int, int, int]:
     else:
         logger.error("Failed to capture the video stream.")
         return None
+
 
 def create_ffmpeg_command(fps: int, width: int, height: int, 推流地址: str) -> list:
     """
@@ -59,11 +62,13 @@ def create_ffmpeg_command(fps: int, width: int, height: int, 推流地址: str) 
         推流地址
     ]
 
+
 def que_put(q: queue.Queue, 捕获: cv2.VideoCapture):
     while True:
         q.put(捕获.read()[1])
         if q.qsize() > 100:
             q.get()
+
 
 def add_image(q: queue.Queue, 管道: sp.Popen, 水印: numpy.ndarray):
     while True:
@@ -72,6 +77,7 @@ def add_image(q: queue.Queue, 管道: sp.Popen, 水印: numpy.ndarray):
             frame = img_add_text(frame, 水印, "City Battle of Kings", 15, 60, (255, 255, 255), 50)
             frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
             管道.stdin.write(frame.tostring())
+
 
 def img_add_text(img: numpy.ndarray, watermark: numpy.ndarray, text: str, left: int, top: int, textColor=(0, 255, 0), textSize=20):
     if isinstance(img, numpy.ndarray):
@@ -85,6 +91,7 @@ def img_add_text(img: numpy.ndarray, watermark: numpy.ndarray, text: str, left: 
     draw.text((left, top), text, textColor, font=fontText)
     return cv2.cvtColor(numpy.asarray(marked_img), cv2.COLOR_RGB2BGR)
 
+
 def main():
     fps, width, height = capture_video_stream(捕获)
     command = create_ffmpeg_command(fps, width, height, 推流地址)
@@ -94,6 +101,7 @@ def main():
                threading.Thread(target=add_image, args=(q, 管道, 水印))]
     for t in threads:
         t.start()
+
 
 if __name__ == '__main__':
     main()

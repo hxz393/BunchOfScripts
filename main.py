@@ -316,14 +316,9 @@ copy(results);
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-https://yts.mx/movies/for-ellen-2012
-https://yts.mx/movies/the-damned-dont-you-wish-that-we-were-dead-2015
-https://yts.mx/movies/ill-be-homeless-for-christmas-2012
-https://yts.mx/movies/in-sickness-and-in-health-2012
-https://yts.mx/movies/what-would-you-do-for-love-2013
-https://yts.mx/movies/insect-2018
-https://yts.mx/movies/horny-house-of-horror-2010
-https://yts.mx/movies/if-you-really-love-me-2012
+https://yts.mx/movies/captain-america-brave-new-world-2025
+https://yts.mx/movies/the-dark-place-2014
+https://yts.mx/movies/deadline-2009
 
 
     """
@@ -338,7 +333,7 @@ https://yts.mx/movies/if-you-really-love-me-2012
         # 803 -> 批量搜索下载
         # 804 -> 805 前运行，下载整理目录空文件处理
         # 805 -> 批量整理电影
-        main(702)
+        main(802)
     except Exception:
         logger.exception('Unexpected error!')
     finally:

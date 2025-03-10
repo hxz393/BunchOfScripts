@@ -41,10 +41,10 @@ def format_size(size: Union[int, float], is_disk: bool = False, precision: int =
         unit_step = 1000 if is_disk else 1024
         for unit in units:
             if abs(size) < unit_step:
-                return f"{size:.{precision}f} {unit}"
+                return f"{size: .{precision}f} {unit}"
             size /= unit_step
 
-        return f"{size:.{precision}f} {units[-1]}"
+        return f"{size: .{precision}f} {units[-1]}"
     except Exception:
         logger.exception("An error occurred while formatting size")
         return None

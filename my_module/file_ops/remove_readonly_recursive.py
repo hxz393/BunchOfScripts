@@ -63,8 +63,8 @@ def remove_readonly_recursive(target_dir: Union[str, os.PathLike]) -> Optional[b
         # 先设置自己的属性，然后遍历子目录和文件
         remove_readonly(target_dir)
         for root, dirs, files in os.walk(target_dir):
-            for dir in dirs:
-                remove_readonly(os.path.join(root, dir))
+            for d in dirs:
+                remove_readonly(os.path.join(root, d))
             for file in files:
                 remove_readonly(os.path.join(root, file))
         return True
