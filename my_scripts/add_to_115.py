@@ -63,4 +63,4 @@ def add_to_115(source: str) -> None:
                     "savepath": f"{director}/{file_name_no_ext}",
                 }
             )
-            print(r)
+            logger.info(r)

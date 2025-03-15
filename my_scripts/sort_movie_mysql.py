@@ -121,6 +121,10 @@ def sort_movie_mysql(path: str) -> None:
     # 先按顺序判断记录是否存在
     record_id = get_record_id_by_priority(cursor, merged_dict)
     if record_id:
+        # 如果记录存在，禁止更新
+        logger.error(f"已有记录，不执行更新。IMDB: {merged_dict['imdb']} ID: {record_id}")
+        return
+    if record_id:
         # 如果记录存在，需要先查询数据库里这条记录的 resolution、bitrate、size 做比较
         cursor.execute(SEARCH_SQL, (record_id,))
         row = cursor.fetchone()
@@ -135,13 +139,13 @@ def sort_movie_mysql(path: str) -> None:
 
             # 如果 id 不匹配，不允许更新
             if old_tmdb and old_tmdb != merged_dict['tmdb']:
-                logger.warning(f"TMDB 记录不匹配，禁止更新。新 TMDB: {merged_dict['tmdb']}，旧 TMDB: {old_tmdb}，数据库 ID: {record_id}")
+                logger.error(f"TMDB 记录不匹配，禁止更新。新 TMDB: {merged_dict['tmdb']}，旧 TMDB: {old_tmdb}，数据库 ID: {record_id}")
                 return
             elif old_imdb and old_imdb != merged_dict['imdb']:
-                logger.warning(f"IMDB 记录不匹配，禁止更新。新 IMDB: {merged_dict['imdb']}，旧 IMDB: {old_imdb}，数据库 ID: {record_id}")
+                logger.error(f"IMDB 记录不匹配，禁止更新。新 IMDB: {merged_dict['imdb']}，旧 IMDB: {old_imdb}，数据库 ID: {record_id}")
                 return
             elif old_douban and old_douban != merged_dict['douban']:
-                logger.warning(f"DOUBAN 记录不匹配，禁止更新。新 DOUBAN: {merged_dict['douban']}，旧 DOUBAN: {old_douban}，数据库 ID: {record_id}")
+                logger.error(f"DOUBAN 记录不匹配，禁止更新。新 DOUBAN: {merged_dict['douban']}，旧 DOUBAN: {old_douban}，数据库 ID: {record_id}")
                 return
 
             # 如果新数据都大于等于旧数据才更新
@@ -151,9 +155,9 @@ def sort_movie_mysql(path: str) -> None:
                 update_data = data_values + (current_time, record_id)
                 cursor.execute(UPDATE_SQL, update_data)
                 conn.commit()
-                logger.info(f"数据已更新！IMDB: {merged_dict['imdb']}")
+                logger.info(f"数据已更新！IMDB: {merged_dict['imdb']} ID: {record_id}")
             else:
-                logger.warning(f"已有记录更优，不执行更新。IMDB: {merged_dict['imdb']} ID: {record_id}")
+                logger.error(f"已有记录更优，不执行更新。IMDB: {merged_dict['imdb']} ID: {record_id}")
         else:
             logger.error(f"未能查询到指定 ID 记录，跳过更新。ID: {record_id}")
     else:
@@ -161,7 +165,14 @@ def sort_movie_mysql(path: str) -> None:
         insert_data = data_values + (current_time, current_time)
         cursor.execute(INSERT_SQL, insert_data)
         conn.commit()
-        print(f"已插入数据库！IMDB: {merged_dict['imdb']}")
+        if merged_dict['imdb']:
+            logger.info(f"已插入数据库！IMDB: {merged_dict['imdb']}")
+        elif merged_dict['tmdb']:
+            logger.info(f"已插入数据库！TMDB: {merged_dict['tmdb']}")
+        elif merged_dict['douban']:
+            logger.info(f"已插入数据库！DOUBAN: {merged_dict['douban']}")
+        else:
+            logger.info(f"已插入数据库！ID: {cursor.lastrowid}")
 
     # 关闭连接
     cursor.close()
@@ -176,13 +187,8 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
     :param merged_dict: 完整电影信息字典
     :return: 找到则返回对应的 id，否则返回 None
     """
+    # 先用 imdb 进行查找
     imdb_val = merged_dict.get('imdb')
-    tmdb_val = merged_dict.get('tmdb')
-    douban_val = merged_dict.get('douban')
-    director_val = merged_dict.get('director')
-    original_title_val = merged_dict.get('original_title')
-
-    # 先用 imdb 进行查找，排除默认的 'tt0000000' 这种无效值
     if imdb_val:
         select_sql = "SELECT id FROM movies WHERE imdb = %s"
         cursor.execute(select_sql, (imdb_val,))
@@ -190,7 +196,8 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
         if result:
             return result[0]
 
-    # 接着用 tmdb 进行查找，排除可能的空值或 '0'
+    # 接着用 tmdb 进行查找
+    tmdb_val = merged_dict.get('tmdb')
     if tmdb_val:
         select_sql = "SELECT id FROM movies WHERE tmdb = %s"
         cursor.execute(select_sql, (tmdb_val,))
@@ -198,7 +205,8 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
         if result:
             return result[0]
 
-    # 再用 douban 进行查找
+    # 然后用 douban 进行查找，几乎没有
+    douban_val = merged_dict.get('douban')
     if douban_val:
         select_sql = "SELECT id FROM movies WHERE douban = %s"
         cursor.execute(select_sql, (douban_val,))
@@ -206,10 +214,13 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
         if result:
             return result[0]
 
-    # 最后用导演和标题进行查找
+    # 最后用导演、标题和年份进行查找
+    director_val = merged_dict.get('director')
+    original_title_val = merged_dict.get('original_title')
+    year_val = merged_dict.get('year')
     if director_val and original_title_val:
-        select_sql = "SELECT id FROM movies WHERE director = %s AND original_title = %s"
-        cursor.execute(select_sql, (director_val, original_title_val))
+        select_sql = "SELECT id FROM movies WHERE director = %s AND original_title = %s AND year = %s"
+        cursor.execute(select_sql, (director_val, original_title_val, year_val))
         result = cursor.fetchone()
         if result:
             return result[0]

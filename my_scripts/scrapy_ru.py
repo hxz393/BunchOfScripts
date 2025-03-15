@@ -44,7 +44,7 @@ def scrapy_ru() -> None:
             url = future_to_url[future]
             try:
                 future.result()
-                print(f"抓取完成：{url}")
+                logger.info(f"抓取完成：{url}")
             except Exception as e:
                 logger.error(f"抓取出错：{url}，错误：{e}")
 
@@ -114,9 +114,9 @@ def scripy(url: str) -> None:
         download_link = f"{FORUM_URL}{dl_href}"
 
         # 拼凑出文件名，由帖子标题+ID+大小组成
-        if len(title_text) > 200:
-            title_text = title_text[:200] + '...'
-        file_name = f"{title_text} [{topic_id}] [{size_text}].txt"
+        if len(title_text) > 228:
+            title_text = title_text[:228]
+        file_name = f"{title_text}[{topic_id}][{size_text}].txt"
         file_name = file_name.replace("/", "｜").replace("\\", "｜")
         file_name = sanitize_filename(file_name)
         # 文件内容，为帖子地址和种子下载链接，共两行
@@ -136,7 +136,7 @@ def scripy(url: str) -> None:
     if next_link and not stop:
         # 如果能找到此链接，说明还有下一页
         href_value = f"{FORUM_URL}{next_link[0].get('href')}"
-        print("开始下一页链接:", href_value)
+        logger.info("开始下一页链接:", href_value)
         scripy(href_value)
 
     # 更新本地配置

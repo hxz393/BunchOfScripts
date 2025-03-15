@@ -29,6 +29,6 @@ def read_json_to_dict(target_path: Union[str, os.PathLike]) -> Optional[Dict[str
     try:
         with open(target_path, 'r', encoding='utf-8') as file:
             return json.load(file)
-    except Exception:
-        logger.exception(f"An error occurred while reading the JSON file '{target_path}'")
+    except Exception as e:
+        logger.exception(f"An error occurred while reading the JSON file '{target_path}' {e}")
         return None

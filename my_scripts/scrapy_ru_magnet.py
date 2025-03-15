@@ -35,6 +35,7 @@ RU_DIC_GP = CONFIG['ru_dic_gp']  # 翻译字典
 REDIS_HOST = CONFIG['redis_host']  # Redis 主机 IP，没有密码
 REDIS_SET_KEY = CONFIG['redis_set_key']  # Redis 集合键
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
+MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
 
 REQUEST_HEAD["Cookie"] = USER_COOKIE  # 请求头加入认证
 
@@ -51,17 +52,18 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
     """
     if not key_word:
         return
-    print(f"开始搜索：{key_word}")
+    logger.info(f"开始搜索：{key_word}")
     # 对于英语和俄语不要转码，其他要转码
     url = f'{SEARCH_URL}{key_word}'
     data = {"nm": key_word.encode("cp1251", "xmlcharrefreplace").decode("cp1251"), "s": date_order}
-    print(data)
+    logger.debug(data)
 
     # 获取搜索结果，如果没有获取到，检测别名后返回
     topic_infos = []
     get_all_links(url, topic_infos, data)
     if not topic_infos:
-        get_aka_name(key_word, target)
+        if cache:
+            get_aka_name(key_word, target)
         return
 
     final_infos = []
@@ -87,11 +89,11 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
         # 当所有链接都在 RDS 中时，检测别名后返回
         if not final_infos:
             get_aka_name(key_word, target)
-            print(f"{key_word} 没有新链接需要处理")
+            logger.info(f"{key_word} 没有新链接需要处理")
             return
 
     # 多线程访问帖子具体内容，获取其中磁链
-    print(f"开始获取信息：{key_word}")
+    logger.info(f"开始获取信息：{key_word}")
     failed_urls = []  # 用于保存失败的链接
     with ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
         future_to_topic = {executor.submit(scrapy_magnet, topic_info): topic_info for topic_info in final_infos}
@@ -110,11 +112,11 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
         bulk_insert_ids(redis_client, REDIS_SET_KEY, new_urls)
         get_aka_name(key_word, target)
     if failed_urls:
-        print("以下链接处理失败：")
+        logger.warning("以下链接处理失败：")
         for url in failed_urls:
-            print(url)
+            logger.warning(url)
     else:
-        print("所有链接均处理成功。")
+        logger.info("所有链接均处理成功。")
 
 
 def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
@@ -135,12 +137,12 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
     # 检测搜索结果数量
     search_counts = int(re.search(r'Результатов поиска: (\d+)', r.text).group(1))
     if search_counts == 0:
-        print("没有搜索结果！")
+        logger.info("没有搜索结果！")
         return
     elif search_counts > 490:
         # 如果要强制下载，将返回注释掉，data 的 s 参数(date_order)设置为 1
         logger.warning("搜索结果过多！")
-    print(f"搜索结果：{search_counts} 条")
+    logger.info(f"搜索结果：{search_counts} 条")
 
     # 找到所有种子行，路径为 //tr[@class="tCenter hl-tr"]
     tree = etree.HTML(r.text)
@@ -185,7 +187,7 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
 
         # 得到想要数据，打印出来，并插入到传入的列表 topic_infos
         info = {'url': topic_link, 'name': file_name}
-        # print(f'[{group_title_org}]{title_text_org}')
+        logger.debug(f'[{group_title_org}]{title_text_org}')
         topic_infos.append(info)
 
     # 查找下一页链接，找到了递归自身
@@ -193,7 +195,7 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
     if next_link:
         # 如果能找到此链接，说明还有下一页
         href_value = f"{FORUM_URL}{next_link[0].get('href')}"
-        print("开始下一页链接:", href_value)
+        logger.info(f"开始下一页链接: {href_value}")
         get_all_links(href_value, topic_infos)
 
 
@@ -311,6 +313,8 @@ def get_aka_name(key_word: str, target: str) -> None:
     # 先将本次关键字储存
     key_word = key_word.replace('"', '')
     Path(os.path.join(target, key_word)).touch()
+    # 建立镜像文件夹
+    Path(os.path.join(MIRROR_PATH, key_word)).mkdir(parents=True, exist_ok=True)
 
     # 获取文件列表和别名列表
     aka_names = set()
@@ -324,9 +328,9 @@ def get_aka_name(key_word: str, target: str) -> None:
     # 没有别名则返回，有就打印出来
     if not aka_names:
         return
-    print("其他可能的名字：")
+    logger.info("其他可能的名字：")
     for i in aka_names:
-        print(i)
+        logger.info(i)
 
 
 def find_corresponding_name(filename: str, given_name: str) -> Optional[str]:
@@ -400,7 +404,7 @@ def scrapy_magnet(topic_info: dict) -> bool:
     """
     url = topic_info['url']
     path = topic_info['name']
-    # print(f"爬取：{url}")
+    logger.debug(f"爬取：{url}")
 
     r = requests.get(url=url, headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
     if r.status_code != 200:

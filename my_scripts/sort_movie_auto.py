@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from my_module import read_file_to_list, write_list_to_file, read_json_to_dict
+from my_module import read_file_to_list, write_list_to_file, read_json_to_dict, remove_target
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
 from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files
@@ -42,7 +42,7 @@ def sort_director_auto(path: str) -> None:
     # 查找 imdb 编号
     result_list = [path]
     director_main = os.path.basename(path)
-    print(f"开始处理：{director_main}")
+    logger.info(f"开始处理：{director_main}")
     p = Path(path)
     file_list = [str(item) for item in p.rglob('*')]
     imdb_list = []
@@ -67,7 +67,7 @@ def sort_director_auto(path: str) -> None:
                 nm_id = m.group(1) if (m := re.search(r'(nm\d+)', r)) else None
                 break
     else:
-        print(f"IMDB 编号：{nm_id}")
+        logger.info(f"IMDB 编号：{nm_id}")
     if not nm_id:
         logger.error(f"IMDB 电影导演不匹配或没有导演 {director_main}")
         return
@@ -79,7 +79,7 @@ def sort_director_auto(path: str) -> None:
         if tmdb_id:
             result_list.append(tmdb_id)
     else:
-        print(f"TMDB 编号：{tmdb_id}")
+        logger.info(f"TMDB 编号：{tmdb_id}")
     if not tmdb_id:
         logger.error(f"没有在 tmdb 找到导演链接 {director_main}")
 
@@ -90,12 +90,12 @@ def sort_director_auto(path: str) -> None:
         if douban_id:
             result_list.append(douban_id)
     else:
-        print(f"DOUBAN 编号：{douban_id}")
+        logger.info(f"DOUBAN 编号：{douban_id}")
     if not douban_id:
         logger.error(f"没有在 douban 找到导演链接 {director_main}")
 
     # 将结果写入到文件，执行自动抓取
-    print(f"查询结果：{result_list}\n")
+    logger.info(f"查询结果：{result_list}\n")
     target_file = r'B:\2.脚本\!00.txt'
     write_list_to_file(target_file, result_list)
     get_ids(target_file)
@@ -143,7 +143,7 @@ def get_imdb_director(movie_id: str, director_main: str) -> Optional[str]:
         if d["name"] and director_main.lower() in d["name"].lower():
             return d["link"]
         else:
-            print(f"没有匹配到导演，查询到导演名字：{d['name']}")
+            logger.warning(f"没有匹配到导演，查询到导演名字：{d['name']}")
 
     # 如果没有匹配到导演的名字返回 None
     return None
@@ -164,7 +164,7 @@ def get_tmdb_director_aka(tmdb_id: str, director_main: str) -> Optional[str]:
     if director_main.lower().replace(" ", "") in aka:
         return link
     else:
-        print(f"没有匹配到导演，查询到导演名字：{aka_org} {link}")
+        logger.warning(f"没有匹配到导演，查询到导演名字：{aka_org} {link}")
         return None
 
 
@@ -189,7 +189,7 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
         tmdb_id = person.get('id')
         return f"{TMDB_PERSON_URL}/{tmdb_id}"
     else:
-        print(f"没有在 TMDB 上搜索到导演：{nm_id}，尝试通过电影获取导演")
+        logger.warning(f"没有在 TMDB 上搜索到导演：{nm_id}，尝试通过电影获取导演")
 
     # 麻烦的方法
     for imdb in imdb_list:
@@ -201,7 +201,7 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
             movie_id = movie_results[0].get('id')
             movie_details = get_tmdb_movie_details(movie_id)
             crew_list = movie_details['casts'].get('crew', [])
-            # 3. 在 crew 中筛选出 job == 'Director' 的人员
+            # 在 crew 中筛选出 job == 'Director' 的人员
             directors = []
             for member in crew_list:
                 if member.get('job') == 'Director':
@@ -231,8 +231,11 @@ def get_douban_director(nm_id: str) -> Optional[str]:
     """
     # 搜索编号，获取结果
     r = get_douban_search_response(nm_id, "1065")
-    if r:
-        return get_douban_search_details(r)
+    if not r:
+        logger.error("没有获取到豆瓣搜索响应")
+        return
+
+    return get_douban_search_details(r)
 
 
 def sort_movie_auto(path: str) -> None:
@@ -249,7 +252,7 @@ def sort_movie_auto(path: str) -> None:
         return
 
     for folder in folders:
-        print(f"开始处理：{folder}")
+        logger.info(f"开始处理：{folder}")
         r = sort_movie_auto_folder(folder, target_file)
         if r:
             logger.error(r)
@@ -257,7 +260,9 @@ def sort_movie_auto(path: str) -> None:
         get_ids(target_file)
         url_list = read_file_to_list(target_file)
         sort_movie(url_list[0])
-        print("-" * 255)
+        time.sleep(0.1)
+        logger.warning("-" * 255)
+        time.sleep(0.1)
 
 
 def sort_movie_auto_folder(path: str, target_file: str) -> Optional[str]:
@@ -352,7 +357,7 @@ def sort_ru_auto(path: str) -> None:
     :return: 无
     """
     # 获取所有名字到 aka 列表
-    print(f"开始处理：{path}")
+    logger.info(f"开始处理：{path}")
     p = Path(path)
     aka = []
     empty = []
@@ -365,7 +370,7 @@ def sort_ru_auto(path: str) -> None:
 
     for n in aka:
         name, result = ru_search(n)
-        print(f"搜索关键字: {name} -> {result}")
+        logger.info(f"搜索关键字: {name} -> {result}")
         if result != 0:
             return
 
@@ -373,7 +378,7 @@ def sort_ru_auto(path: str) -> None:
     json_dict = get_files_with_extensions(path, ".json")
     log_dict = get_files_with_extensions(path, ".log")
     if json_dict or log_dict:
-        print(f"有下载中的文件 {len(json_dict) + len(log_dict)} 个")
+        logger.info(f"有下载中的文件 {len(json_dict) + len(log_dict)} 个")
         return
 
     # 移动空文件到目标目录，如不存在则会自动创建
@@ -384,7 +389,7 @@ def sort_ru_auto(path: str) -> None:
         shutil.move(str(file_path), str(target_path))
     time.sleep(0.1)
     shutil.move(path, "A:\\0c.下载整理")
-    print(r"已安全移动！")
+    logger.info(r"已安全移动！")
 
 
 def sort_torrents_auto(path: str) -> None:
@@ -394,7 +399,7 @@ def sort_torrents_auto(path: str) -> None:
     :param path: 来源目录
     :return: 无
     """
-    print(f"来源目录：{path}")
+    logger.info(f"来源目录：{path}")
     # 获取所有子目录，为导演目录
     dir_dict = get_subdirs(path)
     for k, dir_path in dir_dict.items():
@@ -422,10 +427,10 @@ def sort_torrents_auto(path: str) -> None:
                     if any(name.lower() in film_name.lower() for name in names_to_check_alt) or any(name.lower() in film_name.lower() for name in names_to_check) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
                         target_path = os.path.join(film_path, json_name)
                         shutil.move(json_path, target_path)
-                        print(f"移动文件：{json_path} -> {target_path}")
+                        logger.info(f"移动文件：{json_path} -> {target_path}")
                         os.rename(film_path, os.path.join(dir_path, json_name_no_ext))
-                        print(f"目录更名：{film_path} -> {json_name_no_ext}")
-                        print("-" * 255)
+                        logger.info(f"目录更名：{film_path} -> {json_name_no_ext}")
+                        logger.info("-" * 255)
                         break
 
         # 处理 log 文件，将下载目录名去匹配种子名
@@ -436,12 +441,12 @@ def sort_torrents_auto(path: str) -> None:
                     if film_name in log_name:
                         target_path = os.path.join(film_path, log_name)
                         shutil.move(log_path, target_path)
-                        print(f"移动文件：{log_path} -> {target_path}")
-                        print("-" * 255)
+                        logger.info(f"移动文件：{log_path} -> {target_path}")
+                        logger.info("-" * 255)
                         break
 
-        # 删除垃圾文件
-        delete_trash_files(dir_path)
+    # 删除垃圾文件
+    delete_trash_files(path)
 
 
 def sort_aka_files(source_path: str, target_path: str) -> None:
@@ -452,17 +457,23 @@ def sort_aka_files(source_path: str, target_path: str) -> None:
     :param target_path: 目标目录
     :return: 无
     """
-    print(f"来源目录：{source_path}")
-    print(f"目标目录：{target_path}")
+    logger.info(f"来源目录：{source_path}")
+    logger.info(f"目标目录：{target_path}")
     # 获取所有子目录
     dir_dict = get_subdirs(source_path)
     for k, dir_path in dir_dict.items():
         p = Path(dir_path)
-        destination_dir = Path(os.path.join('F:\\电影(1)\\', k))
+        destination_dir = Path(os.path.join(target_path, k))
         destination_dir.mkdir(parents=True, exist_ok=True)
+        # if not destination_dir.exists():
+        #     continue
+
         for path_item in p.iterdir():
             if path_item.is_file():
                 if path_item.stat().st_size == 0:
                     dest_path = destination_dir / path_item.name
                     shutil.move(str(path_item), str(dest_path))
-                    print(f"移动：{str(path_item)} -> {str(dest_path)}")
+                    logger.info(f"移动：{str(path_item)} -> {str(dest_path)}")
+                elif path_item.name == "movies.csv":
+                    remove_target(str(path_item))
+                    logger.info(f"删除：{str(path_item)}")

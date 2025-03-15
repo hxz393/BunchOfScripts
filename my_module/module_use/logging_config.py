@@ -9,6 +9,7 @@
 """
 import logging
 import os
+import sys
 from logging import getLogger, StreamHandler, Formatter
 from logging.handlers import RotatingFileHandler
 from typing import Optional
@@ -43,20 +44,26 @@ def logging_config(log_file: Optional[str] = None,
             handler.close()
 
     logger.setLevel(getattr(logging, log_level.upper()))
-    formatter = Formatter(default_log_format)
 
     if console_output:
-        ch = StreamHandler()
-        ch.setLevel(getattr(logging, log_level.upper()))
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
+        # 低于 WARNING 级别的日志输出到 stdout
+        stdout_handler = StreamHandler(sys.stdout)
+        stdout_handler.setLevel(logging.DEBUG)
+        stdout_handler.addFilter(lambda record: record.levelno < logging.WARNING)
+        stdout_handler.setFormatter(Formatter(default_log_format))
+        logger.addHandler(stdout_handler)
+
+        # WARNING 级别及以上的日志输出到 stderr
+        stderr_handler = StreamHandler(sys.stderr)
+        stderr_handler.setLevel(logging.WARNING)
+        stderr_handler.setFormatter(Formatter(f"%(levelname)s: {default_log_format}"))
+        logger.addHandler(stderr_handler)
 
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True) if os.path.dirname(log_file) else None
         fh = RotatingFileHandler(log_file, maxBytes=max_log_size * 1024 * 1024, backupCount=backup_count, encoding="utf-8")
-        fh.close()
         fh.setLevel(getattr(logging, log_level.upper()))
-        fh.setFormatter(formatter)
+        fh.setFormatter(Formatter(default_log_format))
         logger.addHandler(fh)
 
     return logger

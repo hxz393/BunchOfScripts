@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict
 from typing import Optional, Any
 
-from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target
+from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_file_paths_by_type, get_folder_paths
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,11 @@ MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
 RARBG_TARGET = CONFIG['rarbg_target']  # rarbg 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
-FFPROBE_PATH = CONFIG['ffprobe_path']  # everything 路径
-MTM_PATH = CONFIG['mtm_path']  # everything 路径
+FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
+MTM_PATH = CONFIG['mtm_path']  # mtm 路径
+MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
+RU_PATH = CONFIG['ru_path']  # ru 种子路径
+YTS_PATH = CONFIG['yts_path']  # yts 种子路径
 
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
@@ -41,7 +44,7 @@ RE_NAME = re.compile(
     r'(?P<year>\d{4})\s*-\s*'  # 放映年（4位数字）和分隔符
     r'(?P<title>[^{]+)'  # 电影原名：匹配除 { 和 ( 之外的字符
     r'(?:\((?P<chinese>[^)]+)\))?'  # 可选的电影中文名，包含在括号中
-    r'\{(?P<imdb>(tt\d+|tmdb\d+|db\d+)\d+)}'  # IMDB 编号，形如 {tt1959550}
+    r'\{(?P<imdb>(tt\d+|tmdb\d+|db\d+|noid)\d*(tv)?)}'  # IMDB 编号，形如 {tt1959550}
     r'\[(?P<source>[^]]+)]'  # 电影来源，例如 [DVDRip]
     r'\[(?P<resolution>[^]]+)]'  # 电影分辨率，例如 [656x368]
     r'\[(?P<encoding>[^]@]+)@(?P<bitrate>[^]]+)]'  # 文件编码和码率，例如 [XVID@1074kbps]
@@ -124,7 +127,7 @@ def get_ids(source_path: str) -> None:
 
 def scan_ids(directory: str) -> Dict[str, Optional[str]]:
     """
-    扫描给定目录下的导演编号文件：
+    扫描给定目录下的编号文件：
     - *.tmdb 文件保存tmdb编号
     - *.douban 文件保存douban编号
     - *.imdb 文件保存imdb编号
@@ -139,7 +142,12 @@ def scan_ids(directory: str) -> Dict[str, Optional[str]]:
     try:
         files = os.listdir(directory)
     except FileNotFoundError:
-        print(f"目录 {directory} 不存在。")
+        logger.error(f"目录 {directory} 不存在。")
+        return result
+
+    id_ext = [".imdb", ".tmdb", ".douban"]
+    if any(len(get_file_paths_by_type(directory, [ext])) > 1 for ext in id_ext):
+        logger.error(f"目录 {directory} 中 id 文件太多，请先清理。")
         return result
 
     # 遍历目录中的文件
@@ -302,10 +310,10 @@ def get_movie_id(movie_dict: dict) -> str:
     elif movie_dict.get('douban'):
         return f"db{movie_dict['douban']}"
     else:
-        return "tt0000000"
+        return "noid"
 
 
-def gen_folder_name(path: str, movie_dict: dict) -> str:
+def build_movie_folder_name(path: str, movie_dict: dict) -> str:
     """
     生成电影文件夹名字
 
@@ -430,7 +438,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     # 编码器，mkv 要特别判断
     codec_tag_string = video_stream.get("codec_tag_string", "未知编码器").upper()
     codec_name = video_stream.get("codec_name", "未知编码器").upper()
-    file_info["codec"] = codec_name if codec_tag_string == "[0][0][0][0]" else codec_tag_string
+    file_info["codec"] = codec_name if codec_tag_string.startswith("[") else codec_tag_string
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -542,34 +550,40 @@ def check_folder(path: str) -> Optional[str]:
     # 检查信息文件
     movie_info_file = p / "movie_info.json5"
     if not os.path.exists(movie_info_file):
-        return f"目录中不存在 movie_info.json：{p.name}"
+        return f"{p.name} 目录中不存在 movie_info.json"
     movie_info = read_json_to_dict(movie_info_file)
 
     # 检查导演是否正确
     if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
-        logger.warning(f"导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
+        logger.warning(f"{p.name} 导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
+
+    # 检查其他字段信息
+    for k, v in movie_info.items():
+        if not v:
+            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "dl_link"]:  # 能为空的字段
+                logger.warning(f"{p.name} 缺少字段信息：{k}")
 
     # 查找多余目录
     dir_list = [f.name for f in p.iterdir() if f.is_dir()]
     if len(dir_list) != 0:
-        return f"目录中有二级目录：{dir_list}"
+        return f"{p.name} 目录中有二级目录：{dir_list}"
 
     # 检查子目录是否符合规范
     match = RE_NAME.match(p.name)
     if not match:
-        return f"目录名格式错误或缺少必须字段：{p.name}"
+        return f"{p.name} 目录名格式错误或缺少必须字段"
 
     # 检查码率是否过高
     info = match.groupdict()
     file_bitrate = int(info['bitrate'].split('kbps')[0])
     if file_bitrate > MAX_BITRATE:
-        logger.warning(f"码率过高：{file_bitrate}kbps")
+        logger.warning(f"{p.name} 码率过高：{file_bitrate}kbps")
 
     # 查找视频数量
     file_list = [f for f in p.iterdir() if f.is_file()]
     video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
     if len(video_paths) > 1:
-        logger.warning(f"目录中视频数量大于 1")
+        logger.warning(f"{p.name} 目录中视频数量大于 1")
 
     # 生成视频缩略图
     for video_path in video_paths:
@@ -598,7 +612,11 @@ def check_folder(path: str) -> Optional[str]:
     if move_counts:
         return f"请检查 RARBG 库存: {move_counts}"
     if delete_counts:
-        print(f"已删除 RARBG 库存文件 {delete_counts}")
+        logger.info(f"已删除 RARBG 库存文件 {delete_counts}")
+
+    # 建立镜像文件夹
+    mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info['director']))
+    mirror_dir.mkdir(parents=True, exist_ok=True)
 
 
 def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
@@ -754,7 +772,7 @@ def delete_trash_files(path: str) -> None:
     for file_path in file_paths:
         file_name = os.path.basename(file_path)
         if file_name.lower() in trash_low:
-            print(f"删除垃圾：{remove_target(file_path)}")
+            logger.info(f"删除垃圾：{remove_target(file_path)}")
 
 
 def everything_search_filelist(file_path: str) -> None:
@@ -770,6 +788,38 @@ def everything_search_filelist(file_path: str) -> None:
     command = f'"{EVERYTHING_PATH}" -regex -search "{search_query}"'
     # 使用 subprocess.run 执行命令
     subprocess.run(command, shell=True)
+
+
+def sort_new_torrents(target_path: str) -> None:
+    """
+    整理种子目录，将已整理过的导演电影种子提取出来
+
+    :param target_path: 移动目标目录
+    :return: 无
+    """
+    # 获取列表
+    keywords = [os.path.basename(key) for key in get_folder_paths(MIRROR_PATH)]
+    # 将所有关键字一次编译为正则模式 (忽略大小写)
+    keyword_pattern = re.compile("|".join(re.escape(kw) for kw in keywords), re.IGNORECASE)
+
+    # yts目录处理
+    for yts_path in get_folder_paths(YTS_PATH):
+        match = keyword_pattern.search(yts_path)
+        if match:
+            matched_keyword = match.group()
+            logger.info(f"关键字 '{matched_keyword}' 匹配到路径: {yts_path}")
+            shutil.move(yts_path, target_path)
+
+    # ru目录处理
+    for ru_path in get_file_paths(RU_PATH):
+        match = keyword_pattern.search(ru_path)
+        if match:
+            matched_keyword = match.group()
+            target_path_root = os.path.join(target_path, matched_keyword)
+            Path(target_path_root).mkdir(parents=True, exist_ok=True)
+            target_path_ru = os.path.join(target_path_root, os.path.basename(ru_path))
+            logger.info(f"关键字 '{matched_keyword}' 匹配到路径: {ru_path}")
+            shutil.move(ru_path, target_path_ru)
 
 
 def fix_douban_name(name: str) -> str:
@@ -792,3 +842,4 @@ def fix_douban_name(name: str) -> str:
 
     name = name.strip()
     return name
+

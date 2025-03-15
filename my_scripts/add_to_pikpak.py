@@ -57,5 +57,5 @@ def add_to_pikpak(source: str) -> None:
                 continue
 
             command = f'{PIKPAK_PATH} --config {PIKPAK_CONFIG} new url -p "/{director}" -n "{file_name_no_ext}" "{dl_link}"'
-            print(command)
+            logger.info(command)
             subprocess.run(command, shell=True)

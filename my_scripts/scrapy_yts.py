@@ -51,7 +51,7 @@ def scrapy_yts(url_path: str) -> None:
         return
 
     # 获取url列表，多线程爬取
-    print("开始爬取")
+    logger.info("开始爬取")
     links = read_file_to_list(url_path)
     try:
         with ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
@@ -72,9 +72,9 @@ def scrapy_yts(url_path: str) -> None:
     except Exception:
         logger.exception(f"链接：{link} 在分配线程时发生错误")
     finally:
-        logger.info(f"总计数量：{len(links)}，失败数量：{failed_count}。失败链接：")
+        logger.warning(f"总计数量：{len(links)}，失败数量：{failed_count}。失败链接：")
         for i in failed_list:
-            print(i)
+            logger.error(i)
 
 
 def yts_login(session: requests.Session) -> bool:
@@ -92,7 +92,7 @@ def yts_login(session: requests.Session) -> bool:
     response = session.post(login_endpoint, data=data)
     # 登录成功时，返回内容通常为 "Ok."
     if response.json()["status"] == "ok":
-        print("yts: 登录成功。")
+        logger.info("yts: 登录成功。")
         return True
     else:
         logger.error(f"yts: 登录失败，响应内容: {response.text}")

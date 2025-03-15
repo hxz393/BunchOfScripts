@@ -26,7 +26,7 @@ def sort_movie_director(path: str) -> int:
     :param path: 导演目录
     :return: 返回链接处理成功的数量
     """
-    print("开始抓取导演信息")
+    logger.info("开始抓取导演信息")
     path = path.strip()
     # 初始化变量
     director_ids = scan_ids(path)
@@ -40,9 +40,9 @@ def sort_movie_director(path: str) -> int:
         tmdb_info = get_tmdb_director_info(tmdb)
         director_info = merge_and_dedup(director_info, tmdb_info)
         done += 1
-        print("TMDB 名字：", tmdb_info.get("aka", [])[0])
+        logger.info(f"TMDB 名字：{tmdb_info.get('aka', [])[0]}")
     else:
-        print("没有 TMDB 编号。")
+        logger.warning("没有 TMDB 编号。")
 
     # IMDB 流程
     imdb = director_ids['imdb']
@@ -50,9 +50,9 @@ def sort_movie_director(path: str) -> int:
         imdb_info = get_imdb_director_info(imdb)
         director_info = merge_and_dedup(director_info, imdb_info)
         done += 1
-        print("IMDB 名字：", imdb_info.get("aka", [])[0])
+        logger.info(f"IMDB 名字：{imdb_info.get('aka', [])[0]}")
     else:
-        print("没有 IMDB 编号。")
+        logger.warning("没有 IMDB 编号。")
 
     # DOUBAN 流程
     douban = director_ids['douban']
@@ -60,9 +60,9 @@ def sort_movie_director(path: str) -> int:
         douban_info = get_douban_director_info(douban)
         director_info = merge_and_dedup(director_info, douban_info)
         done += 1
-        print("DOUBAN 名字：", douban_info.get("aka", [])[0])
+        logger.info(f"DOUBAN 名字：{douban_info.get('aka', [])[0]}")
     else:
-        print("没有 DOUBAN 编号。")
+        logger.warning("没有 DOUBAN 编号。")
 
     # 将别名写入到空文件
     aka = director_info["aka"]

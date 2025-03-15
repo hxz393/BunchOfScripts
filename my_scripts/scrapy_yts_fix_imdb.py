@@ -35,19 +35,19 @@ def scrapy_yts_fix_imdb() -> None:
     for root, dirs, files in os.walk(FILE_PATH):
         for file_name in files:
             if file_name.endswith('.json'):
-                print(f"处理：{file_name}")
+                logger.info(f"处理：{file_name}")
                 file_path = Path(os.path.join(root, file_name))
                 imdb = file_name.split('[')[1].split(']')[0]
                 folder_name = search_imdb(imdb)
                 if not folder_name:
                     folder_name = '没有导演'
-                print(f"导演名：{folder_name}")
+                logger.info(f"导演名：{folder_name}")
 
                 folder_path = Path(os.path.join(Path(root).parent, folder_name))
                 folder_path.mkdir(parents=True, exist_ok=True)
                 target_file_path = folder_path / file_path.name
                 shutil.move(file_path, target_file_path)
-                print("*" * 35)
+                logger.info("*" * 35)
 
 
 def search_imdb(m_id: str) -> str:

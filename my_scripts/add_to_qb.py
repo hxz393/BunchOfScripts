@@ -69,7 +69,7 @@ def add_to_qb(source: str) -> None:
                 # 添加种子文件
                 add_torrent_file(session, file_path, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
                 done += 1
-    print(f"共添加 {done} 个任务。")
+    logger.info(f"共添加 {done} 个任务。")
 
 
 def qb_login(session: requests.Session) -> bool:
@@ -87,10 +87,10 @@ def qb_login(session: requests.Session) -> bool:
     response = session.post(login_endpoint, data=data)
     # 登录成功时，返回内容通常为 "Ok."
     if response.text == "Ok.":
-        print("qBittorrent: 登录成功。")
+        logger.info("qBittorrent: 登录成功。")
         return True
     else:
-        print(f"qBittorrent: 登录失败，响应内容: {response.text}")
+        logger.error(f"qBittorrent: 登录失败，响应内容: {response.text}")
         return False
 
 
@@ -121,7 +121,7 @@ def add_magnet_link(session: requests.Session, magnet_link: str, save_path: str 
     r = session.post(add_endpoint, data=data)
     if r.status_code == 200:
         if r.text == "Ok.":
-            print(f"已添加磁力链接 {tags}: {magnet_link}")
+            logger.info(f"已添加磁力链接 {tags}: {magnet_link}")
         else:
             logger.error(f"添加磁力链接失败 {tags}: {magnet_link}, status={r.status_code}, resp={r.text}")
     else:
@@ -153,7 +153,7 @@ def add_torrent_file(session: requests.Session, torrent_path: str, save_path: st
     r = session.post(add_endpoint, files=files, data=data)
     if r.status_code == 200:
         if r.text == "Ok.":
-            print(f"已添加种子文件 {tags}: {torrent_path}")
+            logger.info(f"已添加种子文件 {tags}: {torrent_path}")
         else:
             logger.error(f"添加种子文件失败: {tags}, status={r.status_code}, resp={r.text}")
     else:

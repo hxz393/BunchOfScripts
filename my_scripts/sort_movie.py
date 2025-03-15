@@ -8,13 +8,15 @@
 import logging
 import os
 import sys
+import time
 
 from bs4 import BeautifulSoup
+from pathlib import Path
 
-from my_module import sanitize_filename, write_dict_to_json
+from my_module import sanitize_filename, write_dict_to_json, read_json_to_dict
 from sort_movie_mysql import sort_movie_mysql
+from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_folder
 from sort_movie_request import get_tmdb_movie_details, get_imdb_movie_details, get_douban_movie_response
-from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, gen_folder_name, merged_dict, create_aka_movie, get_video_info, check_folder
 
 logger = logging.getLogger(__name__)
 
@@ -28,41 +30,56 @@ def sort_movie(path: str, tv: bool = False) -> None:
     :return: 无
     """
     path = path.strip()
-    print(f"开始抓取")
+    movie_info_file = f"{path}\\movie_info.json5"
+    no_movie_info = not os.path.exists(movie_info_file)  # 不存在 movie_info.json5 文件
+    logger.info(f"开始抓取")
     if not os.path.exists(path):
         logger.error("目录不存在")
         return
 
-    # 初始化变量
+    # 检查是否没有任何 ID
     movie_ids = scan_ids(path)
+    no_movie_ids = all(value is None for value in movie_ids.values())  # 不存在 id 文件
+    if no_movie_info and no_movie_ids:
+        logger.error("没有找到任何 ID")
+        return
+
+    # 初始化变量
+    local_only = not no_movie_info and no_movie_ids  # 不去网络搜索电影信息
     tv = True if movie_ids["tmdb"] and movie_ids["tmdb"].find('tv') != -1 else False
-    movie_info = {
-        "director": "",
-        "year": 0,
-        "original_title": "",
-        "chinese_title": "",
-        "genres": [],
-        "country": [],
-        "language": [],
-        "runtime": 0,
-        "titles": [],
-        "directors": []
-    }
+    if local_only:
+        logger.warning("本地三无信息处理模式")
+        movie_info = read_json_to_dict(movie_info_file)
+    else:
+        movie_info = {
+            "director": "",
+            "year": 0,
+            "original_title": "",
+            "chinese_title": "",
+            "genres": [],
+            "country": [],
+            "language": [],
+            "runtime": 0,
+            "titles": [],
+            "directors": []
+        }
+
     # 先移除文件层级
     move_all_files_to_root(path)
 
     # 三大网站处理流程
-    actions = {
-        'tmdb': lambda tmdb_id: get_tmdb_movie_info(tmdb_id.replace("tv", ""), movie_info, tv),
-        'imdb': lambda imdb_id: get_imdb_movie_info(imdb_id, movie_info),
-        'douban': lambda douban_id: get_douban_movie_info(douban_id, movie_info)
-    }
-    for key, action in actions.items():
-        id_value = movie_ids.get(key)
-        if id_value:
-            action(id_value)
-        else:
-            logger.warning(f"没有 {key.upper()} 编号。")
+    if not local_only:
+        actions = {
+            'tmdb': lambda tmdb_id: get_tmdb_movie_info(tmdb_id.replace("tv", ""), movie_info, tv),
+            'imdb': lambda imdb_id: get_imdb_movie_info(imdb_id, movie_info),
+            'douban': lambda douban_id: get_douban_movie_info(douban_id, movie_info)
+        }
+        for key, action in actions.items():
+            id_value = movie_ids.get(key)
+            if id_value:
+                action(id_value)
+            else:
+                logger.warning(f"没有 {key.upper()} 编号。")
 
     # 本地处理视频文件，获取视频基础信息
     file_info = get_video_info(path)
@@ -72,13 +89,13 @@ def sort_movie(path: str, tv: bool = False) -> None:
     # 合并处理字典，加入新字段
     movie_dict = merged_dict(path, movie_info, movie_ids, file_info)
     # 拼凑文件名
-    new_path = os.path.join(os.path.dirname(path), sanitize_filename(gen_folder_name(path, movie_dict)))
+    new_path = os.path.join(os.path.dirname(path), sanitize_filename(build_movie_folder_name(path, movie_dict)))
     # 重命名目录
     os.rename(path, new_path)
     # 建立电影别名空文件
     create_aka_movie(new_path, movie_dict)
     # 打印并写入信息文件到本地
-    print(f"抓取结果：{movie_dict}")
+    logger.info(f"抓取结果：{movie_dict}")
     write_dict_to_json(os.path.join(new_path, "movie_info.json5"), movie_dict)
 
     # 最后检查目录规范
@@ -89,8 +106,9 @@ def sort_movie(path: str, tv: bool = False) -> None:
 
     # 没有问题才将信息插入数据库
     sort_movie_mysql(new_path)
-    print(f"旧名：{path}")
-    print(f"新名：{new_path}")
+    time.sleep(0.1)
+    logger.info(f"旧名：{path}")
+    logger.info(f"新名：{new_path}")
 
 
 def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
@@ -161,10 +179,18 @@ def get_imdb_movie_info(movie_id: str, movie_info: dict) -> None:
         runtime = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "runtime", "seconds"], default=0)
         movie_info["runtime"] = int(runtime / 60)
 
-    # 获取原名，忽略中文名。放弃获取别名
+    # 获取原名
+    original_title = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "originalTitleText", "text"], default="")
+    movie_info["titles"].append(original_title)
     if not movie_info["original_title"]:
-        original_title = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "originalTitleText", "text"], default="")
         movie_info["original_title"] = original_title
+
+    # 获取别名
+    aka_edges = safe_get(m, ["props", "pageProps", "mainColumnData", "akas", "edges"], default=[])
+    first_edges_item = aka_edges[0] if aka_edges else {}
+    aka_title = safe_get(first_edges_item, ["node", "text"], default="")
+    if aka_title:
+        movie_info["titles"].append(aka_title)
 
     # 获取风格标签，直接合并到原表
     genre_texts = [
