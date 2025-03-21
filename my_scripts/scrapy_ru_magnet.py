@@ -9,6 +9,7 @@ import concurrent.futures
 import logging
 import os
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -16,12 +17,11 @@ from typing import Optional
 import redis
 import requests
 from lxml import etree
+from requests.adapters import HTTPAdapter
 from retrying import retry
+from urllib3.util.retry import Retry
 
 from my_module import read_json_to_dict, sanitize_filename
-
-logger = logging.getLogger(__name__)
-requests.packages.urllib3.disable_warnings()
 
 CONFIG_PATH = 'config/scrapy_ru.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -38,6 +38,19 @@ THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
 
 REQUEST_HEAD["Cookie"] = USER_COOKIE  # 请求头加入认证
+
+logger = logging.getLogger(__name__)
+requests.packages.urllib3.disable_warnings()
+retry_strategy = Retry(
+    total=15,  # 总共重试次数
+    status_forcelist=[502],  # 触发重试状态码
+    method_whitelist=["POST", "GET"],  # 允许重试方法
+    backoff_factor=2  # 重试等待间隔（指数增长）
+)
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=THREAD_NUMBER, pool_maxsize=THREAD_NUMBER)
+session = requests.Session()
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 
 
 def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: bool = True) -> None:
@@ -129,10 +142,10 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
     :return: 无
     """
     # 请求搜索地址，总该使用 POST
-    r = requests.post(url=url, headers=REQUEST_HEAD, data=data, timeout=15, verify=False, allow_redirects=True)
+    r = session.post(url=url, headers=REQUEST_HEAD, data=data, timeout=15, verify=False, allow_redirects=True)
     if r.status_code != 200:
         logger.error(f"搜索失败！{r.status_code}")
-        return
+        sys.exit(f"请重新运行")
 
     # 检测搜索结果数量
     search_counts = int(re.search(r'Результатов поиска: (\d+)', r.text).group(1))
@@ -406,7 +419,7 @@ def scrapy_magnet(topic_info: dict) -> bool:
     path = topic_info['name']
     logger.debug(f"爬取：{url}")
 
-    r = requests.get(url=url, headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
+    r = session.get(url=url, headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
     if r.status_code != 200:
         logger.error(f"链接无法访问: {url}")
         return False
@@ -464,26 +477,23 @@ def russian_delete(filename: str) -> str:
 
     # 2. 检查 movie_part 中“｜”的数量
     bar_count = movie_part.count('｜')
-    if bar_count == 1:
-        # 只有一个｜，则可以认为存在“俄语名｜原名”或“原名｜俄语名”
-        left, right = movie_part.split('｜', 1)
+    if bar_count >= 1:
+        # 将 movie_part 按｜拆分成多个部分
+        parts = movie_part.split('｜')
 
-        left_cyr = contains_cyrillic(left)
-        right_cyr = contains_cyrillic(right)
+        # 检查每个部分是否包含俄语
+        cyrillic_flags = [contains_cyrillic(part) for part in parts]
 
-        # 3. 判断哪侧是俄语名，哪侧是原名
-        if left_cyr and not right_cyr:
-            # left 是俄语名 -> 删除 left，保留 right
-            movie_part = right.strip()
-        elif right_cyr and not left_cyr:
-            # right 是俄语名 -> 删除 right，保留 left
-            movie_part = left.strip()
-        else:
-            # 两侧都包含或都不包含西里尔字符 -> 不处理
+        if all(cyrillic_flags) or not any(cyrillic_flags):
+            # 如果所有部分都含或都不含俄语，则不做处理
             pass
-    else:
-        # 0 或多个“｜”，不处理
-        pass
+        elif filename.find("苏") != -1 or filename.find("俄") != -1:
+            # 苏俄圈的不做处理
+            pass
+        else:
+            # 只保留不含俄语的部分
+            non_cyrillic_parts = [part.strip() for part, has_cyr in zip(parts, cyrillic_flags) if not has_cyr]
+            movie_part = '｜'.join(non_cyrillic_parts)
 
     # 4. 拼接回最终文件名
     new_filename = movie_part.strip() + " " + suffix_part

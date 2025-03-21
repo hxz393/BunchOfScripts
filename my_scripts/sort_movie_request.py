@@ -5,11 +5,14 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
+import base64
 import json
 import logging
+import re
 import sys
 import urllib.parse
 from typing import Optional
+from collections import defaultdict
 
 import requests
 from bs4 import BeautifulSoup
@@ -40,6 +43,10 @@ DOUBAN_PERSON_URL = CONFIG['douban_person_url']  # 豆瓣人物地址
 DOUBAN_SEARCH_URL = CONFIG['douban_search_url']  # 豆瓣搜索地址
 DOUBAN_HEADER['Cookie'] = DOUBAN_COOKIE  # 请求头加入认证
 
+KPK_SEARCH_URL = CONFIG['kpk_search_url']  # 科普库搜索地址
+KPK_PAGE_URL = CONFIG['kpk_page_url']  # 科普库搜索地址
+KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
+
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
 def get_tmdb_search_response(search_id: str) -> Optional[dict]:
@@ -59,8 +66,8 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     return r.json()
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
-def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> AsObj:
+@retry(stop_max_attempt_number=5, wait_random_min=30, wait_random_max=300)
+def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[AsObj]:
     """
     从 TMDB 获取电影信息，返回结果字典
 
@@ -72,7 +79,8 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> AsObj:
     tmdb = TMDb()
     tmdb.api_key = TMDB_KEY
     movie = TV() if tv else Movie()
-    return movie.details(movie_id)
+    result = movie.details(movie_id)
+    return result if result else None
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
@@ -113,7 +121,7 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     logger.info(f"查询 IMDB：{movie_id}")
     url = f"{IMDB_MOVIE_URL}/{movie_id}/"
-    response = requests.get(url, timeout=15, verify=False, headers=IMDB_HEADER)
+    response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:
         logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
         return
@@ -129,7 +137,7 @@ def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     :return: 成功时返回响应
     """
     url = f"{IMDB_PERSON_URL}/{director_id}/"
-    response = requests.get(url, timeout=15, verify=False, headers=IMDB_HEADER)
+    response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:
         logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
         return
@@ -261,3 +269,71 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
     else:
         logger.error("未找到 url 参数")
         return
+
+
+@retry(stop_max_attempt_number=5, wait_random_min=300, wait_random_max=3000)
+def get_kpk_search_response(search_id: str) -> Optional[list]:
+    """
+    从 kpk 搜索 imdb 编号，返回页面 id
+
+    :param search_id: 搜索 id
+    :return: 成功时返回响应网页 id 列表
+    """
+    url = f"{KPK_SEARCH_URL}"
+    params = {
+        "kw": search_id,
+        "callback": "jQuery112305981342517550043_1742472456793",
+    }
+    response = requests.get(url, timeout=10, verify=False, headers=KPK_HEADER, params=params)
+    # 去掉 JSONP 回调函数的包装
+    response.encoding = 'utf-8'
+    json_str = re.sub(r'.+({.+}).+', r'\1', response.text)
+    # 解析 JSON 数据
+    data_obj = json.loads(json_str)
+    if data_obj["code"] != 1:
+        logger.debug(f"失败重试: {data_obj}")
+        return get_kpk_search_response(search_id)
+    # 格式化解码后的 JSON 数据
+    result = []
+    if data_obj["js"]:
+        result = json.loads(base64.b64decode(data_obj["js"]).decode('utf-8'))
+
+    # 返回 id 列表
+    if not result:
+        return
+    return [i["id"] for i in result]
+
+
+@retry(stop_max_attempt_number=5, wait_random_min=300, wait_random_max=3000)
+def get_kpk_page_details(page_id: str) -> Optional[dict]:
+    """
+    访问 kpk 获取下载信息
+
+    :param page_id: 页面 id
+    :return: 成功时返回下载信息字典
+    """
+    url = f"{KPK_PAGE_URL}/{page_id}"
+    response = requests.get(url, timeout=10, verify=False, headers=KPK_HEADER)
+
+    # 创建一个默认字典来存放结果
+    result_dict = defaultdict(list)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    # 获取所有指定class的h2元素
+    for h2_tag in soup.find_all('h2', class_='uk-text-bold uk-text-muted'):
+        # 查找当前h2之后的第一个table
+        table = h2_tag.find_next('table')
+        if table:
+            # 遍历table中所有的tr
+            for tr in table.find_all('tr'):
+                td = tr.find('td')
+                if td:
+                    # 提取span文本
+                    span = td.find('span')
+                    # 提取第一个有效的a标签文本
+                    a = td.find('a')
+
+                    # 拼接内容
+                    full_text = f"{span.get_text(strip=True)} {td.find('a').get_text(strip=True)}" if span else a.get_text(strip=True)
+                    full_text = full_text.replace('复制链接', '').replace('详情', '').strip()
+                    result_dict[h2_tag.get_text(strip=True)].append(full_text)
+    return dict(result_dict)

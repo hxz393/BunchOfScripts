@@ -11,12 +11,16 @@ import re
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from get_director_movies import get_tmdb_director_movies_all
 from my_module import read_file_to_list, write_list_to_file, read_json_to_dict, remove_target
+from scrapy_kpk import scrapy_kpk
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
+from sort_movie_mysql import insert_movie_wanted
 from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files
 from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response, get_tmdb_director_details, get_douban_search_response, get_douban_search_details, get_tmdb_movie_details
 from sort_ru import ru_search
@@ -252,7 +256,7 @@ def sort_movie_auto(path: str) -> None:
         return
 
     for folder in folders:
-        logger.info(f"开始处理：{folder}")
+        logger.info(f"{time.strftime('%Y-%m-%d %H:%M:%S')} 开始处理：{folder}")
         r = sort_movie_auto_folder(folder, target_file)
         if r:
             logger.error(r)
@@ -347,49 +351,32 @@ def get_douban_id(imdb_id: str) -> dict:
     return return_dict
 
 
-def sort_ru_auto(path: str) -> None:
+def sort_ru_auto(source_path: str, target_path: str, max_workers: int = 8) -> None:
     """
-    自动搜索下载，如果有搜索结果则放弃继续搜索
-    否则检查是否有 json 和 log 文件
-    都没有则安全移动到 A:\0c.下载整理
+    使用多线程并发自动搜索下载，如果有搜索结果则放弃继续搜索，否则移动到 target_path
 
-    :param path: 导演目录
+    :param source_path: 来源目录
+    :param target_path: 目标目录
+    :param max_workers: 最大线程数
     :return: 无
     """
-    # 获取所有名字到 aka 列表
-    logger.info(f"开始处理：{path}")
-    p = Path(path)
-    aka = []
-    empty = []
-    for path_item in p.iterdir():
-        if path_item.is_file():
-            if path_item.stat().st_size == 0:
-                empty.append(path_item)
-                if path_item.suffix != ".imdb" and path_item.suffix != ".tmdb" and path_item.suffix != ".douban":
-                    aka.append(path_item.name)
 
-    for n in aka:
-        name, result = ru_search(n)
-        logger.info(f"搜索关键字: {name} -> {result}")
-        if result != 0:
-            return
+    def search_and_move(name, path):
+        """搜索函数"""
+        _, result = ru_search(name)
+        logger.info(f"搜索结果 {result}：{path}")
+        if not result:
+            shutil.move(path, target_path)
 
-    # 获取所有 json 和 log 文件列表
-    json_dict = get_files_with_extensions(path, ".json")
-    log_dict = get_files_with_extensions(path, ".log")
-    if json_dict or log_dict:
-        logger.info(f"有下载中的文件 {len(json_dict) + len(log_dict)} 个")
-        return
+    keyword_dict = {entry.name: entry.path for entry in os.scandir(source_path) if entry.is_dir()}
 
-    # 移动空文件到目标目录，如不存在则会自动创建
-    destination_dir = Path(os.path.join('F:\\电影(1)\\', p.name))
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    for file_path in empty:
-        target_path = destination_dir / file_path.name
-        shutil.move(str(file_path), str(target_path))
-    time.sleep(0.1)
-    shutil.move(path, "A:\\0c.下载整理")
-    logger.info(r"已安全移动！")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(search_and_move, k, v) for k, v in keyword_dict.items()]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"线程执行异常：{e}")
 
 
 def sort_torrents_auto(path: str) -> None:
@@ -447,6 +434,36 @@ def sort_torrents_auto(path: str) -> None:
 
     # 删除垃圾文件
     delete_trash_files(path)
+
+
+def extra_search(path: str) -> None:
+    """
+    整理没资源电影信息，额外去搜索下载
+
+    :param path: 导演目录
+    :return: 无
+    """
+    logger.info(f"额外处理步骤：{os.path.basename(path)}")
+    time.sleep(0.1)
+    # 获取没有资源的电影，存到 wanted 表中
+    result = get_tmdb_director_movies_all(path, pass_exists=True)
+    if not result:
+        return
+    logger.info(f"缺少电影列表：{result}")
+    insert_movie_wanted(result)
+
+    # 去科普库搜索有 imdb 编号的电影
+    query_imdb_list = []
+    for j in result:
+        imdb = j.get("imdb")
+        if imdb:
+            query_imdb_list.append(imdb)
+    if not query_imdb_list:
+        return
+    logger.info(f"查询列表：{query_imdb_list}")
+
+    for k in query_imdb_list:
+        scrapy_kpk(k, "240p")
 
 
 def sort_aka_files(source_path: str, target_path: str) -> None:

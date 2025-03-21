@@ -15,7 +15,7 @@ from pathlib import Path
 
 from my_module import sanitize_filename, write_dict_to_json, read_json_to_dict
 from sort_movie_mysql import sort_movie_mysql
-from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_folder
+from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_movie
 from sort_movie_request import get_tmdb_movie_details, get_imdb_movie_details, get_douban_movie_response
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def sort_movie(path: str, tv: bool = False) -> None:
     write_dict_to_json(os.path.join(new_path, "movie_info.json5"), movie_dict)
 
     # 最后检查目录规范
-    check_result = check_folder(new_path)
+    check_result = check_movie(new_path)
     if check_result:
         logger.error(check_result)
         return

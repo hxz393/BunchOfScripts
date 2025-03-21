@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Dict
 from typing import Optional, Any
 
-from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_file_paths_by_type, get_folder_paths
+from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_folder_paths
+from scrapy_kpk import scrapy_kpk
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +146,9 @@ def scan_ids(directory: str) -> Dict[str, Optional[str]]:
         logger.error(f"目录 {directory} 不存在。")
         return result
 
-    id_ext = [".imdb", ".tmdb", ".douban"]
-    if any(len(get_file_paths_by_type(directory, [ext])) > 1 for ext in id_ext):
+    # 检查是否有多个 id 文件
+    ext_map = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
+    if any({ext: sum(file.path.endswith(ext) for file in os.scandir(directory) if file.is_file()) for ext in ext_map}.values()) > 1:
         logger.error(f"目录 {directory} 中 id 文件太多，请先清理。")
         return result
 
@@ -154,13 +156,8 @@ def scan_ids(directory: str) -> Dict[str, Optional[str]]:
     for file in files:
         # 使用 os.path.splitext 分离文件名和扩展名
         name, ext = os.path.splitext(file)
-        # ext 包含点，例如 ".tmdb"
-        if ext == '.tmdb':
-            result['tmdb'] = name
-        elif ext == '.douban':
-            result['douban'] = name
-        elif ext == '.imdb':
-            result['imdb'] = name
+        if ext in ext_map:
+            result[ext_map[ext]] = name
     return result
 
 
@@ -538,7 +535,35 @@ def classify_resolution_by_pixels(resolution: str) -> str:
         return "Unknown"
 
 
-def check_folder(path: str) -> Optional[str]:
+def parse_resolution(res_str: str) -> int:
+    """
+    将分辨率转为实际相乘的数值
+
+    :param res_str: 类似于 1920x800
+    :return: 如果解析失败返回 0
+    """
+    try:
+        w, h = res_str.lower().split('x')
+        return int(w) * int(h)
+    except Exception:
+        return 0
+
+
+def parse_bitrate(bitrate_str: str) -> int:
+    """
+    将比特率字符串转换为整数
+
+    :param bitrate_str: 类似于 2249kbps
+    :return: 如果解析失败返回 0
+    """
+    try:
+        bitrate_str = bitrate_str.lower().replace('kbps', '').strip()
+        return int(bitrate_str)
+    except Exception:
+        return 0
+
+
+def check_movie(path: str) -> Optional[str]:
     """
     检查电影信息完整度流程
 
@@ -614,9 +639,16 @@ def check_folder(path: str) -> Optional[str]:
     if delete_counts:
         logger.info(f"已删除 RARBG 库存文件 {delete_counts}")
 
+    # 检查在线科普库
+    if quality not in ['1080p', '2160p'] and imdb:
+        scrapy_kpk(imdb, quality)
+
     # 建立镜像文件夹
     mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info['director']))
     mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    # 删除垃圾文件
+    delete_trash_files(path)
 
 
 def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
@@ -829,17 +861,8 @@ def fix_douban_name(name: str) -> str:
     :param name: 豆瓣名
     :return: 合法的文件名
     """
-    name = name.replace("(本名)", "")
-    name = name.replace("（本名）", "")
-    name = name.replace("(昵称)", "")
-    name = name.replace("（昵称）", "")
-    name = name.replace("(台)", "")
-    name = name.replace("（台）", "")
-    name = name.replace("(港)", "")
-    name = name.replace("（港）", "")
-    name = name.replace("(大陆)", "")
-    name = name.replace("（大陆）", "")
-
-    name = name.strip()
-    return name
-
+    # 匹配模式：\([^)]*\) 匹配 ()，（[^）]*）匹配全角（）
+    pattern = r'\([^)]*\)|（[^）]*）'
+    result = re.sub(pattern, '', name)
+    result = result.strip()
+    return result

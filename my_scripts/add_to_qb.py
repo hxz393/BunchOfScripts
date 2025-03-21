@@ -9,6 +9,7 @@ import logging
 import os
 
 import requests
+from retrying import retry
 
 from my_module import read_json_to_dict, read_file_to_list
 
@@ -94,6 +95,7 @@ def qb_login(session: requests.Session) -> bool:
         return False
 
 
+@retry(stop_max_attempt_number=5, wait_random_min=100, wait_random_max=1200)
 def add_magnet_link(session: requests.Session, magnet_link: str, save_path: str = None, tags: str = None, category: str = None) -> None:
     """
     添加磁力链接到 qB，指定可选保存路径。
