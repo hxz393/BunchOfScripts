@@ -122,7 +122,7 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     """
     m = get_tmdb_movie_details(movie_id, tv)
 
-    movie_info["genres"] = [i['name'] for i in m['genres']] if m['genres'] else []
+    movie_info["genres"] = [i['name'] for i in m['genres']] if m.get('genres') else []
     movie_info["country"] = [i for i in m['origin_country']]
     movie_info["language"] = [m['original_language']]
     movie_info["original_title"] = m['original_name' if tv else 'original_title']
@@ -152,6 +152,7 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     m_key = 'name' if tv else 'title'
     movie_info["chinese_title"] = next((item['data'][m_key] for item in translations_list if item.get('iso_3166_1') == 'CN'), "")
     movie_info["titles"].extend([item['data'][m_key] for item in translations_list if item['data'][m_key]])
+    movie_info["titles"].extend([item.get('title', []) for item in m.get('titles', {})])
     movie_info["titles"].append(m[m_key])
     movie_info["titles"].append(movie_info["original_title"])
 

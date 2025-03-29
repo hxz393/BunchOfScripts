@@ -29,7 +29,9 @@ VIDEO_EXTENSIONS = CONFIG['video_extensions']  # 后缀名列表
 MAX_BITRATE = CONFIG['max_bitrate']  # 最大比特率
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
-RARBG_TARGET = CONFIG['rarbg_target']  # rarbg 种子移动目录
+TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
+DHD_SOURCE = CONFIG['dhd_source']  # dhd 种子来源路径
+CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
 MTM_PATH = CONFIG['mtm_path']  # mtm 路径
@@ -68,10 +70,10 @@ RE_JSON_FILE_NAME = re.compile(
     re.IGNORECASE
 )
 
-
-# RE_JSON_FILE_NAME = re.compile(
-#     r'^(?P<name>.*?)\((?P<year>\d{4})\)\[(?P<quality>.*?)]\{(?P<id>.*?)}$'
-# )
+# 文件多，先行获取列表
+PRE_LOAD_FP = get_file_paths(RARBG_SOURCE)
+PRE_LOAD_FP.extend(get_file_paths(TTG_SOURCE))
+PRE_LOAD_FP.extend(get_file_paths(DHD_SOURCE))
 
 
 def get_ids(source_path: str) -> None:
@@ -349,6 +351,7 @@ def create_aka_movie(new_path, movie_dict) -> None:
     if movie_dict["titles"]:
         for title in movie_dict["titles"]:
             file_name = sanitize_filename(title).strip()
+            file_name += ".别名"
             Path(os.path.join(new_path, file_name).replace("\"", "")).touch()
 
 
@@ -620,24 +623,13 @@ def check_movie(path: str) -> Optional[str]:
     # 检查 RARBG 库存
     imdb = movie_info['imdb']
     quality = movie_info['quality']
-    bracket_id = f"[{imdb}]"
-    delete_counts = 0
-    move_counts = 0
-    for filename in os.listdir(RARBG_SOURCE):
-        if bracket_id in filename:
-            source_file = os.path.join(RARBG_SOURCE, filename)
-            dest_file = os.path.join(RARBG_TARGET, filename)
-            # 如果文件已经是 1080p 以上质量，直接删除库存种子，否则移动后处理
-            if quality == '1080p' or quality == '2160p':
-                os.remove(source_file)
-                delete_counts += 1
-            else:
-                shutil.move(source_file, dest_file)
-                move_counts += 1
+    result = check_local_torrent(imdb, quality)
+    move_counts = result['move_counts']
+    delete_counts = result['delete_counts']
     if move_counts:
         return f"请检查 RARBG 库存: {move_counts}"
     if delete_counts:
-        logger.info(f"已删除 RARBG 库存文件 {delete_counts}")
+        logger.info(f"已删除 RARBG 库存文件 {delete_counts}：{result['delete_files']}")
 
     # 检查在线科普库
     if quality not in ['1080p', '2160p'] and imdb:
@@ -649,6 +641,33 @@ def check_movie(path: str) -> Optional[str]:
 
     # 删除垃圾文件
     delete_trash_files(path)
+
+
+def check_local_torrent(imdb: str, quality: str) -> dict:
+    """
+    检查本地库存，如果质量大于 1080p 则删除库存，否则检查库存
+
+    :param imdb: imdb 编号
+    :param quality: 质量
+    :return: 返回检查结果
+    """
+    result = {"move_counts": 0, "delete_counts": 0, "delete_files": []}
+    bracket_id = f"[{imdb}]"
+
+    file_paths = PRE_LOAD_FP
+    for file_path in file_paths:
+        if bracket_id in file_path:
+            target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+            # 如果文件已经是 1080p 以上质量，直接删除库存种子，否则移动后处理
+            if quality == '1080p' or quality == '2160p':
+                os.remove(file_path)
+                result["delete_counts"] += 1
+                result["delete_files"].append(file_path)
+            else:
+                if os.path.exists(file_path):
+                    shutil.move(file_path, target_path)
+                    result["move_counts"] += 1
+    return result
 
 
 def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
@@ -767,7 +786,7 @@ def get_files_with_extensions(dir_path: str, extension: str) -> dict:
     return result
 
 
-def parse_jason_file_name(filename: str) -> Optional[dict]:
+def parse_jason_file_name(filename: str) -> dict:
     """
     解析类似 "Sonic(2019)[1080p]{tt8108200}" 格式的文件名，
     返回一个字典，其中包含：
@@ -777,11 +796,11 @@ def parse_jason_file_name(filename: str) -> Optional[dict]:
         - id: 编号(如 tt8108200)
 
     :param filename: 不带扩展的文件名
-    :return: 解析结果，匹配失败返回 None
+    :return: 解析结果，匹配失败返回空字典
     """
     match = RE_JSON_FILE_NAME.match(filename)
     if not match:
-        return None
+        return {}
 
     return {
         'name': match.group('name').strip(),

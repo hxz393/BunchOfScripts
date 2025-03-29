@@ -8,12 +8,14 @@
 """
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 
 import requests
 
 from my_module import read_json_to_dict
+from sort_movie_request import get_tmdb_movie_details
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -37,29 +39,45 @@ def scrapy_yts_fix_imdb() -> None:
             if file_name.endswith('.json'):
                 logger.info(f"处理：{file_name}")
                 file_path = Path(os.path.join(root, file_name))
-                imdb = file_name.split('[')[1].split(']')[0]
+                # imdb = file_name.split('{')[1].split('}')[0]
+                imdb = m.group(1) if (m := re.search(r'(tt\d+)', file_name)) else None
+                if not imdb:
+                    logger.error(f"没有找到 tt 编号：{file_name}")
+                    continue
+
+                # 查询 IMDB
                 folder_name = search_imdb(imdb)
                 if not folder_name:
                     folder_name = '没有导演'
+
+                # 查询 TMDB
+                movie_details = get_tmdb_movie_details(imdb)
+                if movie_details:
+                    crew_list = movie_details['casts'].get('crew', [])
+                    for member in crew_list:
+                        if member.get('job') == 'Director':
+                            folder_name = member.get('name')
+                            break
+
                 logger.info(f"导演名：{folder_name}")
 
                 folder_path = Path(os.path.join(Path(root).parent, folder_name))
                 folder_path.mkdir(parents=True, exist_ok=True)
                 target_file_path = folder_path / file_path.name
                 shutil.move(file_path, target_file_path)
-                logger.info("*" * 35)
+                logger.info("*" * 255)
 
 
-def search_imdb(m_id: str) -> str:
+def search_imdb(movie_id: str) -> str:
     """
     用 tt 编号搜索 IMDb 网站，获取导演名并返回
 
-    :param m_id: imdb 编号
+    :param movie_id: imdb 编号
     :return: 导演名
     """
-    url = f"{BASE_URL}/{m_id}/"
+    logger.info(f"查询 IMDB：{movie_id}")
+    url = f"{BASE_URL}/{movie_id}/"
     r = requests.get(url, verify=False, headers=HEADER_IMDB)
-    # print(r.text)
     directors_part = extract_directors_section(r.text)
     director_name = get_director_name_from_section(directors_part)
     return director_name

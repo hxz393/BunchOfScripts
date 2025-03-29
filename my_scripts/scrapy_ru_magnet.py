@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -121,6 +122,7 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
                 logger.error(f"[get_magnet] 线程执行出现异常: {exc}")
 
     # 最后储存本次爬取链接和关键字，打印失败链接
+    normalize_movie_filenames(target)
     if cache:
         bulk_insert_ids(redis_client, REDIS_SET_KEY, new_urls)
         get_aka_name(key_word, target)
@@ -498,3 +500,125 @@ def russian_delete(filename: str) -> str:
     # 4. 拼接回最终文件名
     new_filename = movie_part.strip() + " " + suffix_part
     return new_filename
+
+
+def fuzzy_normalize(s: str) -> str:
+    """
+    使用 Unicode 归一化去除重音，并转为小写，实现模糊匹配。
+
+    :param s: 原始字符串
+    :return: 返回修改后的字符串
+    """
+    normal_form = unicodedata.normalize('NFKD', s)
+    return "".join([c for c in normal_form if not unicodedata.combining(c)]).lower()
+
+
+def normalize_movie_filenames(directory):
+    """
+    扫描目标目录下所有 .log 文件，提取电影名称部分（位于第一个左括号前）。
+    使用模糊匹配将文件归组：只要两个文件的电影名称中任一部分模糊匹配，则认为是同一部电影。
+
+    对于每一组文件：
+      - 计算该组内所有文件出现过的 fuzzy 版本集合（以及交集），
+      - 得到整个分组的排序参考 canonical_fuzzy_order，
+      - 对每个文件，仅对其原有的电影名称（通过 "｜" 分隔）重新排序，
+      - 如果排序后顺序与原顺序不同，则仅替换电影名称部分，保留后续内容不变。
+
+    :param directory: .log 文件保存路径
+    :return: 无
+    """
+    # 列出目标目录下所有 .log 文件
+    file_list = [f for f in os.listdir(directory) if f.endswith('.log') and os.path.isfile(os.path.join(directory, f))]
+
+    # 正则：提取第一个左括号前的所有内容作为电影名称部分
+    pattern = re.compile(r"^(.*?)\s*\(")
+
+    # 收集文件信息，每项包含文件名、提取的电影名称列表及其 fuzzy 集合、原始电影名称部分
+    file_info = []  # 每项：{'filename': ..., 'names': [...], 'fuzzy_set': set(...), 'movie_part': ...}
+    for f in file_list:
+        match = pattern.search(f)
+        if not match:
+            continue
+        movie_part = match.group(1).strip()
+        names = [n.strip() for n in movie_part.split("｜") if n.strip()]
+        if not names:
+            continue
+        fuzzy_set = {fuzzy_normalize(n) for n in names}
+        file_info.append({
+            'filename': f,
+            'names': names,
+            'fuzzy_set': fuzzy_set,
+            'movie_part': movie_part
+        })
+
+    if not file_info:
+        return
+
+    # 用并查集将文件归组：只要两个文件的 fuzzy_set 有交集，就归为一组
+    n = len(file_info)
+    parent = list(range(n))
+
+    def find(x):
+        """并查集"""
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(a, b):
+        """并查集"""
+        pa, pb = find(a), find(b)
+        if pa != pb:
+            parent[pb] = pa
+
+    # 构造 fuzzy 名称到文件索引的映射
+    fuzzy_to_indices = {}
+    for i, info in enumerate(file_info):
+        for fz in info['fuzzy_set']:
+            fuzzy_to_indices.setdefault(fz, []).append(i)
+
+    # 将拥有相同 fuzzy 名称的文件归并到同一组
+    for indices in fuzzy_to_indices.values():
+        for i in range(1, len(indices)):
+            union(indices[0], indices[i])
+
+    groups = {}
+    for i in range(n):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+    # 对于每个分组，计算 canonical_fuzzy_order（整个组内所有出现的 fuzzy 名称排序规则）
+    for group_indices in groups.values():
+        group_fuzzy_union = set()
+        group_fuzzy_intersection = None
+        for i in group_indices:
+            info = file_info[i]
+            if group_fuzzy_intersection is None:
+                group_fuzzy_intersection = set(info['fuzzy_set'])
+            else:
+                group_fuzzy_intersection &= info['fuzzy_set']
+            group_fuzzy_union |= info['fuzzy_set']
+        if group_fuzzy_intersection is None:
+            group_fuzzy_intersection = set()
+
+        # 若交集非空，则交集中的名称排前，其余的按字母顺序；否则全部名称按字母顺序排序
+        if group_fuzzy_intersection:
+            common = sorted(list(group_fuzzy_intersection))
+            rest = sorted(list(group_fuzzy_union - group_fuzzy_intersection))
+            canonical_fuzzy_order = common + rest
+        else:
+            canonical_fuzzy_order = sorted(list(group_fuzzy_union))
+
+        # 针对分组内每个文件，重新排序电影名称，但仅对该文件原有的名称进行排序
+        for i in group_indices:
+            info = file_info[i]
+            original_names = info['names']
+            # 按 canonical_fuzzy_order 中 fuzzy_normalize 的顺序对原有名称排序
+            sorted_names = sorted(original_names, key=lambda n: canonical_fuzzy_order.index(fuzzy_normalize(n)) if fuzzy_normalize(n) in canonical_fuzzy_order else 999)
+            new_movie_part = "｜".join(sorted_names)
+            # 如果经过重新排序后的电影名称部分与原来不同，则替换
+            if fuzzy_normalize(info['movie_part']) != fuzzy_normalize(new_movie_part):
+                remainder = info['filename'][len(info['movie_part']):]
+                new_name = new_movie_part + remainder
+                old_path = os.path.join(directory, info['filename'])
+                new_path = os.path.join(directory, new_name)
+                os.rename(old_path, new_path)

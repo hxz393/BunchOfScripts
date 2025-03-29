@@ -20,6 +20,7 @@ from .remove_target import remove_target
 from .remove_target_matched import remove_target_matched
 from .rename_target_if_exist import rename_target_if_exist
 from .sanitize_filename import sanitize_filename
+from .update_json_config import update_json_config
 from .write_dict_to_csv import write_dict_to_csv
 from .write_dict_to_json import write_dict_to_json
 from .write_list_to_file import write_list_to_file

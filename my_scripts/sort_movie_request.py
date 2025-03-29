@@ -47,6 +47,9 @@ KPK_SEARCH_URL = CONFIG['kpk_search_url']  # 科普库搜索地址
 KPK_PAGE_URL = CONFIG['kpk_page_url']  # 科普库搜索地址
 KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
 
+TMDB = TMDb()
+TMDB.api_key = TMDB_KEY
+
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
 def get_tmdb_search_response(search_id: str) -> Optional[dict]:
@@ -66,21 +69,23 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     return r.json()
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=30, wait_random_max=300)
-def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[AsObj]:
+@retry(stop_max_attempt_number=5, wait_random_min=1000, wait_random_max=5000)
+def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
     """
     从 TMDB 获取电影信息，返回结果字典
 
     :param movie_id: 电影 tmdb 编号
     :param tv: 是否是电视剧，默认为否
-    :return: 无
+    :return: 信息字典
     """
     logger.info(f"查询 TMDB：{movie_id}")
-    tmdb = TMDb()
-    tmdb.api_key = TMDB_KEY
-    movie = TV() if tv else Movie()
-    result = movie.details(movie_id)
-    return result if result else None
+    try:
+        movie = TV() if tv else Movie()
+        result = dict(movie.details(movie_id)) | dict(movie.alternative_titles(movie_id))
+        return result if result else None
+    except Exception as e:
+        logger.error(f"查询 TMDB 失败：{e}")
+        return None
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
@@ -91,8 +96,6 @@ def get_tmdb_director_details(director_id: str) -> AsObj:
     :param director_id: 导演 tmdb 编号
     :return: 返回导演信息字典
     """
-    tmdb = TMDb()
-    tmdb.api_key = TMDB_KEY
     person = Person()
     return person.details(director_id)
 
@@ -105,8 +108,6 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
     :param director_id: 导演 tmdb 编号
     :return: 返回导演信息字典
     """
-    tmdb = TMDb()
-    tmdb.api_key = TMDB_KEY
     person = Person()
     return person.movie_credits(director_id)
 
@@ -287,12 +288,16 @@ def get_kpk_search_response(search_id: str) -> Optional[list]:
     response = requests.get(url, timeout=10, verify=False, headers=KPK_HEADER, params=params)
     # 去掉 JSONP 回调函数的包装
     response.encoding = 'utf-8'
-    json_str = re.sub(r'.+({.+}).+', r'\1', response.text)
-    # 解析 JSON 数据
-    data_obj = json.loads(json_str)
+    try:
+        json_str = re.sub(r'.+({.+}).+', r'\1', response.text)
+        data_obj = json.loads(json_str)
+    except json.decoder.JSONDecodeError as e:
+        logger.debug(f"JSON解析错误: {e}")
+        raise  # 抛出异常让retry捕获并重试
+
     if data_obj["code"] != 1:
-        logger.debug(f"失败重试: {data_obj}")
-        return get_kpk_search_response(search_id)
+        logger.info(f"失败重试: {data_obj}")
+        raise Exception("请求被拒绝！")
     # 格式化解码后的 JSON 数据
     result = []
     if data_obj["js"]:

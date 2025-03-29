@@ -5,15 +5,16 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-
+import asyncio
 import logging
+import os.path
+import time
 
 from my_module import logging_config
-from sort_movie_ops import everything_search_filelist
 
 logger = logging.getLogger(__name__)
 
-logging_config(console_output=True, log_file="logs.log", default_log_format="%(message)s")
+logging_config(console_output=True, log_file="B:/2.脚本/logs.log", default_log_format="%(message)s")
 
 
 def main(chosen: int) -> None:
@@ -150,6 +151,20 @@ copy(results);
             target_path = r'A:\1'
             sort_new_torrents(target_path)
             logger.info("=" * 255)
+        case 604:
+            logger.info(r"抓取 ttg 信息，自动将新帖子保存到：B:\0.整理\BT\ttg")
+            logger.info(r"手动检查 ttg 目录，处理后移动到 ttg—old")
+            logger.info("=" * 255)
+            from scrapy_ttg import scrapy_ttg
+            scrapy_ttg()
+            logger.info("=" * 255)
+        case 605:
+            logger.info(r"抓取 dhd 信息，自动将新帖子保存到：B:\0.整理\BT\dhd")
+            logger.info(r"手动检查 dhd 目录，处理后移动到 dhd—old")
+            logger.info("=" * 255)
+            from scrapy_dhd import scrapy_dhd_async
+            asyncio.run(scrapy_dhd_async())
+            logger.info("=" * 255)
         case 701:
             logger.info("整理导演目录，在导演目录生成导演别名和代表链接的空文件")
             logger.info("来源文本首行为导演目录路径，后面三行为导演链接")
@@ -167,6 +182,7 @@ copy(results);
             logger.info("=" * 255)
             from scrapy_ru_magnet import scrapy_ru_magnet
             from my_module import read_file_to_list
+            from sort_movie_ops import everything_search_filelist
             source_file = r'config/!00.txt'
             target_path = r"A:\1"
             key_list = read_file_to_list(source_file)
@@ -208,9 +224,17 @@ copy(results);
             logger.info(r"添加种子到盒子，种子信息文件来自：B:\0.整理\Chrome")
             logger.info(r"添加完毕后，需要把 B:\0.整理\Chrome 中目录动手移动到 A:\0c.下载整理")
             logger.info("=" * 255)
+            import os
             from add_to_qb import add_to_qb
+            from get_director_movies import get_director_movies
             source_path = r'B:\0.整理\Chrome'
             add_to_qb(source_path)
+            temp_list = [entry.path for entry in os.scandir(source_path) if entry.is_dir()]
+            for i in temp_list:
+                if not i:
+                    continue
+                get_director_movies(i)
+                logger.info("=" * 255)
             logger.info("=" * 255)
         case 707:
             logger.info(r"添加种子到 115 离线服务，种子信息文件来自：B:\0.整理\Chrome")
@@ -282,19 +306,16 @@ copy(results);
             for i in temp_list:
                 sort_director_auto(i)
                 logger.info("-" * 255)
+                time.sleep(0.1)
         case 803:
-            logger.info(r"批量搜索导演名，来源文件一行一个导演路径")
-            logger.info("将会搜索导演所有名字及其别名")
-            logger.info(r"如果没有搜索结果，也没有下载文件，移动到 A:\0c.下载整理")
-            logger.info("目前进度A-G是安全的")
+            logger.info(r"批量搜索导演名，来源 A:\0b.导演别名")
+            logger.info(r"如果没有搜索结果，移动到 A:\115")
             logger.info("=" * 255)
-            from my_module import read_file_to_list
             from sort_movie_auto import sort_ru_auto
-            source_file = r'config/!00.txt'
-            temp_list = read_file_to_list(source_file)
-            for i in temp_list:
-                sort_ru_auto(i)
-                logger.info("-" * 255)
+            source_path = r"A:\0b.导演别名"
+            target_path = r"A:\115"
+            sort_ru_auto(source_path, target_path)
+            logger.info("-" * 255)
         case 805:
             logger.info(r"从 TMDB 获取导演所有电影列表，来源文件一行一个导演路径")
             logger.info("需要确保导演目录中存在 .tmdb 文件")
@@ -309,36 +330,65 @@ copy(results);
                 get_director_movies(i)
                 logger.info("=" * 255)
         case 806:
-            logger.info(r"整理目录中空文件移动到 F:\电影(2)")
-            logger.info("=" * 255)
-            from sort_movie_auto import sort_aka_files
-            source_path = r"A:\0e.自动整理"
-            target_path = r"F:\电影(2)"
-            sort_aka_files(source_path, target_path)
             logger.info(r"批量自动整理电影目录，来源文件一行一个导演路径")
             logger.info("需要确保电影路径中存在 tt 编号")
             logger.info("=" * 255)
             from my_module import read_file_to_list
-            from sort_movie_auto import sort_movie_auto
+            from sort_movie_auto import sort_movie_auto, extra_search
             source_file = r'config/!00.txt'
             temp_list = read_file_to_list(source_file)
             for i in temp_list:
                 if not i:
                     continue
+                time.sleep(0.1)
                 sort_movie_auto(i)
-                logger.info("=" * 255)
+                time.sleep(0.1)
+                logger.info("-" * 255)
+                extra_search(i)
+                time.sleep(0.1)
+                logger.warning("=" * 255)
+        case 807:
+            logger.info(r"依据 imdb id 删除数据库记录")
+            logger.info("=" * 255)
+            from sort_movie_mysql import delete_records
+            from my_module import read_file_to_list
+            source_file = r'config/!00.txt'
+            id_list = read_file_to_list(source_file)
+            delete_records(id_list, "imdb", "movies")
+            delete_records(id_list, "imdb", "wanted")
+            logger.info("-" * 255)
 
         case _:
             logger.warning("请输入有效编号")
 
 
+def temp():
+    """临时函数"""
+    print("移动指定目录")
+    from my_module import read_file_to_list, get_file_paths
+    import shutil
+    path_list = read_file_to_list(r'config/!00.txt')
+    for p in path_list:
+        base_name = os.path.basename(p[:-1])
+        root_name = os.path.basename(os.path.dirname(p[:-1]))
+        new_name = "!" + base_name
+        target = r"A:\0c.下载整理"
+        target_path = os.path.join(target, root_name, new_name)
+        shutil.move(p, target_path)
+        print(p + " -> " + target_path)
+
+
+
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-https://yts.mx/movies/captain-america-brave-new-world-2025
-
+ERROR: https://yts.mx/movies/anxious-nation-2022
+ERROR: https://yts.mx/movies/every-little-thing-2024
+ERROR: https://yts.mx/movies/hellhole-2019
+ERROR: https://yts.mx/movies/captain-america-brave-new-world-2025
 
     """
+    logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
         # 702 -> ru 标准搜索
         # 703 -> ru 搜索结果超限版
@@ -347,11 +397,11 @@ https://yts.mx/movies/captain-america-brave-new-world-2025
         # 708 -> 整理单部电影
         # 801 -> 批量预整理，重命名目录，移动种子。要指定目录
         # 802 -> 批量整理导演
-        # 803 -> 批量搜索下载
-        # 805 -> 获取导演电影列表，用于查找电影 imdb 编号
         # 806 -> 批量整理电影
-        main(708)
+        # 807 -> 清理数据库
+        main(802)
+        # temp()
     except Exception:
         logger.exception('Unexpected error!')
     finally:
-        logger.info("任务完成!")
+        logger.info(f"完成时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")

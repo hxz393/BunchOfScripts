@@ -21,7 +21,7 @@ from scrapy_kpk import scrapy_kpk
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
 from sort_movie_mysql import insert_movie_wanted
-from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files
+from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files, check_local_torrent
 from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response, get_tmdb_director_details, get_douban_search_response, get_douban_search_details, get_tmdb_movie_details
 from sort_ru import ru_search
 
@@ -462,8 +462,13 @@ def extra_search(path: str) -> None:
         return
     logger.info(f"查询列表：{query_imdb_list}")
 
-    for k in query_imdb_list:
-        scrapy_kpk(k, "240p")
+    for imdb in query_imdb_list:
+        quality = "240p"
+        scrapy_kpk(imdb, quality)
+        result = check_local_torrent(imdb, quality)
+        move_counts = result['move_counts']
+        if move_counts:
+            logger.warning(f"请检查本地库存: {move_counts}")
 
 
 def sort_aka_files(source_path: str, target_path: str) -> None:

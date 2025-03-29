@@ -18,7 +18,7 @@ from sort_movie_request import get_tmdb_director_movies, get_tmdb_movie_details
 
 logger = logging.getLogger(__name__)
 
-WORKERS = 16
+WORKERS = 8
 
 
 def get_director_movies(source: str) -> None:
@@ -87,7 +87,7 @@ def get_tmdb_director_movies_all(source: str, pass_exists: bool = False) -> Opti
 
     # 筛选 department = 'Directing' 的条目
     crew_list = movie_infos.get('crew', [])
-    directing_list = [item for item in crew_list if item.get('department') == 'Directing']
+    directing_list = [item for item in crew_list if item.get('job') == 'Director']
     if not directing_list:
         logger.info(f"导演没有任何作品: {director_main}")
         return
@@ -145,7 +145,8 @@ def fetch_movie_info(m_id: str) -> Optional[dict]:
         # 收集所有别名，以分号拼接为字符串
         translations_list = detail.get('translations', {}).get('translations', [])
         alt_titles.extend([item['data']['title'] for item in translations_list if item.get('data', {}).get('title', '')])
-        all_alias = " ;".join(alt_titles)
+        alt_titles.extend([item['title'] for item in detail['titles']])
+        alt_titles = list({item.lower(): item for item in alt_titles}.values())
 
         return {
             'director': '',

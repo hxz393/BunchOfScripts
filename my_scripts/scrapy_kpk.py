@@ -47,8 +47,8 @@ def scrapy_kpk(imdb: str, quality: str) -> bool:
 
     # 检查是否要提示
     quality_mapping = {
-        "720p": ["1080P"],
-        "480p": ["1080P", "720P"],
+        "720p": ['4K/2160P', "1080P"],
+        "480p": ['4K/2160P', "1080P", "720P"],
         "240p": []  # 240p 始终提示更高质量，不用检查
     }
     if quality == "240p" or any(merged_dict.get(q) for q in quality_mapping.get(quality, [])):
