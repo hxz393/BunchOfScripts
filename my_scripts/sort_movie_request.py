@@ -69,7 +69,7 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     return r.json()
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=1000, wait_random_max=5000)
+@retry(stop_max_attempt_number=50, wait_random_min=1000, wait_random_max=5000)
 def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
     """
     从 TMDB 获取电影信息，返回结果字典
@@ -82,7 +82,9 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
     try:
         movie = TV() if tv else Movie()
         result = dict(movie.details(movie_id)) | dict(movie.alternative_titles(movie_id))
-        return result if result else None
+        if not result:
+            raise Exception("获取电影信息失败，重试")
+        return result
     except Exception as e:
         logger.error(f"查询 TMDB 失败：{e}")
         return None
@@ -272,7 +274,7 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
         return
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=6000)
 def get_kpk_search_response(search_id: str) -> Optional[list]:
     """
     从 kpk 搜索 imdb 编号，返回页面 id
@@ -309,7 +311,7 @@ def get_kpk_search_response(search_id: str) -> Optional[list]:
     return [i["id"] for i in result]
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=3000)
 def get_kpk_page_details(page_id: str) -> Optional[dict]:
     """
     访问 kpk 获取下载信息
@@ -318,7 +320,7 @@ def get_kpk_page_details(page_id: str) -> Optional[dict]:
     :return: 成功时返回下载信息字典
     """
     url = f"{KPK_PAGE_URL}/{page_id}"
-    response = requests.get(url, timeout=10, verify=False, headers=KPK_HEADER)
+    response = requests.get(url, timeout=15, verify=False, headers=KPK_HEADER)
 
     # 创建一个默认字典来存放结果
     result_dict = defaultdict(list)

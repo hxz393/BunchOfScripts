@@ -513,6 +513,36 @@ def fuzzy_normalize(s: str) -> str:
     return "".join([c for c in normal_form if not unicodedata.combining(c)]).lower()
 
 
+def fix_title_place(title: str) -> str:
+    """
+    修正标题格式，将末尾的定冠词移动到开头。
+    支持的定冠词（不区分大小写）包括：
+      - 英语: the
+      - 德语: der, die, das
+      - 法语: le, la, les
+      - 意大利语: il, lo, la, i, gli
+    示例：
+      "Public of People, the" -> "The Public of People"
+
+    :param title: 原始字符串
+    :return: 返回修改后的字符串
+    """
+    # 定义支持的定冠词列表
+    articles = ["the", "der", "die", "das", "le", "la", "les", "il", "lo", "i", "gli"]
+    # 构造正则表达式，匹配以 ", 定冠词" 结尾（忽略大小写）
+    pattern = re.compile(r",\s*(" + "|".join(articles) + r")\s*$", re.IGNORECASE)
+    m = pattern.search(title)
+    if m:
+        # 提取匹配到的定冠词，并转换首字母大写（通常标题开头应大写）
+        article = m.group(1).capitalize()
+        # 截取除去末尾", article"部分的标题，并去掉尾部空白
+        new_title = title[:m.start()].rstrip()
+        # 将定冠词放到最前面
+        return f"{article} {new_title}"
+    # 如果没有匹配到，直接返回原字符串
+    return title
+
+
 def normalize_movie_filenames(directory):
     """
     扫描目标目录下所有 .log 文件，提取电影名称部分（位于第一个左括号前）。
@@ -541,8 +571,10 @@ def normalize_movie_filenames(directory):
             continue
         movie_part = match.group(1).strip()
         names = [n.strip() for n in movie_part.split("｜") if n.strip()]
+
         if not names:
             continue
+        names = [fix_title_place(n) for n in names]
         fuzzy_set = {fuzzy_normalize(n) for n in names}
         file_info.append({
             'filename': f,

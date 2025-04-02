@@ -241,7 +241,7 @@ copy(results);
             logger.info(r"添加完毕后，视情况手动处理")
             logger.info("=" * 255)
             from add_to_115 import add_to_115
-            source_path = r'B:\0.整理\Chrome'
+            source_path = r'B:\0.整理\Chrome1'
             add_to_115(source_path)
             logger.info("=" * 255)
         case 708:
@@ -365,7 +365,7 @@ copy(results);
 def temp():
     """临时函数"""
     print("移动指定目录")
-    from my_module import read_file_to_list, get_file_paths
+    from my_module import read_file_to_list
     import shutil
     path_list = read_file_to_list(r'config/!00.txt')
     for p in path_list:
@@ -376,7 +376,6 @@ def temp():
         target_path = os.path.join(target, root_name, new_name)
         shutil.move(p, target_path)
         print(p + " -> " + target_path)
-
 
 
 if __name__ == '__main__':
@@ -399,7 +398,7 @@ ERROR: https://yts.mx/movies/captain-america-brave-new-world-2025
         # 802 -> 批量整理导演
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
-        main(802)
+        main(806)
         # temp()
     except Exception:
         logger.exception('Unexpected error!')

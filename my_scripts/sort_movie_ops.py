@@ -335,7 +335,7 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> str:
     else:
         cn = "" if cn == en else cn
         movie_id = get_movie_id(movie_dict)
-        base_name = f"{yn} - {en}{f'({cn})' if cn else ''}{{{movie_id}}}"
+        base_name = f"{yn} - {en}{f'({cn})' if cn else ''}{{{movie_id}}}".replace("　", " ")
 
     return f"{base_name}[{sc}][{rs}][{cd}@{bt}]"
 
@@ -627,9 +627,9 @@ def check_movie(path: str) -> Optional[str]:
     move_counts = result['move_counts']
     delete_counts = result['delete_counts']
     if move_counts:
-        return f"请检查 RARBG 库存: {move_counts}"
+        return f"{imdb} 请检查本地库存: {move_counts}"
     if delete_counts:
-        logger.info(f"已删除 RARBG 库存文件 {delete_counts}：{result['delete_files']}")
+        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
 
     # 检查在线科普库
     if quality not in ['1080p', '2160p'] and imdb:
@@ -657,16 +657,20 @@ def check_local_torrent(imdb: str, quality: str) -> dict:
     file_paths = PRE_LOAD_FP
     for file_path in file_paths:
         if bracket_id in file_path:
-            target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+            if not os.path.exists(file_path):
+                # 文件可能已被删除，跳过
+                continue
+
             # 如果文件已经是 1080p 以上质量，直接删除库存种子，否则移动后处理
             if quality == '1080p' or quality == '2160p':
                 os.remove(file_path)
                 result["delete_counts"] += 1
                 result["delete_files"].append(file_path)
             else:
-                if os.path.exists(file_path):
-                    shutil.move(file_path, target_path)
-                    result["move_counts"] += 1
+                target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+                shutil.move(file_path, target_path)
+                result["move_counts"] += 1
+
     return result
 
 

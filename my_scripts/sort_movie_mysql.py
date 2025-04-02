@@ -338,10 +338,15 @@ def delete_records(id_list: list, id_type: str, table_name: str) -> None:
     :param table_name: 表名
     :return: 无
     """
+    # 过滤掉空元素
+    id_list = [type_id for type_id in id_list if type_id]
+    if not id_list:
+        logger.info(f'{table_name} 表无有效的删除编号，跳过操作')
+        return
+
     conn = create_conn()
     try:
         cursor = conn.cursor()
-
         # 参数化查询，防止SQL注入
         sql = f"DELETE FROM {table_name} WHERE {id_type} = %s"
         # 批量执行删除

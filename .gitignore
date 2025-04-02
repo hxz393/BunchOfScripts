@@ -11,4 +11,3 @@ __pycache__
 /tests/test_my_module/resources
 /tests/test_my_scripts/resources
 /config
-/logs.log

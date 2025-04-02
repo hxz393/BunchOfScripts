@@ -11,7 +11,7 @@ import sys
 import time
 
 from bs4 import BeautifulSoup
-from pathlib import Path
+from retrying import retry
 
 from my_module import sanitize_filename, write_dict_to_json, read_json_to_dict
 from sort_movie_mysql import sort_movie_mysql
@@ -111,6 +111,7 @@ def sort_movie(path: str, tv: bool = False) -> None:
     logger.info(f"新名：{new_path}")
 
 
+@retry(stop_max_attempt_number=50, wait_random_min=1000, wait_random_max=5000)
 def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     """
     从 TMDB 获取电影信息，储存到传入的字典中
@@ -121,6 +122,8 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     :return: 无
     """
     m = get_tmdb_movie_details(movie_id, tv)
+    if not m:
+        raise Exception("没有获取到电影信息，重试一次")
 
     movie_info["genres"] = [i['name'] for i in m['genres']] if m.get('genres') else []
     movie_info["country"] = [i for i in m['origin_country']]

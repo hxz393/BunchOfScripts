@@ -468,7 +468,7 @@ def extra_search(path: str) -> None:
         result = check_local_torrent(imdb, quality)
         move_counts = result['move_counts']
         if move_counts:
-            logger.warning(f"请检查本地库存: {move_counts}")
+            logger.warning(f"{imdb} 请检查本地库存: {move_counts}")
 
 
 def sort_aka_files(source_path: str, target_path: str) -> None:

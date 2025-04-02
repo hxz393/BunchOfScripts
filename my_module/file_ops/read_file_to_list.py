@@ -37,7 +37,7 @@ def read_file_to_list(target_path: Union[str, os.PathLike]) -> Optional[List[str
 
     try:
         with open(target_path, 'r', encoding="utf-8") as file:
-            return [line.strip() for line in file]
+            return [line.strip() for line in file if line.strip()]
     except PermissionError:
         logger.error(f"Cannot access file '{target_path}', permission denied.")
         return None
