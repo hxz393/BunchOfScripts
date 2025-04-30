@@ -17,12 +17,12 @@ from typing import Optional
 
 from get_director_movies import get_tmdb_director_movies_all
 from my_module import read_file_to_list, write_list_to_file, read_json_to_dict, remove_target
-from scrapy_kpk import scrapy_kpk
+from scrapy_kpk import scrapy_kpk, scrapy_jeckett
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
 from sort_movie_mysql import insert_movie_wanted
 from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files, check_local_torrent
-from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response, get_tmdb_director_details, get_douban_search_response, get_douban_search_details, get_tmdb_movie_details
+from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response, get_tmdb_director_details, get_douban_response, get_douban_search_details, get_tmdb_movie_details
 from sort_ru import ru_search
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def sort_director_auto(path: str) -> None:
     write_list_to_file(target_file, result_list)
     get_ids(target_file)
     done = sort_movie_director(read_file_to_list(target_file)[0])
-    if done == 3:
+    if done == 2:
         shutil.move(path, os.path.join(r'A:\0b.导演别名', director_main))
 
 
@@ -234,7 +234,7 @@ def get_douban_director(nm_id: str) -> Optional[str]:
     :return: 搜索结果，成功则返回导演链接，失败返回 None
     """
     # 搜索编号，获取结果
-    r = get_douban_search_response(nm_id, "1065")
+    r = get_douban_response(nm_id, "director_search")
     if not r:
         logger.error("没有获取到豆瓣搜索响应")
         return
@@ -242,30 +242,33 @@ def get_douban_director(nm_id: str) -> Optional[str]:
     return get_douban_search_details(r)
 
 
-def sort_movie_auto(path: str) -> None:
+def sort_movie_auto(path: str, target_file: str) -> None:
     """
     自动整理电影，输出链接到文本文件
 
     :param path: 导演目录
+    :param target_file: 临时文本文件
     :return: 无
     """
     folders = [os.path.join(path, item) for item in os.listdir(path) if os.path.isdir(os.path.join(path, item))]
-    target_file = r'B:\2.脚本\!00.txt'
     if not folders:
         logger.error(f"目录下没有子文件夹 {path}")
         return
 
     for folder in folders:
         logger.info(f"{time.strftime('%Y-%m-%d %H:%M:%S')} 开始处理：{folder}")
+        logger.info("-" * 25 + "步骤：搜索电影" + "-" * 25)
         r = sort_movie_auto_folder(folder, target_file)
         if r:
             logger.error(r)
             return
+        time.sleep(0.1)
+        logger.info("-" * 25 + "步骤：抓取电影信息" + "-" * 25)
         get_ids(target_file)
         url_list = read_file_to_list(target_file)
         sort_movie(url_list[0])
         time.sleep(0.1)
-        logger.warning("-" * 255)
+        logger.warning("=" * 255)
         time.sleep(0.1)
 
 
@@ -334,9 +337,8 @@ def get_douban_id(imdb_id: str) -> dict:
     :return: 搜索结果
     """
     return_dict = {"result": "", "douban_url": ""}
-    search_type = "1002"
     # 搜索豆瓣，获取响应
-    response = get_douban_search_response(imdb_id, search_type)
+    response = get_douban_response(imdb_id, "movie_search")
     if not response:
         return_dict["result"] = "豆瓣电影搜索失败"
         return return_dict
@@ -344,7 +346,6 @@ def get_douban_id(imdb_id: str) -> dict:
     # 解析响应内容
     inner_url = get_douban_search_details(response)
     if not inner_url:
-        return_dict["result"] = "豆瓣电影链接解析失败"
         return return_dict
 
     return_dict["douban_url"] = inner_url
@@ -436,14 +437,15 @@ def sort_torrents_auto(path: str) -> None:
     delete_trash_files(path)
 
 
-def extra_search(path: str) -> None:
+def achieve_director(path: str) -> None:
     """
-    整理没资源电影信息，额外去搜索下载
+    整理没收集的电影信息，额外去搜索下载
 
     :param path: 导演目录
     :return: 无
     """
-    logger.info(f"额外处理步骤：{os.path.basename(path)}")
+    director_name = os.path.basename(path)
+    logger.info(f"处理导演归档：{director_name}")
     time.sleep(0.1)
     # 获取没有资源的电影，存到 wanted 表中
     result = get_tmdb_director_movies_all(path, pass_exists=True)
@@ -461,14 +463,19 @@ def extra_search(path: str) -> None:
     if not query_imdb_list:
         return
     logger.info(f"查询列表：{query_imdb_list}")
+    logger.info("-" * 55)
 
     for imdb in query_imdb_list:
         quality = "240p"
         scrapy_kpk(imdb, quality)
+        scrapy_jeckett(imdb)
         result = check_local_torrent(imdb, quality)
         move_counts = result['move_counts']
         if move_counts:
             logger.warning(f"{imdb} 请检查本地库存: {move_counts}")
+            time.sleep(0.1)
+        logger.info("-" * 35 + director_name + "-" * 35 )
+        time.sleep(0.1)
 
 
 def sort_aka_files(source_path: str, target_path: str) -> None:

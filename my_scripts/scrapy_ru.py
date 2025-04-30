@@ -136,7 +136,7 @@ def scripy(url: str) -> None:
     if next_link and not stop:
         # 如果能找到此链接，说明还有下一页
         href_value = f"{FORUM_URL}{next_link[0].get('href')}"
-        logger.info("开始下一页链接:", href_value)
+        logger.info(f"开始下一页链接: {href_value}")
         scripy(href_value)
 
     # 更新本地配置

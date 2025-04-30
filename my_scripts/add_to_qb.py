@@ -12,6 +12,7 @@ import requests
 from retrying import retry
 
 from my_module import read_json_to_dict, read_file_to_list
+from sort_movie_ops import select_yts_best_torrent
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -53,8 +54,7 @@ def add_to_qb(source: str) -> None:
             # json 文件来自 ytf
             if file_name.endswith('.json'):
                 # 读取 json 文件，获取下载链接
-                dl_info = {t['size_bytes']: t['hash'] for t in read_json_to_dict(file_path)['data']['movie']['torrents']}
-                dl_link = f"{MAGNET_PATH}{dl_info[max(dl_info.keys())]}"
+                dl_link = select_yts_best_torrent(read_json_to_dict(file_path))
                 # 添加到 qb
                 add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ytf')
                 done += 1

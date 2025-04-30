@@ -46,7 +46,7 @@ retry_strategy = Retry(
     total=15,  # 总共重试次数
     status_forcelist=[502],  # 触发重试状态码
     method_whitelist=["POST", "GET"],  # 允许重试方法
-    backoff_factor=2  # 重试等待间隔（指数增长）
+    backoff_factor=1  # 重试等待间隔（指数增长）
 )
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=THREAD_NUMBER, pool_maxsize=THREAD_NUMBER)
 session = requests.Session()
@@ -123,6 +123,7 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
 
     # 最后储存本次爬取链接和关键字，打印失败链接
     normalize_movie_filenames(target)
+    mark_4k(target)
     if cache:
         bulk_insert_ids(redis_client, REDIS_SET_KEY, new_urls)
         get_aka_name(key_word, target)
@@ -421,7 +422,7 @@ def scrapy_magnet(topic_info: dict) -> bool:
     path = topic_info['name']
     logger.debug(f"爬取：{url}")
 
-    r = session.get(url=url, headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
+    r = session.get(url=url, headers=REQUEST_HEAD, timeout=5, verify=False, allow_redirects=True)
     if r.status_code != 200:
         logger.error(f"链接无法访问: {url}")
         return False
@@ -654,3 +655,30 @@ def normalize_movie_filenames(directory):
                 old_path = os.path.join(directory, info['filename'])
                 new_path = os.path.join(directory, new_name)
                 os.rename(old_path, new_path)
+
+
+def mark_4k(directory):
+    """
+    扫描指定目录（及其子目录）下所有 .log 文件，
+    如果文件名包含任一关键字 ("4k", "2160p", "uhd")，则在文件名前加上 "重要-" 前缀。
+
+    :param directory: .log 文件保存路径
+    :return: 无
+    """
+    # 使用 os.walk 遍历当前目录及所有子目录
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            # 判断扩展名是否为 .log（不区分大小写）
+            if file.lower().endswith('.log'):
+                if file.find("重要-") != -1:
+                    continue
+                file_lower = file.lower()  # 转换为小写，以便后续匹配
+                # 检查是否包含任一关键字
+                if any(keyword in file_lower for keyword in ("4k", "2160p", "uhd")):
+                    old_path = os.path.join(root, file)
+                    new_filename = "重要-" + file  # 在原文件名前加上前缀 "重要-"
+                    new_path = os.path.join(root, new_filename)
+                    try:
+                        os.rename(old_path, new_path)
+                    except Exception as e:
+                        logger.error(f"重命名失败 {old_path}，错误信息：{e}")

@@ -5,16 +5,20 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-import asyncio
+import io
 import logging
-import os.path
+import sys
 import time
 
 from my_module import logging_config
 
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 logger = logging.getLogger(__name__)
 
-logging_config(console_output=True, log_file="B:/2.脚本/logs.log", default_log_format="%(message)s")
+time_now = time.strftime('%Y%m%d%H%M')
+logging_config(console_output=True, max_log_size=1, log_file=f"B:/2.脚本/logs-{time_now}.log", default_log_format="%(message)s")
 
 
 def main(chosen: int) -> None:
@@ -145,7 +149,7 @@ copy(results);
         case 603:
             logger.info(r"对比镜像文件夹，将已整理过的导演种子找出来")
             logger.info(r"镜像文件夹在 E:\视频\电影\Mirror")
-            logger.info(r"种子文件夹在 B:\0.整理\BT\ru—old 和 B:\0.整理\BT\yts—old")
+            logger.info(r"种子文件夹在 B:\0.整理\BT\ru 和 B:\0.整理\BT\yts")
             logger.info("=" * 255)
             from sort_movie_ops import sort_new_torrents
             target_path = r'A:\1'
@@ -160,10 +164,14 @@ copy(results);
             logger.info("=" * 255)
         case 605:
             logger.info(r"抓取 dhd 信息，自动将新帖子保存到：B:\0.整理\BT\dhd")
+            logger.info(r"自动转换 dhd 文件，抓取磁力链接")
             logger.info(r"手动检查 dhd 目录，处理后移动到 dhd—old")
             logger.info("=" * 255)
-            from scrapy_dhd import scrapy_dhd_async
+            import asyncio
+            from scrapy_dhd import scrapy_dhd_async, dhd_to_log
             asyncio.run(scrapy_dhd_async())
+            logger.info("-" * 255)
+            dhd_to_log()
             logger.info("=" * 255)
         case 701:
             logger.info("整理导演目录，在导演目录生成导演别名和代表链接的空文件")
@@ -255,17 +263,6 @@ copy(results);
             get_ids(source_file)
             sort_movie(read_file_to_list(source_file)[0])
             logger.info("=" * 255)
-        case 709:
-            logger.info("整理电影目录，TV 版本")
-            logger.info("=" * 255)
-            from sort_movie import sort_movie
-            from sort_movie_ops import get_ids
-            from my_module import read_file_to_list
-            source_file = r'config/!00.txt'
-            tv = True
-            get_ids(source_file)
-            sort_movie(read_file_to_list(source_file)[0], tv)
-            logger.info("=" * 255)
         case 710:
             logger.info(r"从盒子 QB 获取下载任务，磁链保存到：B:\0.整理\Chrome")
             logger.info(r"获取文件后，可以添加到 115、PikPak 或夸克离线")
@@ -305,6 +302,7 @@ copy(results);
             temp_list = read_file_to_list(source_file)
             for i in temp_list:
                 sort_director_auto(i)
+                time.sleep(0.1)
                 logger.info("-" * 255)
                 time.sleep(0.1)
         case 803:
@@ -328,25 +326,22 @@ copy(results);
                 if not i:
                     continue
                 get_director_movies(i)
-                logger.info("=" * 255)
+                logger.info("-" * 255)
         case 806:
             logger.info(r"批量自动整理电影目录，来源文件一行一个导演路径")
             logger.info("需要确保电影路径中存在 tt 编号")
             logger.info("=" * 255)
             from my_module import read_file_to_list
-            from sort_movie_auto import sort_movie_auto, extra_search
+            from sort_movie_auto import sort_movie_auto
             source_file = r'config/!00.txt'
             temp_list = read_file_to_list(source_file)
             for i in temp_list:
                 if not i:
                     continue
                 time.sleep(0.1)
-                sort_movie_auto(i)
+                target_file = f"B:\\2.脚本\\!00-{time_now}.txt"
+                sort_movie_auto(i, target_file)
                 time.sleep(0.1)
-                logger.info("-" * 255)
-                extra_search(i)
-                time.sleep(0.1)
-                logger.warning("=" * 255)
         case 807:
             logger.info(r"依据 imdb id 删除数据库记录")
             logger.info("=" * 255)
@@ -357,34 +352,44 @@ copy(results);
             delete_records(id_list, "imdb", "movies")
             delete_records(id_list, "imdb", "wanted")
             logger.info("-" * 255)
+        case 808:
+            logger.info(r"给导演归档，来源文件一行一个导演路径")
+            logger.info("=" * 255)
+            from my_module import read_file_to_list
+            from sort_movie_auto import achieve_director
+            source_file = r'config/!00.txt'
+            temp_list = read_file_to_list(source_file)
+            for i in temp_list:
+                if not i:
+                    continue
+                achieve_director(i)
+                time.sleep(0.1)
+                logger.warning("-" * 255)
+                time.sleep(0.1)
 
         case _:
             logger.warning("请输入有效编号")
 
 
-def temp():
+def temp(m_path):
     """临时函数"""
-    print("移动指定目录")
-    from my_module import read_file_to_list
-    import shutil
-    path_list = read_file_to_list(r'config/!00.txt')
-    for p in path_list:
-        base_name = os.path.basename(p[:-1])
-        root_name = os.path.basename(os.path.dirname(p[:-1]))
-        new_name = "!" + base_name
-        target = r"A:\0c.下载整理"
-        target_path = os.path.join(target, root_name, new_name)
-        shutil.move(p, target_path)
-        print(p + " -> " + target_path)
+    print("转换dhd文件")
+    from scrapy_dhd import dhd_to_log
+    dhd_to_log(m_path)
+
+    logger.info("-" * 255)
 
 
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-ERROR: https://yts.mx/movies/anxious-nation-2022
-ERROR: https://yts.mx/movies/every-little-thing-2024
-ERROR: https://yts.mx/movies/hellhole-2019
-ERROR: https://yts.mx/movies/captain-america-brave-new-world-2025
+ERROR: https://yts.mx/movies/all-na-vibes-2021
+ERROR: https://yts.mx/movies/belles-on-their-toes-1952
+ERROR: https://yts.mx/movies/bermondsey-tales-fall-of-the-roman-empire-2024
+ERROR: https://yts.mx/movies/the-kings-pirate-1967
+ERROR: https://yts.mx/movies/i-was-octomom-2025
+ERROR: https://yts.mx/movies/not-just-a-goof-2025
+ERROR: https://yts.mx/movies/small-soldiers-1998
 
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
@@ -398,8 +403,9 @@ ERROR: https://yts.mx/movies/captain-america-brave-new-world-2025
         # 802 -> 批量整理导演
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
-        main(806)
-        # temp()
+        # 808 -> 归档导演
+        main(802)
+        # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')
     finally:

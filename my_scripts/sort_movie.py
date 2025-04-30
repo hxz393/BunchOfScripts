@@ -15,8 +15,8 @@ from retrying import retry
 
 from my_module import sanitize_filename, write_dict_to_json, read_json_to_dict
 from sort_movie_mysql import sort_movie_mysql
-from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_movie
-from sort_movie_request import get_tmdb_movie_details, get_imdb_movie_details, get_douban_movie_response
+from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_movie, get_movie_id
+from sort_movie_request import get_tmdb_movie_details, get_imdb_movie_details, get_douban_response, get_tmdb_movie_cover
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,6 @@ def sort_movie(path: str, tv: bool = False) -> None:
     path = path.strip()
     movie_info_file = f"{path}\\movie_info.json5"
     no_movie_info = not os.path.exists(movie_info_file)  # 不存在 movie_info.json5 文件
-    logger.info(f"开始抓取")
     if not os.path.exists(path):
         logger.error("目录不存在")
         return
@@ -60,8 +59,10 @@ def sort_movie(path: str, tv: bool = False) -> None:
             "country": [],
             "language": [],
             "runtime": 0,
+            "poster_path": "",
             "titles": [],
-            "directors": []
+            "directors": [],
+            "comment": None
         }
 
     # 先移除文件层级
@@ -92,13 +93,21 @@ def sort_movie(path: str, tv: bool = False) -> None:
     new_path = os.path.join(os.path.dirname(path), sanitize_filename(build_movie_folder_name(path, movie_dict)))
     # 重命名目录
     os.rename(path, new_path)
+    # 打印信息
+    logger.info(f"抓取结果：{movie_dict}")
+    # 下载图片
+    image_path = os.path.join(new_path, f"{get_movie_id(movie_dict)}.jpg")
+    if not os.path.exists(image_path):
+        get_tmdb_movie_cover(movie_dict["poster_path"], image_path)
     # 建立电影别名空文件
     create_aka_movie(new_path, movie_dict)
-    # 打印并写入信息文件到本地
-    logger.info(f"抓取结果：{movie_dict}")
+    # 写入信息到本地
     write_dict_to_json(os.path.join(new_path, "movie_info.json5"), movie_dict)
 
     # 最后检查目录规范
+    time.sleep(0.1)
+    logger.info("-" * 25 + "步骤：检查校验信息" + "-" * 25)
+    time.sleep(0.1)
     check_result = check_movie(new_path)
     if check_result:
         logger.error(check_result)
@@ -131,12 +140,15 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     movie_info["original_title"] = m['original_name' if tv else 'original_title']
     movie_info["year"] = m['first_air_date' if tv else 'release_date']
     movie_info["year"] = movie_info["year"][:4] if movie_info["year"] else None
+    runtime_tmdb = 0
     if tv:
         runtime = m['last_episode_to_air']['runtime']
         if runtime:
-            movie_info["runtime"] = runtime * m['last_episode_to_air']['episode_number']
+            runtime_tmdb = runtime * m['last_episode_to_air']['episode_number']
     else:
-        movie_info["runtime"] = m['runtime']
+        runtime_tmdb = m['runtime']
+    movie_info["runtime"] = runtime_tmdb
+    movie_info["runtime_tmdb"] = runtime_tmdb
 
     if tv:
         credits_list = m.get('credits', {})
@@ -159,6 +171,8 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     movie_info["titles"].append(m[m_key])
     movie_info["titles"].append(movie_info["original_title"])
 
+    movie_info["poster_path"] = m['poster_path']
+
 
 def get_imdb_movie_info(movie_id: str, movie_info: dict) -> None:
     """
@@ -179,9 +193,11 @@ def get_imdb_movie_info(movie_id: str, movie_info: dict) -> None:
         movie_info["year"] = year
 
     # 获取时长
+    runtime = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "runtime", "seconds"], default=0)
+    runtime_imdb = int(runtime / 60)
     if not movie_info["runtime"]:
-        runtime = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "runtime", "seconds"], default=0)
-        movie_info["runtime"] = int(runtime / 60)
+        movie_info["runtime"] = runtime_imdb
+    movie_info["runtime_imdb"] = runtime_imdb
 
     # 获取原名
     original_title = safe_get(m, ["props", "pageProps", "aboveTheFoldData", "originalTitleText", "text"], default="")
@@ -252,15 +268,14 @@ def get_douban_movie_info(movie_id: str, movie_info: dict) -> None:
     :param movie_info: 电影信息字典，原地修改
     :return: 无
     """
-    response = get_douban_movie_response(movie_id)
+    response = get_douban_response(movie_id, "movie_response")
     if not response:
         return
 
     soup = BeautifulSoup(response.text, 'html.parser')
     info_div = soup.find("div", id="info")
     if not info_div:
-        logger.error(f"豆瓣页面解析失败")
-        return
+        sys.exit(f"豆瓣页面解析失败")
 
     # 获取电影原名
     original_title = ""

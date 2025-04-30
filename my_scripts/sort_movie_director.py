@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from sort_movie_ops import scan_ids, merge_and_dedup, split_director_name, create_aka_director, fix_douban_name
-from sort_movie_request import get_tmdb_director_details, get_imdb_director_response, get_douban_director_response
+from sort_movie_request import get_tmdb_director_details, get_imdb_director_response, get_douban_response
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -59,7 +59,6 @@ def sort_movie_director(path: str) -> int:
     if douban:
         douban_info = get_douban_director_info(douban)
         director_info = merge_and_dedup(director_info, douban_info)
-        done += 1
         logger.info(f"DOUBAN 名字：{douban_info.get('aka', [])[0]}")
     else:
         logger.warning("没有 DOUBAN 编号。")
@@ -123,7 +122,7 @@ def get_douban_director_info(director_id: str) -> Dict[str, list]:
     :return: 返回一个字典，包含别名和国别
     """
     director_info = {"country": [], "aka": []}
-    response = get_douban_director_response(director_id)
+    response = get_douban_response(director_id, "director_response")
     if not response:
         return director_info
 

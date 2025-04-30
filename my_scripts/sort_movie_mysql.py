@@ -9,6 +9,7 @@
 import json
 import logging
 import os.path
+import time
 from datetime import datetime
 from typing import Any
 
@@ -46,8 +47,10 @@ MOVIES_UPDATE_SQL = """
                 resolution=%s,
                 codec=%s,
                 bitrate=%s,
+                duration=%s,
                 size=%s,
                 dl_link=%s,
+                comment=%s,
                 updated_at=%s
             WHERE id=%s
         """
@@ -56,14 +59,14 @@ MOVIES_INSERT_SQL = """
                 director, year, original_title, chinese_title, genres,
                 country, language, runtime, titles, directors,
                 tmdb, douban, imdb, source, quality, resolution,
-                codec, bitrate, size, dl_link,
+                codec, bitrate, duration, size, dl_link, comment,
                 created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s
             )
         """
 MOVIES_SEARCH_SQL = "SELECT resolution, bitrate, size, tmdb, douban, imdb FROM movies WHERE id = %s"
@@ -127,6 +130,8 @@ def sort_movie_mysql(path: str) -> None:
     :param path: 电影目录
     :return: 无
     """
+    time.sleep(0.1)
+    logger.info("-" * 25 + "步骤：写入数据库" + "-" * 25)
     merged_dict = read_json_to_dict(os.path.join(path, "movie_info.json5"))
     if not merged_dict:
         logger.error("无法读取 JSON 文件")
@@ -156,8 +161,10 @@ def sort_movie_mysql(path: str) -> None:
         merged_dict['resolution'],
         merged_dict['codec'],
         merged_dict['bitrate'],
+        merged_dict['duration'],
         merged_dict['size'],
-        merged_dict['dl_link']
+        merged_dict['dl_link'],
+        merged_dict['comment']
     )
 
     # 当前时间，用于插入 created_at / updated_at 或更新 updated_at

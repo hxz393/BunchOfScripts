@@ -6,15 +6,22 @@
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
 import asyncio
+import concurrent.futures
+import hashlib
 import logging
 import os
 import re
+import urllib.parse
 
 import aiohttp
+import bencodepy
+import requests
 from bs4 import BeautifulSoup
+from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, update_json_config
+from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, update_json_config, read_file_to_list
 
+requests.packages.urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = 'config/scrapy_dhd.json'
@@ -93,8 +100,8 @@ async def working_dhd_async(info: dict, session: aiohttp.ClientSession) -> None:
     content = [url, dl_url]
     file_name = f"{name}[{imdb}].dhd"
     file_name = rename_file(file_name)
-    file_name = sanitize_filename(file_name).strip()
     file_name = file_name.replace("/", "｜").replace("\\", "｜")
+    file_name = sanitize_filename(file_name).strip()
     file_path = os.path.join(OUTPUT_DIR, file_name)
     write_list_to_file(file_path, content)
 
@@ -117,7 +124,7 @@ async def scrapy_dhd_async(start_page: int = 1) -> None:
             while batch_attempt < max_batch_attempts:
                 logger.info(f"批量抓取第 {start_page} 到 {start_page + pages_per_batch - 1} 页，尝试次数 {batch_attempt + 1}")
                 page_numbers = [start_page + i for i in range(pages_per_batch)]
-                tasks = [get_dhd_response(f"{DHD_MOVIE_URL}{page}", session) for page in page_numbers]
+                tasks = [get_dhd_response(f"{DHD_MOVIE_URL}{page}.html", session) for page in page_numbers]
                 responses = await asyncio.gather(*tasks, return_exceptions=True)
                 combined_result_list = []
                 for resp in responses:
@@ -195,13 +202,28 @@ def extract_dl_url(txt: str) -> str:
     """获取下载地址"""
     soup = BeautifulSoup(txt, 'html.parser')
     span_tag = soup.find("span", attrs={"style": "white-space: nowrap"})
+    download_link = ""
     if span_tag:
         a_tag = span_tag.find("a")
         if a_tag:
-            link_href = a_tag.get('href')
-            download_link = f"{DHD_URL}/{link_href}"
-            return download_link
-    return ""
+            # 判断 <a> 标签下是否有 <img> 且其 src 属性为指定地址
+            img_tag = a_tag.find("img")
+            if img_tag and img_tag.get("src", "").strip() == "static/image/filetype/torrent.gif":
+                link_href = a_tag.get("href")
+                if link_href:  # 确保 href 存在
+                    download_link = f"{DHD_URL}/{link_href}"
+
+    # 如果第一种方式未找到，则尝试第二种格式：<p class="attnm">
+    if not download_link:
+        p_tags = soup.find_all("p", class_="attnm")
+        for p_tag in p_tags:
+            a_tag = p_tag.find("a")
+            if a_tag:
+                link_href = a_tag.get("href")
+                if link_href:
+                    download_link = f"{DHD_URL}/{link_href}"
+
+    return download_link
 
 
 def extract_imdb_id(txt: str) -> str:
@@ -227,16 +249,142 @@ def fix_name(name: str, max_length: int = 230) -> str:
         return name[:max_length]
 
 
-def write_to_disk(result_list: list) -> None:
-    """写入到磁盘"""
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
+def dhd_to_log(directory: str=r"B:\0.整理\BT\dhd") -> None:
+    """转换 dhd 文件到 log 文件，并使用多线程执行"""
+    # 获取指定目录下所有以 .dhd 为后缀的文件
+    file_list = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.dhd')]
 
-    for i in result_list:
-        name = i['name']
-        name = fix_name(name)
-        name = sanitize_filename(name)
-        file_name = f"{name}({i['size']})[{i['imdb']}].ttg"
-        path = os.path.join(OUTPUT_DIR, file_name)
-        links = [i["url"], i["dl"]]
-        write_list_to_file(path, links)
+    def process_file(file_path: str):
+        """
+        单个文件的处理流程：
+        1. 读取文件中的链接
+        2. 根据链接获取种子下载页面，并提取下载地址
+        3. 下载种子文件，并转换为磁链
+        4. 回写磁链到 .log 文件，并删除临时种子文件
+        """
+        # 每个线程创建自己的 requests.Session
+        session = requests.Session()
+        logger.info(f"处理文件：{file_path}")
+
+        try:
+            # 从 dhd 文件读取链接，假设 read_file_to_list 返回一个列表
+            link = read_file_to_list(file_path)[0]
+        except Exception as e:
+            logger.error(f"读取文件 {file_path} 失败: {e}")
+            return
+
+        # 构造 torrent 文件保存路径
+        torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
+
+        # 获取种子下载页面并提取下载地址
+        response = get_dhd(session, link)
+        dl_url = extract_dl_url(response.text)
+        if not dl_url:
+            logger.warning(f"文件 {file_path}: 没有找到下载地址")
+            return
+
+        # 下载种子文件并转换为磁链
+        get_dhd_torrent(session, dl_url, torrent_path)
+        magnet = torrent_to_magnet(torrent_path)
+        if not magnet:
+            logger.warning(f"文件 {file_path}: 转换磁链失败")
+            os.remove(torrent_path)
+            return
+
+        # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
+        new_file_path = file_path.replace(".dhd", ".log")
+        os.rename(file_path, new_file_path)
+        write_list_to_file(new_file_path, [magnet])
+        os.remove(torrent_path)
+        logger.info(f"文件 {file_path}: 转换完成")
+        logger.info("-" * 255)
+
+    # 根据文件数量设置线程池大小，最大线程数可根据实际情况调整
+    # max_workers = min(16, len(file_list)) if file_list else 1
+    max_workers = min(32, len(file_list)) if file_list else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        futures = [executor.submit(process_file, file) for file in file_list]
+        # 可选：等待每个任务执行完毕，并捕获异常
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"处理文件时出现异常: {e}")
+
+
+@retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
+def get_dhd(session: requests.Session, url: str) -> requests.Response:
+    """请求流程"""
+    response = session.get(url, timeout=10, verify=False, headers=REQUEST_HEAD)
+    response.encoding = 'gbk'
+    if response.status_code != 200:
+        raise Exception(f"请求失败，重试 {response.status_code}：{url}")
+
+    return response
+
+
+@retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
+def get_dhd_torrent(session: requests.Session, url: str, torrent_path: str) -> None:
+    """下载种子"""
+    response = session.get(url, timeout=10, verify=False, headers=REQUEST_HEAD)
+    if response.status_code != 200:
+        raise Exception(f"请求失败，重试 {response.status_code}：{url}")
+
+    # 将文件内容保存为 torrent 文件
+    with open(torrent_path, "wb") as file:
+        file.write(response.content)
+
+
+def torrent_to_magnet(torrent_file_path: str) -> str:
+    """
+    将 torrent 文件转换为磁链
+    """
+    # 读取 torrent 文件二进制内容
+    with open(torrent_file_path, 'rb') as f:
+        torrent_data = f.read()
+
+    # 解析 bencoded 数据
+    torrent_dict = bencodepy.decode(torrent_data)
+
+    # 提取 info 字典，它包含了实际内容信息
+    info = torrent_dict[b'info']
+
+    # 重新对 info 字典进行 bencode 编码，并计算 SHA1 哈希值作为 info hash
+    info_bencoded = bencodepy.encode(info)
+    info_hash = hashlib.sha1(info_bencoded).hexdigest()
+
+    # 可选：提取 torrent 的显示名称（如果存在）
+    display_name = ""
+    if b'name' in info:
+        try:
+            display_name = info[b'name'].decode('utf-8')
+        except UnicodeDecodeError:
+            display_name = info[b'name'].decode('latin1')
+    display_name_encoded = urllib.parse.quote(display_name) if display_name else ""
+
+    # 可选：提取 tracker 信息，优先使用 announce-list 中的第一个 tracker，如果没有则使用 announce 字段
+    tracker_url = ""
+    if b'announce-list' in torrent_dict:
+        # announce-list 通常是个嵌套列表，取第一个 tracker
+        try:
+            tracker_url = torrent_dict[b'announce-list'][0][0].decode('utf-8')
+        except Exception:
+            tracker_url = ""
+    elif b'announce' in torrent_dict:
+        tracker_url = torrent_dict[b'announce'].decode('utf-8')
+
+    tracker_url_encoded = urllib.parse.quote(tracker_url) if tracker_url else ""
+
+    # 构造磁链，至少包含 xt 参数（info hash）
+    magnet_link = f"magnet:?xt=urn:btih:{info_hash}"
+
+    # 如果有名称，则添加 dn 参数
+    if display_name_encoded:
+        magnet_link += f"&dn={display_name_encoded}"
+
+    # 如果有 tracker 则添加 tr 参数
+    if tracker_url_encoded:
+        magnet_link += f"&tr={tracker_url_encoded}"
+
+    return magnet_link

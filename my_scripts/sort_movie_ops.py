@@ -5,19 +5,25 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-
+import contextlib
 import json
 import logging
 import os
+import os.path
 import re
 import shutil
 import subprocess
+import time
+import warnings
 from pathlib import Path
 from typing import Dict
 from typing import Optional, Any
 
+from PIL import Image
+from moviepy import VideoFileClip
+
 from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_folder_paths
-from scrapy_kpk import scrapy_kpk
+from scrapy_kpk import scrapy_kpk, scrapy_jeckett
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,7 @@ CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
 MTM_PATH = CONFIG['mtm_path']  # mtm 路径
+MEDIAINFO_PATH = CONFIG['mediainfo_path']  # mtm 路径
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
 RU_PATH = CONFIG['ru_path']  # ru 种子路径
 YTS_PATH = CONFIG['yts_path']  # yts 种子路径
@@ -150,7 +157,7 @@ def scan_ids(directory: str) -> Dict[str, Optional[str]]:
 
     # 检查是否有多个 id 文件
     ext_map = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
-    if any({ext: sum(file.path.endswith(ext) for file in os.scandir(directory) if file.is_file()) for ext in ext_map}.values()) > 1:
+    if any(value > 1 for value in {ext: sum(file.path.endswith(ext) for file in os.scandir(directory) if file.is_file()) for ext in ext_map}.values()):
         logger.error(f"目录 {directory} 中 id 文件太多，请先清理。")
         return result
 
@@ -243,11 +250,16 @@ def get_dl_link(path: str) -> str:
     for file_name in files:
         file_path = os.path.join(path, file_name)
         if file_name.endswith('.json'):
-            # 读取 json 文件，获取下载链接
-            dl_info = {t['size_bytes']: t['hash'] for t in read_json_to_dict(file_path)['data']['movie']['torrents']}
-            dl = f"{MAGNET_PATH}{dl_info[max(dl_info.keys())]}[:255]"
+            # 读取 json 文件，获取下载链接，重写文件然后删除 json 文件
+            dl = select_yts_best_torrent(read_json_to_dict(file_path))
+            output_path = os.path.splitext(file_path)[0] + ".log"
+            with open(output_path, "w", encoding='utf-8') as f:
+                f.write(dl)
+            remove_target(file_path)
         elif file_name.endswith('.log'):
-            return read_file_to_list(file_path)[0][:255]
+            dl = read_file_to_list(file_path)[0][:60]
+            with open(file_path, "w", encoding='utf-8') as f:
+                f.write(dl)
 
     return dl
 
@@ -284,6 +296,7 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     """
     movie_dict = movie_info | movie_ids | file_info
     movie_dict["director"] = Path(path).parent.name
+    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'")
     movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob('*') if file.is_file()) / (1024 * 1024))
     movie_dict["dl_link"] = get_dl_link(path)
     movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
@@ -335,7 +348,7 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> str:
     else:
         cn = "" if cn == en else cn
         movie_id = get_movie_id(movie_dict)
-        base_name = f"{yn} - {en}{f'({cn})' if cn else ''}{{{movie_id}}}".replace("　", " ")
+        base_name = f"{yn} - {en}{f'({cn})' if cn else ''}{{{movie_id}}}"
 
     return f"{base_name}[{sc}][{rs}][{cd}@{bt}]"
 
@@ -352,7 +365,7 @@ def create_aka_movie(new_path, movie_dict) -> None:
         for title in movie_dict["titles"]:
             file_name = sanitize_filename(title).strip()
             file_name += ".别名"
-            Path(os.path.join(new_path, file_name).replace("\"", "")).touch()
+            Path(os.path.join(new_path, file_name)).touch()
 
 
 def get_video_info(path_str: str) -> Optional[dict]:
@@ -406,6 +419,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     :param filepath: 视频文件路径路径
     :return: 文件信息字典
     """
+    logger.info(f"获取视频信息：{os.path.basename(filepath)}")
     # 构造并运行 ffprobe 命令
     file_info = {"source": "未知来源", "resolution": "", "codec": "", "bitrate": ""}
     cmd = [
@@ -435,10 +449,23 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     file_info["resolution"] = f"{width}x{height}"
     file_info["quality"] = classify_resolution_by_pixels(f"{width}x{height}")
 
+    # 实际宽高比
+    file_info["dar"] = width / height
+    if 'display_aspect_ratio' in video_stream:
+        dar_str = video_stream['display_aspect_ratio']
+        width, height = map(int, dar_str.split(':'))
+        file_info["dar"] = width / height
+
     # 编码器，mkv 要特别判断
     codec_tag_string = video_stream.get("codec_tag_string", "未知编码器").upper()
     codec_name = video_stream.get("codec_name", "未知编码器").upper()
-    file_info["codec"] = codec_name if codec_tag_string.startswith("[") else codec_tag_string
+    codec_detail = check_video_codec(filepath)
+    if codec_detail:
+        file_info["codec"] = codec_detail
+    elif codec_tag_string.startswith("["):
+        file_info["codec"] = codec_name
+    else:
+        file_info["codec"] = codec_tag_string
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -448,6 +475,13 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     bit_rate_kbps = int(bit_rate_bps) // 1000 if bit_rate_bps is not None else "未知比特率"
     file_info["bitrate"] = f"{bit_rate_kbps}kbps"
 
+    # 视频时长
+    duration = video_stream.get("duration")
+    if not duration:
+        duration_data = data.get("format", [])
+        duration = duration_data.get("duration")
+    file_info["duration"] = int(float(duration) / 60)
+
     # 视频来源，需要根据文件名判断
     matched = False
     # 先仅使用当前视频文件名做匹配
@@ -456,6 +490,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         # 注意 [A-Za-z] 仅排除英文字母，如果想排除数字可以改成 [A-Za-z0-9]
         pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
         if re.search(pattern, filepath):
+            source = source.replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
             file_info["source"] = source
             matched = True
             break
@@ -472,11 +507,67 @@ def extract_video_info(filepath: str) -> Optional[dict]:
             if matched:
                 break  # 结束 file_list 循环
 
-    file_info["source"] = file_info["source"].replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
+    match = re.search(r'「(.*?)」', filepath)
+    if match:
+        file_info["comment"] = match.group(1)
+
     return file_info
 
 
-def generate_video_contact(video_path: str) -> None:
+def check_video_codec(path: str) -> Optional[str]:
+    """使用 MediaInfo 获取编码信息"""
+    # 调用 MediaInfo CLI 获取 JSON 元数据
+    cmd = [MEDIAINFO_PATH, '--Output=JSON', path]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    data = json.loads(proc.stdout)
+
+    # 提取 Video track
+    media = data.get('media', {})
+    if not media:
+        logger.warning(f'Mediainfo 解析 JSON 失败: {path}')
+        return
+
+    tracks = media.get('track', [])
+    video = next((t for t in tracks if t.get('@type') == 'Video'), None)
+    if not video:
+        logger.warning(f'Mediainfo 未找到视频流: {path}')
+        return
+
+    # 编码器识别
+    codec = video.get('Encoded_Library_Name') or video.get('Format', '').lower() or 'Unknown'
+
+    # 解析编码设置: rc_mode / crf / bitrate
+    enc_settings = video.get('Encoded_Library_Settings') or video.get('Encoded_Application', '')
+    raw_rc = None
+    crf_value = None
+    target_bitrate = None  # kbps
+    if enc_settings:
+        for match in re.finditer(r"(rc|crf)=([\w.]+)", enc_settings):
+            key, val = match.groups()
+            if key == 'rc':
+                raw_rc = val
+            elif key == 'crf':
+                try:
+                    crf_value = int(float(val))
+                except ValueError:
+                    pass
+        m = re.search(r"bitrate=(\d+)", enc_settings)
+        if m:
+            target_bitrate = int(m.group(1))
+
+    # 构造 rc_mode 字符串
+    rc_mode = None
+    if crf_value is not None:
+        rc_mode = f"crf{crf_value}"
+    elif raw_rc and target_bitrate is not None:
+        rc_mode = f"{raw_rc}"
+    elif raw_rc:
+        rc_mode = raw_rc
+
+    return f"{codec}.{rc_mode}" if rc_mode else codec
+
+
+def generate_video_contact_mtm(video_path: str) -> None:
     """
     用 mtn 生成视频网格缩略图，生成在视频同一目录
 
@@ -486,14 +577,61 @@ def generate_video_contact(video_path: str) -> None:
     cmd = [
         MTM_PATH,  # 可使用原始字符串，避免转义
         "-c", "4",
-        "-r", "6",
+        "-r", "4",
         "-h", "100",
         "-P",
         video_path
     ]
 
-    print("执行命令：", " ".join(cmd))
+    logger.info(f"执行命令：{' '.join(cmd)}")
     subprocess.run(cmd, capture_output=True, text=True)
+
+
+def generate_video_contact(video_path: str) -> None:
+    """
+    从视频中均匀抽取帧，生成一个网格缩略图，保持每个截图的原始宽高比。
+
+    :param video_path: 视频文件路径
+    :return 无返回值
+    """
+    logger.info(f"生成缩略图 {os.path.basename(video_path)}")
+    # clip = VideoFileClip(video_path)
+    with open(os.devnull, "w") as f, contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            clip = VideoFileClip(video_path)
+
+    # 视频存储的尺寸
+    storage_width, storage_height = clip.size
+    file_info = extract_video_info(video_path)
+    dar = file_info.get("dar", 0)
+    if not dar:
+        dar = clip.aspect_ratio
+
+    # 根据 DAR 手动计算显示宽度
+    display_width = int(storage_height * dar)
+    display_height = storage_height
+
+    cols, rows = 4, 4
+    total_images = cols * rows
+    duration = clip.duration
+    times = [duration * (i + 1) / (total_images + 1) for i in range(total_images)]
+
+    images = []
+    for t in times:
+        frame = Image.fromarray(clip.get_frame(t).astype('uint8'))
+        # 缩放到正确的显示尺寸（DAR）
+        frame = frame.resize((display_width, display_height), Image.Resampling.LANCZOS)
+        images.append(frame)
+
+    grid_image = Image.new('RGB', (cols * display_width, rows * display_height))
+    for idx, img in enumerate(images):
+        col, row = idx % cols, idx // cols
+        grid_image.paste(img, (col * display_width, row * display_height))
+
+    output_path = os.path.splitext(video_path)[0] + "_s.jpg"
+    grid_image.save(output_path)
+    clip.close()
 
 
 def classify_resolution_by_pixels(resolution: str) -> str:
@@ -523,7 +661,7 @@ def classify_resolution_by_pixels(resolution: str) -> str:
     elif pixel_count <= p720_max:
         if h > 1000:
             return "1080p"
-        if w > 1430:
+        if w > 1400:
             return "1080p"
         return "720p"
     elif pixel_count <= p1080_max:
@@ -574,21 +712,46 @@ def check_movie(path: str) -> Optional[str]:
     :return: 如有问题，返回问题
     """
     p = Path(path)
+    file_list = [f for f in p.iterdir() if f.is_file()]
 
     # 检查信息文件
     movie_info_file = p / "movie_info.json5"
     if not os.path.exists(movie_info_file):
-        return f"{p.name} 目录中不存在 movie_info.json"
+        return f"{p.name} 目录中不存在 movie_info.json5"
     movie_info = read_json_to_dict(movie_info_file)
+
+    # 查找 log 文件数量
+    log_paths = [str(f) for f in file_list if f.suffix.lower() == ".log"]
+    if len(log_paths) > 1:
+        return f"{p.name} 目录中下载数量大于 1"
+
+    # 检查下载链接
+    if len(log_paths) == 1:
+        dl_link = read_file_to_list(log_paths[0])
+        if len(dl_link[0]) != 60:
+            return f"{p.name} 下载链接错误"
 
     # 检查导演是否正确
     if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
         logger.warning(f"{p.name} 导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
 
+    # 检查时长
+    for source in ("imdb", "tmdb"):
+        runtime_key = f"runtime_{source}"
+        runtime_value = movie_info.get(runtime_key)
+        if runtime_value:
+            time_diff = abs(runtime_value - movie_info["duration"])
+            if time_diff > 5:
+                logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{movie_info['duration']} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
+            else:
+                logger.info(f"{source.upper()} 时长匹配")
+        else:
+            logger.warning(f"{source.upper()} 时长缺失")
+
     # 检查其他字段信息
     for k, v in movie_info.items():
         if not v:
-            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "dl_link"]:  # 能为空的字段
+            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb"]:  # 能为空的字段
                 logger.warning(f"{p.name} 缺少字段信息：{k}")
 
     # 查找多余目录
@@ -601,26 +764,7 @@ def check_movie(path: str) -> Optional[str]:
     if not match:
         return f"{p.name} 目录名格式错误或缺少必须字段"
 
-    # 检查码率是否过高
-    info = match.groupdict()
-    file_bitrate = int(info['bitrate'].split('kbps')[0])
-    if file_bitrate > MAX_BITRATE:
-        logger.warning(f"{p.name} 码率过高：{file_bitrate}kbps")
-
-    # 查找视频数量
-    file_list = [f for f in p.iterdir() if f.is_file()]
-    video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
-    if len(video_paths) > 1:
-        logger.warning(f"{p.name} 目录中视频数量大于 1")
-
-    # 生成视频缩略图
-    for video_path in video_paths:
-        base, ext = os.path.splitext(video_path)
-        screen_path = base + "_s.jpg"
-        if not os.path.exists(screen_path):
-            generate_video_contact(video_path)
-
-    # 检查 RARBG 库存
+    # 检查本地库存
     imdb = movie_info['imdb']
     quality = movie_info['quality']
     result = check_local_torrent(imdb, quality)
@@ -631,9 +775,44 @@ def check_movie(path: str) -> Optional[str]:
     if delete_counts:
         logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
 
+    # 检查码率是否过高
+    info = match.groupdict()
+    file_bitrate = int(info['bitrate'].split('kbps')[0])
+    if quality == '2160p' and file_bitrate > MAX_BITRATE * 6:
+        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+    elif quality == '1080p' and file_bitrate > MAX_BITRATE * 3:
+        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+    elif quality == '720p' and file_bitrate > MAX_BITRATE * 2:
+        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+    elif quality == '480p' and file_bitrate > MAX_BITRATE * 2:
+        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+    elif file_bitrate > MAX_BITRATE:
+        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+
+    # 查找视频数量
+    video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
+    if len(video_paths) > 1:
+        logger.warning(f"{p.name} 目录中视频数量大于 1")
+
+    # 生成视频缩略图
+    for video_path in video_paths:
+        base, ext = os.path.splitext(video_path)
+        screen_path = base + "_s.jpg"
+        if not os.path.exists(screen_path):
+            try:
+                generate_video_contact(video_path)
+            except Exception as e:
+                logger.warning(f"{video_path} 生成缩略图失败: {e}")
+        # 另一种生成缩略图方式
+        if not os.path.exists(screen_path):
+            generate_video_contact_mtm(video_path)
+        if not os.path.exists(screen_path):
+            return f"生成视频截图失败：{p.name}"
+
     # 检查在线科普库
     if quality not in ['1080p', '2160p'] and imdb:
         scrapy_kpk(imdb, quality)
+        scrapy_jeckett(imdb)
 
     # 建立镜像文件夹
     mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info['director']))
@@ -661,11 +840,20 @@ def check_local_torrent(imdb: str, quality: str) -> dict:
                 # 文件可能已被删除，跳过
                 continue
 
-            # 如果文件已经是 1080p 以上质量，直接删除库存种子，否则移动后处理
-            if quality == '1080p' or quality == '2160p':
+            # 如果文件已经是 2160p 质量，直接删除库存种子，否则移动后处理
+            if quality == '2160p':
                 os.remove(file_path)
                 result["delete_counts"] += 1
                 result["delete_files"].append(file_path)
+            elif quality == '1080p':
+                if any(keyword in file_path.lower() for keyword in ("4k", "2160p", "uhd")):
+                    target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+                    shutil.move(file_path, target_path)
+                    result["move_counts"] += 1
+                else:
+                    os.remove(file_path)
+                    result["delete_counts"] += 1
+                    result["delete_files"].append(file_path)
             else:
                 target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
                 shutil.move(file_path, target_path)
@@ -755,7 +943,7 @@ def create_aka_director(path: str, aka: list) -> None:
             unique_aka.append(item)  # 保留原始大小写的项
     for a in unique_aka:
         file_name = sanitize_filename(a).strip()
-        Path(os.path.join(path, file_name).replace("\"", "")).touch()
+        Path(os.path.join(path, file_name)).touch()
 
 
 def get_subdirs(dir_path: str) -> dict:
@@ -837,12 +1025,15 @@ def everything_search_filelist(file_path: str) -> None:
     :param file_path: 来源文本路径
     :return: 无
     """
+    # 使用正则表达式方式，避免非全词匹配
     keys = '|'.join(read_file_to_list(file_path))
     search_query = f'({keys})'
-
     command = f'"{EVERYTHING_PATH}" -regex -search "{search_query}"'
-    # 使用 subprocess.run 执行命令
     subprocess.run(command, shell=True)
+
+    # 调用时直接把参数列表传给 Popen，避免管道符被 shell 解读
+    # search_query = "|".join(f"<{name}>" for name in read_file_to_list(file_path))
+    # subprocess.Popen([EVERYTHING_PATH, "-search", search_query], shell=False)
 
 
 def sort_new_torrents(target_path: str) -> None:
@@ -875,6 +1066,43 @@ def sort_new_torrents(target_path: str) -> None:
             target_path_ru = os.path.join(target_path_root, os.path.basename(ru_path))
             logger.info(f"关键字 '{matched_keyword}' 匹配到路径: {ru_path}")
             shutil.move(ru_path, target_path_ru)
+
+
+def select_yts_best_torrent(json_data: dict) -> str:
+    """从 yts json 中选择最佳的下载"""
+    torrents = json_data['data']['movie']['torrents']
+
+    def filter_or_raise(candidates: dict, key: str, priority_list: list) -> [list | dict]:
+        """辅助函数，如果有意外的值则抛出异常"""
+        unique_values = set(t[key] for t in candidates)
+        if unique_values - set(priority_list):
+            raise ValueError(f"Unexpected value for {key}: {unique_values - set(priority_list)}")
+        for val in priority_list:
+            filtered = [t for t in candidates if t[key] == val]
+            if filtered:
+                return filtered
+        return candidates
+
+    # 逐步过滤
+    torrents = filter_or_raise(torrents, 'quality', ['2160p', '1080p', '720p', '480p', '3D'])
+    if len(torrents) == 1:
+        return f"{MAGNET_PATH}{torrents[0]['hash']}"
+
+    torrents = filter_or_raise(torrents, 'video_codec', ['x265', 'x264'])
+    if len(torrents) == 1:
+        return f"{MAGNET_PATH}{torrents[0]['hash']}"
+
+    torrents = filter_or_raise(torrents, 'bit_depth', ['10', '8'])
+    if len(torrents) == 1:
+        return f"{MAGNET_PATH}{torrents[0]['hash']}"
+
+    torrents = filter_or_raise(torrents, 'type', ['bluray', 'web'])
+    if len(torrents) == 1:
+        return f"{MAGNET_PATH}{torrents[0]['hash']}"
+
+    # 最后根据文件大小确定
+    best_torrent = max(torrents, key=lambda t: t['size_bytes'])
+    return f"{MAGNET_PATH}{best_torrent['hash']}"
 
 
 def fix_douban_name(name: str) -> str:

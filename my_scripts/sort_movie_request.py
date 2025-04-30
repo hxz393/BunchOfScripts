@@ -8,6 +8,7 @@
 import base64
 import json
 import logging
+import os.path
 import re
 import sys
 import urllib.parse
@@ -15,6 +16,7 @@ from typing import Optional
 from collections import defaultdict
 
 import requests
+import xmltodict as xmltodict
 from bs4 import BeautifulSoup
 from retrying import retry
 from tmdbv3api import TMDb, Movie, TV, Person
@@ -31,6 +33,7 @@ TMDB_URL = CONFIG['tmdb_url']  # tmdb api 地址
 TMDB_AUTH = CONFIG['tmdb_auth']  # tmdb api auth
 TMDB_KEY = CONFIG['tmdb_key']  # tmdb api key
 TMDB_HEADERS = {"Authorization": f"Bearer {TMDB_AUTH}", "accept": "application/json"}
+TMDB_IMAGE_URL = CONFIG['tmdb_image_url']  # tmdb 图片地址
 
 IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
 IMDB_PERSON_URL = CONFIG['imdb_person_url']  # imdb 导演地址
@@ -46,6 +49,9 @@ DOUBAN_HEADER['Cookie'] = DOUBAN_COOKIE  # 请求头加入认证
 KPK_SEARCH_URL = CONFIG['kpk_search_url']  # 科普库搜索地址
 KPK_PAGE_URL = CONFIG['kpk_page_url']  # 科普库搜索地址
 KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
+
+JACKETT_SEARCH_URL = CONFIG['jackett_search_url']  # jackett 搜索地址
+JACKETT_API_KEY = CONFIG['jackett_api_key']  # jackett api 密钥
 
 TMDB = TMDb()
 TMDB.api_key = TMDB_KEY
@@ -83,7 +89,8 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
         movie = TV() if tv else Movie()
         result = dict(movie.details(movie_id)) | dict(movie.alternative_titles(movie_id))
         if not result:
-            raise Exception("获取电影信息失败，重试")
+            logger.info("获取 {movie_id} 电影信息失败，重试")
+            raise Exception("从 TMDB 获取电影信息失败")
         return result
     except Exception as e:
         logger.error(f"查询 TMDB 失败：{e}")
@@ -112,6 +119,33 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
     """
     person = Person()
     return person.movie_credits(director_id)
+
+
+@retry(stop_max_attempt_number=15, wait_random_min=1330, wait_random_max=3800)
+def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
+    """
+    从 TMDB 获取电影海报地址
+
+    :param poster_path: 电影海报地址，半截。例如：/eqMlCJo54tyoEGI9UMxp70Ys7kU.jpg
+    :param target_path: 储存路径
+    :return: 电影海报地址
+    """
+    if not poster_path:
+        logger.warning("没封面图地址，请手动下载")
+        return
+
+    # 完整图片URL
+    image_url = f"{TMDB_IMAGE_URL}{poster_path}"
+
+    # 下载图片
+    image_response = requests.get(image_url, timeout=30, verify=False, headers=TMDB_HEADERS)
+    if image_response.status_code == 200:
+        with open(target_path, 'wb') as f:
+            f.write(image_response.content)
+        logger.info(f"封面下载成功，保存为 {os.path.basename(target_path)}")
+    else:
+        logger.info(f"封面下载失败：状态码 {image_response.status_code}")
+        raise Exception(f"封面下载失败 {image_url}")
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
@@ -176,60 +210,37 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
         return
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
-def get_douban_movie_response(movie_id: str) -> Optional[requests.Response]:
+@retry(stop_max_attempt_number=15, wait_random_min=1300, wait_random_max=3000)
+def get_douban_response(db_id: str, query_type: str) -> Optional[requests.Response]:
     """
-    从 DOUBAN 获取电影信息，返回结果供解析
+    从 DOUBAN 获取响应，返回结果供解析
 
-    :param movie_id: 电影 douban 编号
+    :param db_id: 参数 id
+    :param query_type: 请求类型
     :return: 成功时返回响应
     """
-    logger.info(f"查询 DOUBAN：{movie_id}")
-    url = f"{DOUBAN_MOVIE_URL}/{movie_id}/"
+    url = ""
+    if query_type == "movie_response":
+        logger.info(f"查询 DOUBAN：{db_id}")
+        url = f"{DOUBAN_MOVIE_URL}/{db_id}/"
+    elif query_type == "director_response":
+        url = f"{DOUBAN_PERSON_URL}/{db_id}/"
+    elif query_type == "director_search":
+        logger.info(f"搜索 DOUBAN 导演：{db_id}")
+        url = f"{DOUBAN_SEARCH_URL}?cat=1065&q={db_id}"
+    elif query_type == "movie_search":
+        logger.info(f"搜索 DOUBAN：{db_id}")
+        url = f"{DOUBAN_SEARCH_URL}?cat=1002&q={db_id}"
+
     response = requests.get(url, timeout=10, verify=False, headers=DOUBAN_HEADER)
+    logger.debug(response.text)
     if response.status_code == 403:
-        sys.exit(f"豆瓣电影搜索失败，豆瓣拒绝访问，状态码：{response.status_code}")
+        sys.exit(f"豆瓣拒绝访问，状态码：{response.status_code}，退出程序")
     elif response.status_code != 200:
-        logger.error(f"豆瓣访问失败！状态码：{response.status_code}")
-        return None
-    return response
-
-
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
-def get_douban_director_response(director_id: str) -> Optional[requests.Response]:
-    """
-    从 DOUBAN 获取导演信息，返回结果供解析
-
-    :param director_id: 导演 douban 编号
-    :return: 成功时返回响应
-    """
-    url = f"{DOUBAN_PERSON_URL}/{director_id}/"
-    response = requests.get(url, timeout=10, verify=False, headers=DOUBAN_HEADER)
-    if response.status_code == 403:
-        sys.exit(f"豆瓣电影访问失败，豆瓣拒绝访问，状态码：{response.status_code}")
-    elif response.status_code != 200:
-        logger.error(f"豆瓣访问失败！状态码：{response.status_code}")
-        return None
-    return response
-
-
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
-def get_douban_search_response(search_id: str, search_type: str) -> Optional[requests.Response]:
-    """
-    从 DOUBAN 搜索导演信息，返回结果供解析
-
-    :param search_id: 搜索 id
-    :param search_type: 搜索类型编码
-    :return: 成功时返回响应
-    """
-    logger.info(f"搜索 DOUBAN：{search_id}")
-    url = f"{DOUBAN_SEARCH_URL}?cat={search_type}&q={search_id}"
-    response = requests.get(url, timeout=10, verify=False, headers=DOUBAN_HEADER)
-    if response.status_code == 403:
-        sys.exit(f"豆瓣拒绝访问，状态码：{response.status_code}")
-    elif response.status_code != 200:
-        logger.error(f"豆瓣访问失败！状态码：{response.status_code}")
-        return None
+        logger.info(f"豆瓣访问失败！状态码：{response.status_code}，重试！")
+        raise Exception(f"豆瓣访问失败！")
+    elif response.text.find("登录跳转") != -1:
+        sys.exit("豆瓣弹出验证页！")
     return response
 
 
@@ -242,6 +253,11 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
     """
     # 解析内容
     soup = BeautifulSoup(r.text, 'html.parser')
+    # 检查是否有搜索框，如果弹验证不会出现这个 div
+    result_div = soup.find("div", class_="search-result")
+    if not result_div:
+        sys.exit("豆瓣弹出验证页！")
+
     # 定位到 result-list，如果没有任何结果则返回
     result_list = soup.find("div", class_="result-list")
     if not result_list:
@@ -274,7 +290,41 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
         return
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=6000)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=6000)
+def get_jeckett_search_response(search_id: str) -> Optional[list]:
+    """
+    从 kpk 搜索 imdb 编号，返回响应
+
+    :param search_id: 搜索 id
+    :return: 成功时返回响应
+    """
+    url = f"{JACKETT_SEARCH_URL}/api/v2.0/indexers/all/results/torznab/api?apikey={JACKETT_API_KEY}&q={search_id}"
+    response = requests.get(url, timeout=30, verify=False, allow_redirects=True)
+    if not response:
+        logger.info(f"Jackett 没有返回数据")
+        raise Exception(f"Jackett 访问网络失败！")
+    response.encoding = 'utf-8'
+    try:
+        data_dict = xmltodict.parse(response.text)
+        result_rss = data_dict.get('rss', {}).get('channel', {})
+        if not result_rss:
+            logger.info(f"Jackett 没有返回数据")
+            raise Exception(f"Jackett 访问网络失败！")
+
+        result_items = result_rss.get("item")
+        if not result_items:
+            logger.info(f"Jackett 没有搜索结果")
+            return []
+        if isinstance(result_items, dict):
+            result_items = [result_items]
+        return result_items
+
+    except Exception as e:
+        logger.info(f"响应解析错误: {e}")
+        raise Exception(f"Jackett XML 解析失败！")
+
+
+@retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=9000)
 def get_kpk_search_response(search_id: str) -> Optional[list]:
     """
     从 kpk 搜索 imdb 编号，返回页面 id
@@ -294,7 +344,7 @@ def get_kpk_search_response(search_id: str) -> Optional[list]:
         json_str = re.sub(r'.+({.+}).+', r'\1', response.text)
         data_obj = json.loads(json_str)
     except json.decoder.JSONDecodeError as e:
-        logger.debug(f"JSON解析错误: {e}")
+        logger.info(f"JSON 解析错误: {e}")
         raise  # 抛出异常让retry捕获并重试
 
     if data_obj["code"] != 1:

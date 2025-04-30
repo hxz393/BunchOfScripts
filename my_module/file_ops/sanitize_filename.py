@@ -27,7 +27,7 @@ def sanitize_filename(filename: str) -> Optional[str]:
     :rtype: Optional[str]
     """
     try:
-        forbidden_chars = r'[\/:*?"<>|]'
+        forbidden_chars = r'[\\\/:*?"<>|]'
         if re.search(forbidden_chars, filename):
             filename = re.sub(forbidden_chars, '-', filename)
         return filename

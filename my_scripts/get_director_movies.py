@@ -71,12 +71,8 @@ def get_tmdb_director_movies_all(source: str, pass_exists: bool = False) -> Opti
     director_main = os.path.basename(source)
     director_ids = scan_ids(source)
     tmdb_id = director_ids.get('tmdb')
-    downloading_path = os.path.join(r"A:\0c.下载整理", director_main)
     if not tmdb_id:
-        if not os.path.exists(downloading_path):
-            logger.error(f"导演没有找到 tmdb 编号：{director_main} ")
-        else:
-            logger.info(f"暂不处理导演：{director_main} ")
+        logger.error(f"导演没有找到 tmdb 编号：{director_main} ")
         return
 
     # 从 TMDB 获取导演相关电影信息

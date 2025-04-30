@@ -13,6 +13,7 @@ from p115client import P115Client
 from retrying import retry
 
 from my_module import read_json_to_dict, read_file_to_list
+from sort_movie_ops import select_yts_best_torrent
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -47,8 +48,7 @@ def add_to_115(source: str) -> None:
             # 判断是否为 .json 文件
             if file_name.endswith('.json'):
                 # 读取 json 文件，获取下载链接
-                dl_info = {t['size_bytes']: t['hash'] for t in read_json_to_dict(file_path)['data']['movie']['torrents']}
-                dl_link = f"{MAGNET_PATH}{dl_info[max(dl_info.keys())]}"
+                dl_link = select_yts_best_torrent(read_json_to_dict(file_path))
             elif file_name.endswith('.log'):
                 # 读取 log 文件，获取下载链接
                 dl_link = read_file_to_list(file_path)[0]
