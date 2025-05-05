@@ -466,6 +466,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         file_info["codec"] = codec_name
     else:
         file_info["codec"] = codec_tag_string
+    file_info["codec"] = file_info["codec"][:49]
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -778,16 +779,19 @@ def check_movie(path: str) -> Optional[str]:
     # 检查码率是否过高
     info = match.groupdict()
     file_bitrate = int(info['bitrate'].split('kbps')[0])
+    high_bitrate = False
     if quality == '2160p' and file_bitrate > MAX_BITRATE * 6:
-        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+        high_bitrate = True
     elif quality == '1080p' and file_bitrate > MAX_BITRATE * 3:
-        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+        high_bitrate = True
     elif quality == '720p' and file_bitrate > MAX_BITRATE * 2:
-        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+        high_bitrate = True
     elif quality == '480p' and file_bitrate > MAX_BITRATE * 2:
-        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
-    elif file_bitrate > MAX_BITRATE:
-        logger.warning(f"{quality}: {p.name} 码率过高：{file_bitrate}kbps")
+        high_bitrate = True
+    elif quality == '240p' and file_bitrate > MAX_BITRATE:
+        high_bitrate = True
+    if high_bitrate:
+        logger.warning(f"{p.name} 码率过高：{file_bitrate}kbps")
 
     # 查找视频数量
     video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
@@ -1026,14 +1030,14 @@ def everything_search_filelist(file_path: str) -> None:
     :return: 无
     """
     # 使用正则表达式方式，避免非全词匹配
-    keys = '|'.join(read_file_to_list(file_path))
-    search_query = f'({keys})'
-    command = f'"{EVERYTHING_PATH}" -regex -search "{search_query}"'
-    subprocess.run(command, shell=True)
+    # keys = '|'.join(read_file_to_list(file_path))
+    # search_query = f'({keys})'
+    # command = f'"{EVERYTHING_PATH}" -regex -search "{search_query}"'
+    # subprocess.run(command, shell=True)
 
     # 调用时直接把参数列表传给 Popen，避免管道符被 shell 解读
-    # search_query = "|".join(f"<{name}>" for name in read_file_to_list(file_path))
-    # subprocess.Popen([EVERYTHING_PATH, "-search", search_query], shell=False)
+    search_query = "|".join(f"<{name}>" for name in read_file_to_list(file_path))
+    subprocess.Popen([EVERYTHING_PATH, "-search", search_query], shell=False)
 
 
 def sort_new_torrents(target_path: str) -> None:

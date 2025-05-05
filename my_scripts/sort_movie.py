@@ -153,7 +153,7 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
     if tv:
         credits_list = m.get('credits', {})
         crew_list = credits_list.get('crew', [])
-        movie_info["directors"] = [member.get('original_name') for member in crew_list if member.get('job') == 'Director']
+        movie_info["directors"] = [member.get('original_name') for member in crew_list if member.get('known_for_department') == 'Directing']
         original_names = [creator.get('original_name') for creator in m.get('created_by', [])]
         english_names = [creator.get('name') for creator in m.get('created_by', [])]
         movie_info["directors"].extend([name for name in original_names if name is not None])

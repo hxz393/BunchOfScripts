@@ -261,6 +261,7 @@ def sort_movie_auto(path: str, target_file: str) -> None:
         r = sort_movie_auto_folder(folder, target_file)
         if r:
             logger.error(r)
+            logger.warning("=" * 255)
             return
         time.sleep(0.1)
         logger.info("-" * 25 + "步骤：抓取电影信息" + "-" * 25)

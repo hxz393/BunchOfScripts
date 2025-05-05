@@ -249,7 +249,7 @@ def fix_name(name: str, max_length: int = 230) -> str:
         return name[:max_length]
 
 
-def dhd_to_log(directory: str=r"B:\0.整理\BT\dhd") -> None:
+def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
     """转换 dhd 文件到 log 文件，并使用多线程执行"""
     # 获取指定目录下所有以 .dhd 为后缀的文件
     file_list = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.dhd')]

@@ -18,7 +18,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 logger = logging.getLogger(__name__)
 
 time_now = time.strftime('%Y%m%d%H%M')
-logging_config(console_output=True, max_log_size=1, log_file=f"B:/2.脚本/logs-{time_now}.log", default_log_format="%(message)s")
+logging_config(console_output=True, max_log_size=50, log_file=f"B:/2.脚本/logs-{time_now}.log", default_log_format="%(message)s")
 
 
 def main(chosen: int) -> None:
@@ -404,7 +404,7 @@ ERROR: https://yts.mx/movies/small-soldiers-1998
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(802)
+        main(806)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')
