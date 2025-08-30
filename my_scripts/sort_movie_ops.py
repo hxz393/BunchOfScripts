@@ -13,7 +13,6 @@ import os.path
 import re
 import shutil
 import subprocess
-import time
 import warnings
 from pathlib import Path
 from typing import Dict
@@ -23,7 +22,7 @@ from PIL import Image
 from moviepy import VideoFileClip
 
 from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_folder_paths
-from scrapy_kpk import scrapy_kpk, scrapy_jeckett
+from scrapy_kpk import scrapy_kpk
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,8 @@ MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
 TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
 DHD_SOURCE = CONFIG['dhd_source']  # dhd 种子来源路径
+SK_SOURCE = CONFIG['sk_source']  # sk 种子来源路径
+RARE_SOURCE = CONFIG['rare_source']  # rare 文件路径
 CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
@@ -45,13 +46,18 @@ MEDIAINFO_PATH = CONFIG['mediainfo_path']  # mtm 路径
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
 RU_PATH = CONFIG['ru_path']  # ru 种子路径
 YTS_PATH = CONFIG['yts_path']  # yts 种子路径
+DHD_PATH = CONFIG['dhd_path']  # dhd 种子路径
+TTG_PATH = CONFIG['ttg_path']  # ttg 种子路径
+SK_PATH = CONFIG['sk_path']  # ttg 种子路径
+RARE_PATH = CONFIG['rare_path']  # rare 文件路径
 
+BD_SOURCE = ['BDRemux', 'BluRay', 'BDRip']
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
 # 编译正则，从文件名中提取信息
 RE_NAME = re.compile(
     r'^'
-    r'(?P<year>\d{4})\s*-\s*'  # 放映年（4位数字）和分隔符
+    r'(?P<year>\d+)\s*-\s*'  # 放映年（4位数字）和分隔符
     r'(?P<title>[^{]+)'  # 电影原名：匹配除 { 和 ( 之外的字符
     r'(?:\((?P<chinese>[^)]+)\))?'  # 可选的电影中文名，包含在括号中
     r'\{(?P<imdb>(tt\d+|tmdb\d+|db\d+|noid)\d*(tv)?)}'  # IMDB 编号，形如 {tt1959550}
@@ -81,6 +87,8 @@ RE_JSON_FILE_NAME = re.compile(
 PRE_LOAD_FP = get_file_paths(RARBG_SOURCE)
 PRE_LOAD_FP.extend(get_file_paths(TTG_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(DHD_SOURCE))
+PRE_LOAD_FP.extend(get_file_paths(SK_SOURCE))
+PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
 
 
 def get_ids(source_path: str) -> None:
@@ -245,8 +253,10 @@ def get_dl_link(path: str) -> str:
     :param path: 电影目录
     :return: 磁力下载链接
     """
+    _PATTERN = re.compile(r"magnet:\?xt=urn:btih:[A-Fa-f0-9]+", re.IGNORECASE)
     files = os.listdir(path)
     dl = None
+
     for file_name in files:
         file_path = os.path.join(path, file_name)
         if file_name.endswith('.json'):
@@ -257,7 +267,9 @@ def get_dl_link(path: str) -> str:
                 f.write(dl)
             remove_target(file_path)
         elif file_name.endswith('.log'):
-            dl = read_file_to_list(file_path)[0][:60]
+            # 在任意位置定位基础 Magnet 链接
+            match = _PATTERN.search(read_file_to_list(file_path)[0].strip())
+            dl = match.group(0) if match else None
             with open(file_path, "w", encoding='utf-8') as f:
                 f.write(dl)
 
@@ -296,7 +308,7 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     """
     movie_dict = movie_info | movie_ids | file_info
     movie_dict["director"] = Path(path).parent.name
-    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'")
+    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'").replace("  ", " ")
     movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob('*') if file.is_file()) / (1024 * 1024))
     movie_dict["dl_link"] = get_dl_link(path)
     movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
@@ -364,6 +376,7 @@ def create_aka_movie(new_path, movie_dict) -> None:
     if movie_dict["titles"]:
         for title in movie_dict["titles"]:
             file_name = sanitize_filename(title).strip()
+            file_name = file_name.replace("\t", " ")
             file_name += ".别名"
             Path(os.path.join(new_path, file_name)).touch()
 
@@ -421,7 +434,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     """
     logger.info(f"获取视频信息：{os.path.basename(filepath)}")
     # 构造并运行 ffprobe 命令
-    file_info = {"source": "未知来源", "resolution": "", "codec": "", "bitrate": ""}
+    file_info = {"source": "", "resolution": "", "codec": "", "bitrate": ""}
     cmd = [
         FFPROBE_PATH,
         "-v", "quiet",  # 不输出调试信息
@@ -457,15 +470,21 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         file_info["dar"] = width / height
 
     # 编码器，mkv 要特别判断
-    codec_tag_string = video_stream.get("codec_tag_string", "未知编码器").upper()
-    codec_name = video_stream.get("codec_name", "未知编码器").upper()
+    codec_tag_string = video_stream.get("codec_tag_string", "未知编码器")
+    codec_name = video_stream.get("codec_name", "未知编码器")
     codec_detail = check_video_codec(filepath)
-    if codec_detail:
+    not_allow_codec = ["mpeg-4 visual"]
+    if codec_detail and codec_detail not in not_allow_codec:
         file_info["codec"] = codec_detail
     elif codec_tag_string.startswith("["):
         file_info["codec"] = codec_name
     else:
         file_info["codec"] = codec_tag_string
+    # 修剪名称
+    if file_info["codec"].lower() in ["divx", "dx50", "div3"]:
+        file_info["codec"] = "DivX"
+    elif file_info["codec"].lower() == "xvid":
+        file_info["codec"] = "XviD"
     file_info["codec"] = file_info["codec"][:49]
 
     # 比特率，mkv 获取不到，改为获取总比特率
@@ -491,14 +510,15 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         # 注意 [A-Za-z] 仅排除英文字母，如果想排除数字可以改成 [A-Za-z0-9]
         pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
         if re.search(pattern, filepath):
-            source = source.replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
             file_info["source"] = source
             matched = True
             break
-    # 匹配失败则扫描同级目录里的所有文件再尝试匹配
+    # 匹配失败则扫描同级目录里的所有文件再尝试匹配（仅匹配log文件）
     if not matched:
         file_list = os.listdir(os.path.dirname(filepath))
         for f in file_list:
+            if not f.endswith(".log"):
+                continue
             for source in SOURCE_LIST:
                 pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
                 if re.search(pattern, f):
@@ -508,7 +528,12 @@ def extract_video_info(filepath: str) -> Optional[dict]:
             if matched:
                 break  # 结束 file_list 循环
 
-    match = re.search(r'「(.*?)」', filepath)
+    if file_info["source"]:
+        file_info["source"] = file_info["source"].replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
+        file_info["source"] = file_info["source"].replace("WEB-DL", "WEB").replace("WEBDL", "WEB").replace("WEBRip", "WEB")
+        file_info["source"] = file_info["source"].replace("VOLOHEVC", "hevc").replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
+
+    match = re.search(r'「(.*?)」', os.path.basename(filepath))
     if match:
         file_info["comment"] = match.group(1)
 
@@ -742,7 +767,7 @@ def check_movie(path: str) -> Optional[str]:
         runtime_value = movie_info.get(runtime_key)
         if runtime_value:
             time_diff = abs(runtime_value - movie_info["duration"])
-            if time_diff > 5:
+            if time_diff > 2:
                 logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{movie_info['duration']} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
             else:
                 logger.info(f"{source.upper()} 时长匹配")
@@ -768,10 +793,12 @@ def check_movie(path: str) -> Optional[str]:
     # 检查本地库存
     imdb = movie_info['imdb']
     quality = movie_info['quality']
-    result = check_local_torrent(imdb, quality)
+    source = movie_info['source']
+    result = check_local_torrent(imdb, quality, source)
     move_counts = result['move_counts']
     delete_counts = result['delete_counts']
     if move_counts:
+        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
         return f"{imdb} 请检查本地库存: {move_counts}"
     if delete_counts:
         logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
@@ -780,11 +807,11 @@ def check_movie(path: str) -> Optional[str]:
     info = match.groupdict()
     file_bitrate = int(info['bitrate'].split('kbps')[0])
     high_bitrate = False
-    if quality == '2160p' and file_bitrate > MAX_BITRATE * 6:
+    if quality == '2160p' and file_bitrate > MAX_BITRATE * 20:
         high_bitrate = True
-    elif quality == '1080p' and file_bitrate > MAX_BITRATE * 3:
+    elif quality == '1080p' and file_bitrate > MAX_BITRATE * 10:
         high_bitrate = True
-    elif quality == '720p' and file_bitrate > MAX_BITRATE * 2:
+    elif quality == '720p' and file_bitrate > MAX_BITRATE * 5:
         high_bitrate = True
     elif quality == '480p' and file_bitrate > MAX_BITRATE * 2:
         high_bitrate = True
@@ -816,7 +843,7 @@ def check_movie(path: str) -> Optional[str]:
     # 检查在线科普库
     if quality not in ['1080p', '2160p'] and imdb:
         scrapy_kpk(imdb, quality)
-        scrapy_jeckett(imdb)
+        # scrapy_jeckett(imdb)
 
     # 建立镜像文件夹
     mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info['director']))
@@ -826,12 +853,13 @@ def check_movie(path: str) -> Optional[str]:
     delete_trash_files(path)
 
 
-def check_local_torrent(imdb: str, quality: str) -> dict:
+def check_local_torrent(imdb: str, quality: str, source: str) -> dict:
     """
     检查本地库存，如果质量大于 1080p 则删除库存，否则检查库存
 
     :param imdb: imdb 编号
     :param quality: 质量
+    :param source: 来源
     :return: 返回检查结果
     """
     result = {"move_counts": 0, "delete_counts": 0, "delete_files": []}
@@ -1040,7 +1068,7 @@ def everything_search_filelist(file_path: str) -> None:
     subprocess.Popen([EVERYTHING_PATH, "-search", search_query], shell=False)
 
 
-def sort_new_torrents(target_path: str) -> None:
+def sort_new_torrents_by_director(target_path: str) -> None:
     """
     整理种子目录，将已整理过的导演电影种子提取出来
 
@@ -1048,28 +1076,103 @@ def sort_new_torrents(target_path: str) -> None:
     :return: 无
     """
     # 获取列表
-    keywords = [os.path.basename(key) for key in get_folder_paths(MIRROR_PATH)]
-    # 将所有关键字一次编译为正则模式 (忽略大小写)
-    keyword_pattern = re.compile("|".join(re.escape(kw) for kw in keywords), re.IGNORECASE)
-
-    # yts目录处理
+    keywords = sorted(
+        [os.path.basename(key) for key in get_folder_paths(MIRROR_PATH)],
+        key=str.casefold
+    )
+    # 遍历 YTS 目录，找到关键词就跳出，保证列表优先级
     for yts_path in get_folder_paths(YTS_PATH):
-        match = keyword_pattern.search(yts_path)
-        if match:
-            matched_keyword = match.group()
+        basename = os.path.basename(yts_path).lower()
+        matched_keyword = None
+
+        for kw in keywords:
+            if kw.lower() in basename:
+                matched_keyword = kw
+                break
+        if matched_keyword:
             logger.info(f"关键字 '{matched_keyword}' 匹配到路径: {yts_path}")
             shutil.move(yts_path, target_path)
 
-    # ru目录处理
+    # 遍历 RU 目录
     for ru_path in get_file_paths(RU_PATH):
-        match = keyword_pattern.search(ru_path)
-        if match:
-            matched_keyword = match.group()
+        basename = os.path.basename(ru_path).lower()
+        matched_keyword = None
+
+        for kw in keywords:
+            if kw.lower() in basename:
+                matched_keyword = kw
+                break
+        if matched_keyword:
             target_path_root = os.path.join(target_path, matched_keyword)
             Path(target_path_root).mkdir(parents=True, exist_ok=True)
             target_path_ru = os.path.join(target_path_root, os.path.basename(ru_path))
             logger.info(f"关键字 '{matched_keyword}' 匹配到路径: {ru_path}")
             shutil.move(ru_path, target_path_ru)
+
+
+def sort_new_torrents_by_mysql(target_path: str) -> None:
+    """
+    搜索数据库，将已整理过的导演电影种子提取出来
+
+    :param target_path: 移动目标目录
+    :return: 无
+    """
+
+    def move_torrent(source_path: str, director_name: str):
+        """辅助函数，移动种子"""
+        target_path_root = os.path.join(target_path, director_name)
+        Path(target_path_root).mkdir(parents=True, exist_ok=True)
+        target_path_file = os.path.join(target_path_root, os.path.basename(source_path))
+        shutil.move(source_path, target_path_file)
+
+    # 建立数据库连接
+    from sort_movie_mysql import create_conn, get_movie_by_imdb
+    conn = create_conn()
+    # 获取种子列表
+    file_path_list = get_file_paths(DHD_PATH) + get_file_paths(TTG_PATH) + get_file_paths(SK_PATH) + get_file_paths(RARE_PATH)
+    for file_path in file_path_list:
+        # 获取 IMDB 编号，不存在则跳过
+        imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', file_path)) else None
+        if not imdb_id:
+            continue
+
+        # 去数据库搜索，没搜到则跳过
+        wanted_info = get_wanted_by_imdb(conn, imdb_id)
+        if wanted_info:
+            director = wanted_info['director']
+            move_torrent(file_path, director)
+            continue
+
+        movie_info = get_movie_by_imdb(conn, imdb_id)
+        if movie_info:
+            # 获取数据
+            director = movie_info['director']
+            quality = movie_info['quality']
+            source = movie_info['source']
+            if '1080p' in file_path.lower():
+                torrent_quality = '1080p'
+            elif '2160p' in file_path.lower():
+                torrent_quality = '2160p'
+            else:
+                torrent_quality = 'other'
+
+            # 2160p 蓝光，直接删除种子
+            if quality == '2160p' and source in BD_SOURCE:
+                logger.info(f"{imdb_id} 已删除（{quality} {source}）：{file_path}")
+                os.remove(file_path)
+                continue
+
+            # # 1080p 蓝光，直接删除 1080p 种子
+            if quality == '1080p' and source in BD_SOURCE and torrent_quality == '1080p':
+                logger.info(f"{imdb_id} 已删除（{quality} {source}）：{file_path}")
+                os.remove(file_path)
+                continue
+
+            # 其他情况，保留种子
+            if quality:
+                logger.info(f"{imdb_id} 已匹配（{quality} {source}）：{file_path}")
+                move_torrent(file_path, director)
+                continue
 
 
 def select_yts_best_torrent(json_data: dict) -> str:
@@ -1121,3 +1224,35 @@ def fix_douban_name(name: str) -> str:
     result = re.sub(pattern, '', name)
     result = result.strip()
     return result
+
+
+def extract_movie_ids(root_path):
+    """
+    遍历 root_path 下的每个导演文件夹，检查并提取其子文件夹名中 {} 内的 ID。
+    如果遇到没有 {} 的文件夹，则报错并退出。
+    """
+    pattern = re.compile(r'\{([^}]*)}')  # 匹配 {内容}
+    ids = []
+
+    # 遍历一级子文件夹（导演名）
+    for director in os.listdir(root_path):
+        director_path = os.path.join(root_path, director)
+        if not os.path.isdir(director_path):
+            continue
+
+        # 遍历二级子文件夹（影片文件夹）
+        for film in os.listdir(director_path):
+            film_path = os.path.join(director_path, film)
+            if not os.path.isdir(film_path):
+                continue
+
+            match = pattern.search(film)
+            if not match:
+                # 直接报错并退出
+                logger.error(f"Error: 影片文件夹 “{film}” 中不存在 {{}}，请检查命名格式。")
+                return
+
+            # 提取并收集 ID
+            ids.append(match.group(1))
+
+    return ids

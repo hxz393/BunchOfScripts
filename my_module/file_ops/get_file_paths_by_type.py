@@ -36,7 +36,7 @@ def get_file_paths_by_type(target_path: Union[str, os.PathLike], type_list: List
     :type target_path: Union[str, os.PathLike]
     :param target_path: 需要搜索的路径
     :type type_list: List[str]
-    :param type_list: 拿来匹配的文件类型列表
+    :param type_list: 拿来匹配的文件类型列表，例如 ['.txt', '.docx']
     :rtype: Optional[List[str]]
     :return: 匹配的文件路径列表，如果发生错误则返回 None。
     """

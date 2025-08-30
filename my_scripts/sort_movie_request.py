@@ -46,6 +46,10 @@ DOUBAN_PERSON_URL = CONFIG['douban_person_url']  # 豆瓣人物地址
 DOUBAN_SEARCH_URL = CONFIG['douban_search_url']  # 豆瓣搜索地址
 DOUBAN_HEADER['Cookie'] = DOUBAN_COOKIE  # 请求头加入认证
 
+CSFD_HEADER = CONFIG['csfd_header']  # csfd 请求头
+CSFD_COOKIE = CONFIG['csfd_cookie']  # 豆瓣cookie
+CSFD_HEADER['Cookie'] = CSFD_COOKIE  # 请求头加入认证
+
 KPK_SEARCH_URL = CONFIG['kpk_search_url']  # 科普库搜索地址
 KPK_PAGE_URL = CONFIG['kpk_page_url']  # 科普库搜索地址
 KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
@@ -93,8 +97,7 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
             raise Exception("从 TMDB 获取电影信息失败")
         return result
     except Exception as e:
-        logger.error(f"查询 TMDB 失败：{e}")
-        return None
+        raise Exception(f"查询 TMDB 失败：{e}")
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
@@ -121,7 +124,7 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
     return person.movie_credits(director_id)
 
 
-@retry(stop_max_attempt_number=15, wait_random_min=1330, wait_random_max=3800)
+@retry(stop_max_attempt_number=50, wait_random_min=15330, wait_random_max=65800)
 def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
     """
     从 TMDB 获取电影海报地址
@@ -138,13 +141,13 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
     image_url = f"{TMDB_IMAGE_URL}{poster_path}"
 
     # 下载图片
-    image_response = requests.get(image_url, timeout=30, verify=False, headers=TMDB_HEADERS)
+    image_response = requests.get(image_url, timeout=60, verify=False, headers=TMDB_HEADERS)
     if image_response.status_code == 200:
         with open(target_path, 'wb') as f:
             f.write(image_response.content)
         logger.info(f"封面下载成功，保存为 {os.path.basename(target_path)}")
     else:
-        logger.info(f"封面下载失败：状态码 {image_response.status_code}")
+        logger.error(f"封面下载失败：状态码 {image_response.status_code}")
         raise Exception(f"封面下载失败 {image_url}")
 
 
@@ -208,6 +211,71 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
     else:
         logger.error("IMDB 页面未找到 id 为 __NEXT_DATA__ 的 script 标签")
         return
+
+
+@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+def get_csfd_response(url: str) -> Optional[requests.Response]:
+    """
+    从 CSFD 获取电影信息，返回结果供解析
+
+    :param url: csfd 链接
+    :return: 成功时返回响应
+    """
+    response = requests.get(url, timeout=15, verify=False, allow_redirects=True, headers=CSFD_HEADER)
+    if response.status_code != 200:
+        logger.error(f"CSFD 访问失败！状态码：{response.status_code}")
+        return
+    return response
+
+
+def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
+    """
+    解析 csfd 搜索结果
+
+    :param r: 搜索请求原始响应
+    :return: 解析成功时返回数据字典
+    """
+    # 解析内容
+    soup = BeautifulSoup(r.text, 'html.parser')
+    # 1) 国家、年份、时长
+    origin_div = soup.find('div', class_='origin')
+    parts = [s.rstrip(',') for s in origin_div.stripped_strings]
+    origin = parts[0] if parts else ""
+
+    # 2) 导演
+    director = ""
+    creators = soup.find('div', id='creators')
+    # 找到 <h4> 标签里包含 “Režie:” 的那一组，再取它后面的第一个 <a>
+    for block in creators.find_all('div'):
+        h4 = block.find('h4')
+        if not h4:
+            break
+        if 'Režie' in h4.get_text():
+            a = block.find('a', href=True)
+            director = a.get_text(strip=True) if a else ""
+            break
+
+    # 3) IMDb 编号（或用 csfd 编号作后备）
+    m_id = None
+    imdb_tag = soup.find('a', class_='button-imdb', href=True)
+    if imdb_tag:
+        href = imdb_tag['href']
+        m = re.search(r'/title/(tt\d+)', href)
+        m_id = m.group(1) if m else None
+    else:
+        same_as = soup.find('a', itemprop='sameAs', href=True)
+        if same_as:
+            csfd_id = same_as['href'].rstrip('/').split('/')[-1]
+            m_id = f"csfd{csfd_id}"
+
+    # 最终结果
+    data = {
+        "origin": origin,  # e.g. "Sovětský svaz, 1974, 170 min"
+        "director": director,  # e.g. "Igor Gostev"
+        "id": m_id  # e.g. "tt0071525" 或 "csfd102778"
+    }
+
+    return data
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1300, wait_random_max=3000)

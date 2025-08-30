@@ -50,6 +50,7 @@ retry_strategy = Retry(
 )
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=THREAD_NUMBER, pool_maxsize=THREAD_NUMBER)
 session = requests.Session()
+session.proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890",}
 session.mount("http://", adapter)
 session.mount("https://", adapter)
 
@@ -124,8 +125,9 @@ def scrapy_ru_magnet(key_word: str, target: str, date_order: str = "2", cache: b
     # 最后储存本次爬取链接和关键字，打印失败链接
     normalize_movie_filenames(target)
     mark_4k(target)
+    done_urls = list(set(new_urls) - set(failed_urls))
     if cache:
-        bulk_insert_ids(redis_client, REDIS_SET_KEY, new_urls)
+        bulk_insert_ids(redis_client, REDIS_SET_KEY, done_urls)
         get_aka_name(key_word, target)
     if failed_urls:
         logger.warning("以下链接处理失败：")
@@ -145,7 +147,7 @@ def get_all_links(url: str, topic_infos: list, data: dict = None) -> None:
     :return: 无
     """
     # 请求搜索地址，总该使用 POST
-    r = session.post(url=url, headers=REQUEST_HEAD, data=data, timeout=15, verify=False, allow_redirects=True)
+    r = session.post(url=url, headers=REQUEST_HEAD, data=data, timeout=6, verify=False, allow_redirects=True)
     if r.status_code != 200:
         logger.error(f"搜索失败！{r.status_code}")
         sys.exit(f"请重新运行")

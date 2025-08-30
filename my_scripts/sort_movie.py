@@ -65,9 +65,6 @@ def sort_movie(path: str, tv: bool = False) -> None:
             "comment": None
         }
 
-    # 先移除文件层级
-    move_all_files_to_root(path)
-
     # 三大网站处理流程
     if not local_only:
         actions = {
@@ -154,6 +151,7 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
         credits_list = m.get('credits', {})
         crew_list = credits_list.get('crew', [])
         movie_info["directors"] = [member.get('original_name') for member in crew_list if member.get('known_for_department') == 'Directing']
+        movie_info["directors"].extend([member.get('name') for member in crew_list if member.get('known_for_department') == 'Directing'])
         original_names = [creator.get('original_name') for creator in m.get('created_by', [])]
         english_names = [creator.get('name') for creator in m.get('created_by', [])]
         movie_info["directors"].extend([name for name in original_names if name is not None])
@@ -162,6 +160,7 @@ def get_tmdb_movie_info(movie_id: str, movie_info: dict, tv: bool) -> None:
         cast_list = m.get('casts', {})
         crew_list = cast_list.get('crew', [])
         movie_info["directors"] = [member.get('original_name') for member in crew_list if member.get('job') == 'Director']
+        movie_info["directors"].extend([member.get('name') for member in crew_list if member.get('job') == 'Director'])
 
     translations_list = m.get('translations', {}).get('translations', [])
     m_key = 'name' if tv else 'title'

@@ -10,7 +10,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from sort_movie_mysql import remove_existing_tmdb_ids
 from sort_movie_ops import scan_ids
@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 WORKERS = 8
 
 
-def get_director_movies(source: str) -> None:
+def get_director_movies(source: str) -> Optional[List[str]]:
     """
     请求 TMDB API，获取导演所有电影列表，存成 CSV
 
     :param source: 导演目录路径
-    :return: None
+    :return: imdb 列表
     """
     # 检查是否已经抓取过
     director_main = os.path.basename(source)
@@ -34,14 +34,17 @@ def get_director_movies(source: str) -> None:
     p = Path(source)
     output_csv = p / 'movies.csv'
     if output_csv.exists():
+        logger.info(f"已收集跳过：{director_main}")
         return
 
     # 获取所有电影列表
     results_sorted = get_tmdb_director_movies_all(source)
     if not results_sorted:
+        logger.info(f"没有电影跳过：{director_main}")
         return
 
-    # 将结果写入 CSV
+    # 将结果写入 CSV，返回 imdb 编号
+    imdb_ids = []
     with open(output_csv, mode='w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
         # 写表头
@@ -55,8 +58,11 @@ def get_director_movies(source: str) -> None:
                 f"{item['runtime']}分钟" if item['runtime'] else '无时长',
                 str(item['titles'])
             ])
+            if item['imdb']:
+                imdb_ids.append(item['imdb'])
 
     logger.info(f"收集完成：{director_main}，已写入 {output_csv}")
+    return imdb_ids
 
 
 def get_tmdb_director_movies_all(source: str, pass_exists: bool = False) -> Optional[list]:

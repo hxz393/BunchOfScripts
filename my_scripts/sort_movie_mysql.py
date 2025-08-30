@@ -251,6 +251,40 @@ def create_conn() -> Any:
     return conn
 
 
+def get_wanted_by_imdb(conn: Any, imdb: str) -> Any:
+    """
+    用 imdb 编号去数据库查找记录
+
+    :param conn: 数据库会话
+    :param imdb: IMDB 编号
+    :return: 找到则返回对应数据，否则返回 None
+    """
+    cursor = conn.cursor(dictionary=True)
+    select_sql = "SELECT * FROM wanted WHERE imdb = %s"
+    cursor.execute(select_sql, (imdb,))
+    result = cursor.fetchone()
+    cursor.close()
+    if result:
+        return result
+
+
+def get_movie_by_imdb(conn: Any, imdb: str) -> Any:
+    """
+    用 imdb 编号去数据库查找记录
+
+    :param conn: 数据库会话
+    :param imdb: IMDB 编号
+    :return: 找到则返回对应数据，否则返回 None
+    """
+    cursor = conn.cursor(dictionary=True)
+    select_sql = "SELECT * FROM movies WHERE imdb = %s"
+    cursor.execute(select_sql, (imdb,))
+    result = cursor.fetchone()
+    cursor.close()
+    if result:
+        return result
+
+
 def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
     """
     按 imdb -> tmdb -> douban -> 导演+标题 的顺序去数据库查找记录
@@ -294,7 +328,7 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
         select_sql = "SELECT id FROM movies WHERE director = %s AND original_title = %s AND year = %s"
         cursor.execute(select_sql, (director_val, original_title_val, year_val))
         result = cursor.fetchone()
-        if result:
+        if result and not imdb_val:
             return result[0]
 
     return None

@@ -59,6 +59,7 @@ def scrapy_yts_fix_imdb() -> None:
                             folder_name = member.get('name')
                             break
 
+                folder_name = folder_name.strip()
                 logger.info(f"导演名：{folder_name}")
 
                 folder_path = Path(os.path.join(Path(root).parent, folder_name))

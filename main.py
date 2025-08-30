@@ -151,9 +151,9 @@ copy(results);
             logger.info(r"镜像文件夹在 E:\视频\电影\Mirror")
             logger.info(r"种子文件夹在 B:\0.整理\BT\ru 和 B:\0.整理\BT\yts")
             logger.info("=" * 255)
-            from sort_movie_ops import sort_new_torrents
+            from sort_movie_ops import sort_new_torrents_by_director
             target_path = r'A:\1'
-            sort_new_torrents(target_path)
+            sort_new_torrents_by_director(target_path)
             logger.info("=" * 255)
         case 604:
             logger.info(r"抓取 ttg 信息，自动将新帖子保存到：B:\0.整理\BT\ttg")
@@ -173,6 +173,41 @@ copy(results);
             logger.info("-" * 255)
             dhd_to_log()
             logger.info("=" * 255)
+        case 606:
+            logger.info(r"抓取 sk 信息，自动将新帖子保存到：B:\0.整理\BT\sk")
+            logger.info(r"完成后手动更新 end_data")
+            logger.info(r"检查 sk 目录，处理后移动到 sk—old")
+            logger.info("=" * 255)
+            from scrapy_sk import scrapy_sk
+            scrapy_sk(start_page=0,end_data="28/08/2025")
+            logger.info("=" * 255)
+        case 607:
+            logger.info(r"抓取 rare 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
+            logger.info(r"来源文档一行一个链接，可以混合")
+            logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本参考 yts")
+            logger.info("=" * 255)
+            from scrapy_rare import scrapy_rare
+            source_file = r'config/!00.txt'
+            scrapy_rare(source_file)
+            logger.info("=" * 255)
+        case 608:
+            logger.info(r"抓取 mp 信息，自动将新帖子保存到：B:\0.整理\BT\rare")
+            logger.info(r"半个小时出现 403，手动过验证码，更新 Cookie")
+            logger.info(r"完成后手动更新 end_url")
+            logger.info(r"检查 rare 目录，处理后移动到 rare—old")
+            logger.info("=" * 255)
+            from scrapy_mp import scrapy_mp
+            scrapy_mp(start_page=1040, end_url="https://movieparadise.org/movies/a-place-in-heaven/")
+            # 完成后 https://movieparadise.org/movies/stalin/
+            logger.info("=" * 255)
+        case 609:
+            logger.info(r"搜索数据库，将已整理过的导演种子找出来")
+            logger.info(r"种子文件夹在 B:\0.整理\BT\dhd 和 B:\0.整理\BT\ttg 和 B:\0.整理\BT\sk 和 B:\0.整理\BT\rare")
+            logger.info("=" * 255)
+            from sort_movie_ops import sort_new_torrents_by_mysql
+            target_path = r'A:\1'
+            sort_new_torrents_by_mysql(target_path)
+            logger.info("=" * 255)
         case 701:
             logger.info("整理导演目录，在导演目录生成导演别名和代表链接的空文件")
             logger.info("来源文本首行为导演目录路径，后面三行为导演链接")
@@ -186,14 +221,38 @@ copy(results);
             logger.info("=" * 255)
         case 702:
             logger.info("从 ru 搜索电影种子信息，储存到目标目录")
+            logger.info("先检测第一行是否为导演目录，是的话抓取电影编号的种子")
             logger.info(r"搜索关键字储存在 !00.txt 一行一个")
             logger.info("=" * 255)
+            import re, os, shutil
             from scrapy_ru_magnet import scrapy_ru_magnet
             from my_module import read_file_to_list
-            from sort_movie_ops import everything_search_filelist
+            from sort_movie_ops import everything_search_filelist, PRE_LOAD_FP
+            from get_director_movies import get_director_movies
             source_file = r'config/!00.txt'
             target_path = r"A:\1"
             key_list = read_file_to_list(source_file)
+
+            # 预处理阶段
+            pattern = re.compile(r'(tt\d+)')
+            if len(key_list) == 1 and os.path.isdir(key_list[0]):
+                imdb_ids = get_director_movies(key_list[0])
+                if not imdb_ids:
+                    return
+                imdb_set = set(imdb_ids)
+
+                for fp in PRE_LOAD_FP:
+                    folder_name = os.path.basename(fp)
+                    m = pattern.search(folder_name)
+                    if not m:
+                        continue
+                    film_id = m.group(1)
+                    if film_id in imdb_set:
+                        dest = os.path.join(target_path, folder_name)
+                        shutil.move(fp, dest)
+                logger.info(f"种子收集完成")
+                return
+
             keywords = list({x.lower(): x for x in reversed(key_list)}.values())[::-1]  # 忽略大小写去重
             everything_search_filelist(source_file)
             for key in keywords:
@@ -237,19 +296,13 @@ copy(results);
             from get_director_movies import get_director_movies
             source_path = r'B:\0.整理\Chrome'
             add_to_qb(source_path)
-            temp_list = [entry.path for entry in os.scandir(source_path) if entry.is_dir()]
-            for i in temp_list:
-                if not i:
-                    continue
-                get_director_movies(i)
-                logger.info("=" * 255)
             logger.info("=" * 255)
         case 707:
             logger.info(r"添加种子到 115 离线服务，种子信息文件来自：B:\0.整理\Chrome")
             logger.info(r"添加完毕后，视情况手动处理")
             logger.info("=" * 255)
             from add_to_115 import add_to_115
-            source_path = r'B:\0.整理\Chrome1'
+            source_path = r'B:\0.整理\Chrome'
             add_to_115(source_path)
             logger.info("=" * 255)
         case 708:
@@ -345,10 +398,12 @@ copy(results);
         case 807:
             logger.info(r"依据 imdb id 删除数据库记录")
             logger.info("=" * 255)
+            import re
             from sort_movie_mysql import delete_records
             from my_module import read_file_to_list
             source_file = r'config/!00.txt'
-            id_list = read_file_to_list(source_file)
+            names = read_file_to_list(source_file)
+            id_list = [re.search(r"tt\d+", s).group() for s in names]
             delete_records(id_list, "imdb", "movies")
             delete_records(id_list, "imdb", "wanted")
             logger.info("-" * 255)
@@ -366,6 +421,16 @@ copy(results);
                 time.sleep(0.1)
                 logger.warning("-" * 255)
                 time.sleep(0.1)
+        case 809:
+            logger.info(r"提取电影目录的所有电影 id")
+            logger.info("=" * 255)
+            from sort_movie_ops import extract_movie_ids
+            from my_module import read_file_to_list
+            source_file = r'config/!00.txt'
+            temp_list = read_file_to_list(source_file)
+            id_list = extract_movie_ids(temp_list[0])
+            for i in id_list:
+                print(i)
 
         case _:
             logger.warning("请输入有效编号")
@@ -373,24 +438,50 @@ copy(results);
 
 def temp(m_path):
     """临时函数"""
-    print("转换dhd文件")
-    from scrapy_dhd import dhd_to_log
-    dhd_to_log(m_path)
-
-    logger.info("-" * 255)
+    print("修复数据库")
+    # 导入函数，初始化变量
+    from file_ops import read_file_to_list
+    from sort_movie import sort_movie
+    lll = read_file_to_list(r"config/!00.txt")
+    for ll in lll:
+        sort_movie(ll)
+        logger.info("-" * 255)
 
 
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-ERROR: https://yts.mx/movies/all-na-vibes-2021
-ERROR: https://yts.mx/movies/belles-on-their-toes-1952
-ERROR: https://yts.mx/movies/bermondsey-tales-fall-of-the-roman-empire-2024
-ERROR: https://yts.mx/movies/the-kings-pirate-1967
+ERROR: https://yts.mx/movies/ne-zha-ii-2025
+ERROR: https://yts.mx/movies/na-plech-2025
+ERROR: https://yts.mx/movies/juliette-au-printemps-2024
+ERROR: https://yts.mx/movies/moon-le-panda-2025
+ERROR: https://yts.mx/movies/night-of-the-werewolves-2025
+ERROR: https://yts.mx/movies/i%c2%b4ll-never-let-you-go-2025
+ERROR: https://yts.mx/movies/war-of-the-worlds-revival-2025
+ERROR: https://yts.mx/movies/dangerous-animals-2025
+ERROR: https://yts.mx/movies/housefull-5-a-2025
+ERROR: https://yts.mx/movies/familia-pero-no-mucho-2025
+ERROR: https://yts.mx/movies/koston-enkeli-2024
+ERROR: https://yts.mx/movies/mike-and-dave-need-wedding-dates-2016
+ERROR: https://yts.mx/movies/2-1-girls-2022
+ERROR: https://yts.mx/movies/ainsley-mcgregor-mysteries-a-case-for-the-winemaker-2024
+ERROR: https://yts.mx/movies/the-room-next-door-2024
+ERROR: https://yts.mx/movies/stand-your-ground-2024
 ERROR: https://yts.mx/movies/i-was-octomom-2025
+ERROR: https://yts.mx/movies/follemente-2025
+ERROR: https://yts.mx/movies/alles-fifty-fifty-2024
+ERROR: https://yts.mx/movies/im-the-man-2025
+ERROR: https://yts.mx/movies/homem-com-h-2025
+ERROR: https://yts.mx/movies/viva-a-vida-2024
+ERROR: https://yts.mx/movies/infiltrada-en-el-bunker-2025
+ERROR: https://yts.mx/movies/vivacious-lady-1938
 ERROR: https://yts.mx/movies/not-just-a-goof-2025
+ERROR: https://yts.mx/movies/karol-g-tomorrow-will-be-beautiful-2025
+ERROR: https://yts.mx/movies/iconic-2024
+ERROR: https://yts.mx/movies/the-good-life-2025
+ERROR: https://yts.mx/movies/the-masquerade-2025
+ERROR: https://yts.mx/movies/when-evil-lurks-2023
 ERROR: https://yts.mx/movies/small-soldiers-1998
-
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -404,7 +495,7 @@ ERROR: https://yts.mx/movies/small-soldiers-1998
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(806)
+        main(608)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')
