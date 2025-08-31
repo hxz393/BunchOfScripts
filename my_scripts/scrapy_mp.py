@@ -31,11 +31,12 @@ OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
 
-def scrapy_mp(start_page: int = 0, end_url="https://movieparadise.org/movies/face-to-face-2/") -> None:
+def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
     """
     抓取发布信息写入到文件。
     """
     logger.info("抓取 mp 站点发布信息")
+    end_url = f"{MP_MOVIE_URL}movies/{end}/"
     while True:
         # 请求 mp 主页
         logger.info(f"抓取第 {start_page} 页")

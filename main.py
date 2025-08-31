@@ -197,12 +197,12 @@ copy(results);
             logger.info(r"检查 rare 目录，处理后移动到 rare—old")
             logger.info("=" * 255)
             from scrapy_mp import scrapy_mp
-            scrapy_mp(start_page=1040, end_url="https://movieparadise.org/movies/a-place-in-heaven/")
-            # 完成后 https://movieparadise.org/movies/stalin/
+            scrapy_mp(start_page=3172, end="a-place-in-heaven")
+            # 完成后 end = 'stalin'
             logger.info("=" * 255)
         case 609:
             logger.info(r"搜索数据库，将已整理过的导演种子找出来")
-            logger.info(r"种子文件夹在 B:\0.整理\BT\dhd 和 B:\0.整理\BT\ttg 和 B:\0.整理\BT\sk 和 B:\0.整理\BT\rare")
+            logger.info(r"种子文件夹在 B:\0.整理\BT\ 下面")
             logger.info("=" * 255)
             from sort_movie_ops import sort_new_torrents_by_mysql
             target_path = r'A:\1'
