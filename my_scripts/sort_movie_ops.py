@@ -486,6 +486,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     elif file_info["codec"].lower() == "xvid":
         file_info["codec"] = "XviD"
     file_info["codec"] = file_info["codec"][:49]
+    file_info["codec"] = file_info["codec"].replace("VOLOHEVC", "hevc").replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -531,7 +532,6 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     if file_info["source"]:
         file_info["source"] = file_info["source"].replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
         file_info["source"] = file_info["source"].replace("WEB-DL", "WEB").replace("WEBDL", "WEB").replace("WEBRip", "WEB")
-        file_info["source"] = file_info["source"].replace("VOLOHEVC", "hevc").replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
 
     match = re.search(r'「(.*?)」', os.path.basename(filepath))
     if match:
@@ -879,7 +879,7 @@ def check_local_torrent(imdb: str, quality: str, source: str) -> dict:
                 result["delete_files"].append(file_path)
             elif quality == '1080p':
                 if any(keyword in file_path.lower() for keyword in ("4k", "2160p", "uhd")):
-                    target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+                    target_path = os.path.join(CHECK_TARGET, os.path.basename(file_path))
                     shutil.move(file_path, target_path)
                     result["move_counts"] += 1
                 else:
@@ -887,7 +887,7 @@ def check_local_torrent(imdb: str, quality: str, source: str) -> dict:
                     result["delete_counts"] += 1
                     result["delete_files"].append(file_path)
             else:
-                target_path = os.path.join(CHECK_TARGET, imdb + "︴" + os.path.basename(file_path))
+                target_path = os.path.join(CHECK_TARGET, os.path.basename(file_path))
                 shutil.move(file_path, target_path)
                 result["move_counts"] += 1
 
@@ -1118,61 +1118,92 @@ def sort_new_torrents_by_mysql(target_path: str) -> None:
     :return: 无
     """
 
+    def delete_torrent(delete_path: str):
+        """辅助函数，删除种子"""
+        logger.info(f"{imdb_id} 已删除（{quality} {source}）：{delete_path}")
+        os.remove(delete_path)
+
     def move_torrent(source_path: str, director_name: str):
         """辅助函数，移动种子"""
+        logger.info(f"{imdb_id} 已匹配（{quality} {source}）：{file_path}")
         target_path_root = os.path.join(target_path, director_name)
         Path(target_path_root).mkdir(parents=True, exist_ok=True)
         target_path_file = os.path.join(target_path_root, os.path.basename(source_path))
         shutil.move(source_path, target_path_file)
 
     # 建立数据库连接
-    from sort_movie_mysql import create_conn, get_movie_by_imdb
+    from sort_movie_mysql import create_conn, get_movie_batch, get_wanted_batch
     conn = create_conn()
     # 获取种子列表
     file_path_list = get_file_paths(DHD_PATH) + get_file_paths(TTG_PATH) + get_file_paths(SK_PATH) + get_file_paths(RARE_PATH)
+    # 扫描所有文件得到 imdb_id_set
+    imdb_id_set = {m.group(1) for f in file_path_list if (m := re.search(r'(tt\d+)', f))}
+
+    # 批量取出数据
+    wanted_rows = get_wanted_batch(conn, imdb_id_set)
+    movie_rows = get_movie_batch(conn, imdb_id_set)
+
+    wanted_map = {row['imdb']: row for row in wanted_rows}
+    movie_map = {row['imdb']: row for row in movie_rows}
     for file_path in file_path_list:
         # 获取 IMDB 编号，不存在则跳过
         imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', file_path)) else None
         if not imdb_id:
             continue
 
-        # 去数据库搜索，没搜到则跳过
-        wanted_info = get_wanted_by_imdb(conn, imdb_id)
-        if wanted_info:
-            director = wanted_info['director']
-            move_torrent(file_path, director)
+        # 去缺少库搜索，找到了直接移动
+        if imdb_id in wanted_map:
+            move_torrent(file_path, wanted_map[imdb_id]['director'])
             continue
 
-        movie_info = get_movie_by_imdb(conn, imdb_id)
-        if movie_info:
-            # 获取数据
-            director = movie_info['director']
-            quality = movie_info['quality']
-            source = movie_info['source']
-            if '1080p' in file_path.lower():
-                torrent_quality = '1080p'
-            elif '2160p' in file_path.lower():
-                torrent_quality = '2160p'
-            else:
-                torrent_quality = 'other'
+        # 去收集库搜索，没找到直接跳过
+        if imdb_id not in movie_map:
+            continue
 
-            # 2160p 蓝光，直接删除种子
-            if quality == '2160p' and source in BD_SOURCE:
-                logger.info(f"{imdb_id} 已删除（{quality} {source}）：{file_path}")
-                os.remove(file_path)
-                continue
+        # 复杂的筛选逻辑
+        movie_info = movie_map[imdb_id]
+        director = movie_info['director']
+        quality = movie_info['quality']
+        source = movie_info['source']
+        # 文件维度，两个指标，来源和质量
+        if '1080p' in file_path.lower():
+            torrent_quality = '1080p'
+        elif '2160p' in file_path.lower():
+            torrent_quality = '2160p'
+        else:
+            torrent_quality = 'other'
 
-            # # 1080p 蓝光，直接删除 1080p 种子
-            if quality == '1080p' and source in BD_SOURCE and torrent_quality == '1080p':
-                logger.info(f"{imdb_id} 已删除（{quality} {source}）：{file_path}")
-                os.remove(file_path)
-                continue
+        if r'B:\0.整理\BT\dhd' in file_path:
+            torrent_source = 'dhd'
+        elif r'B:\0.整理\BT\ttg' in file_path:
+            torrent_source = 'ttg'
+        elif r'B:\0.整理\BT\sk' in file_path:
+            torrent_source = 'sk'
+        elif r'B:\0.整理\BT\rare' in file_path:
+            torrent_source = 'rare'
+        else:
+            logger.error('程序错误')
+            return
 
-            # 其他情况，保留种子
-            if quality:
-                logger.info(f"{imdb_id} 已匹配（{quality} {source}）：{file_path}")
-                move_torrent(file_path, director)
-                continue
+        # 2160p 蓝光，直接删除所有类型种子
+        if quality == '2160p' and source in BD_SOURCE:
+            delete_torrent(file_path)
+            continue
+
+        # 1080p 蓝光，直接删除 1080p 种子
+        if quality == '1080p' and source in BD_SOURCE and torrent_quality == '1080p':
+            delete_torrent(file_path)
+            continue
+
+        # 1080p 以上画质，直接删除 rare 目录种子
+        if quality in ['1080p', '2160p'] and torrent_source == 'rare':
+            delete_torrent(file_path)
+            continue
+
+        # 其他情况，保留种子
+        if quality:
+            move_torrent(file_path, director)
+            continue
 
 
 def select_yts_best_torrent(json_data: dict) -> str:

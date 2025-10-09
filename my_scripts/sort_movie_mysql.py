@@ -251,38 +251,88 @@ def create_conn() -> Any:
     return conn
 
 
-def get_wanted_by_imdb(conn: Any, imdb: str) -> Any:
+def get_wanted_batch(conn: Any, imdb_ids: set) -> list[dict]:
     """
     用 imdb 编号去数据库查找记录
 
     :param conn: 数据库会话
-    :param imdb: IMDB 编号
+    :param imdb_ids: IMDB 编号集合
     :return: 找到则返回对应数据，否则返回 None
     """
-    cursor = conn.cursor(dictionary=True)
-    select_sql = "SELECT * FROM wanted WHERE imdb = %s"
-    cursor.execute(select_sql, (imdb,))
-    result = cursor.fetchone()
-    cursor.close()
-    if result:
-        return result
+    if not imdb_ids:
+        return []
+
+    # 构造 SQL IN 查询
+    placeholders = ','.join(['%s'] * len(imdb_ids))  # 例如: "%s,%s,%s"
+    sql = f"SELECT * FROM wanted WHERE imdb IN ({placeholders})"
+
+    with conn.cursor(dictionary=True) as cursor:
+        cursor.execute(sql, tuple(imdb_ids))
+        return cursor.fetchall()
 
 
-def get_movie_by_imdb(conn: Any, imdb: str) -> Any:
+def get_movie_batch(conn: Any, imdb_ids: set) -> list[dict]:
     """
     用 imdb 编号去数据库查找记录
 
     :param conn: 数据库会话
-    :param imdb: IMDB 编号
-    :return: 找到则返回对应数据，否则返回 None
+    :param imdb_ids: imdb_id 列表
+    :return: [{...}, {...}, ...] 电影信息字典列表
     """
-    cursor = conn.cursor(dictionary=True)
-    select_sql = "SELECT * FROM movies WHERE imdb = %s"
-    cursor.execute(select_sql, (imdb,))
-    result = cursor.fetchone()
-    cursor.close()
-    if result:
-        return result
+    if not imdb_ids:
+        return []
+
+    # 构造 SQL IN 查询
+    placeholders = ','.join(['%s'] * len(imdb_ids))  # 例如: "%s,%s,%s"
+    sql = f"SELECT * FROM movies WHERE imdb IN ({placeholders})"
+
+    with conn.cursor(dictionary=True) as cursor:
+        cursor.execute(sql, tuple(imdb_ids))
+        return cursor.fetchall()
+
+
+def check_movie_ids(ids: list) -> list:
+    """用电影 id 去数据库查询，检查是否有没记录的电影
+
+    :param ids: 电影 id 列表
+    :return: 没查询到的电影 id 列表
+
+    """
+    # 建立数据库连接
+    def check_movie_ids(ids: list) -> list:
+        """用电影 id 去数据库查询，检查是否有没记录的电影
+
+        :param ids: 电影 id 列表
+        :return: 没查询到的电影 id 列表
+        """
+        # 建立数据库连接
+        conn = create_conn()
+        cursor = conn.cursor()
+
+        not_found = []
+
+        for mid in ids:
+            if mid.startswith("tt"):
+                col, val = "imdb", mid
+            elif mid.startswith("tmdb"):
+                col, val = "tmdb", mid.replace("tmdb", "")
+            elif mid.startswith("db"):
+                col, val = "douban", mid.replace("db", "")
+            else:
+                # 未知类型，直接加入结果
+                not_found.append(mid)
+                continue
+
+            sql = f"SELECT 1 FROM movies WHERE {col} = %s LIMIT 1"
+            cursor.execute(sql, (val,))
+            row = cursor.fetchone()
+
+            if not row:
+                not_found.append(mid)
+
+        cursor.close()
+        conn.close()
+        return not_found
 
 
 def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:

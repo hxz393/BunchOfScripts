@@ -36,7 +36,7 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
     抓取发布信息写入到文件。
     """
     logger.info("抓取 mp 站点发布信息")
-    end_url = f"{MP_MOVIE_URL}movies/{end}/"
+    end_url = f"{MP_URL}movies/{end}/"
     while True:
         # 请求 mp 主页
         logger.info(f"抓取第 {start_page} 页")
@@ -58,10 +58,7 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
 
 
 def process_all(result_list, max_workers=5):
-    """
-    并发调用 visit_sk_url，result_list 中每个元素都会被提交到线程池执行。
-    max_workers 控制并发线程数，视网络 I/O 或目标服务器承受能力调整。
-    """
+    """多线程执行抓取任务"""
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务

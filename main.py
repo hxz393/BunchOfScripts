@@ -179,7 +179,7 @@ copy(results);
             logger.info(r"检查 sk 目录，处理后移动到 sk—old")
             logger.info("=" * 255)
             from scrapy_sk import scrapy_sk
-            scrapy_sk(start_page=0,end_data="28/08/2025")
+            scrapy_sk(start_page=0,end_data="26/09/2025")
             logger.info("=" * 255)
         case 607:
             logger.info(r"抓取 rare 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
@@ -191,14 +191,20 @@ copy(results);
             scrapy_rare(source_file)
             logger.info("=" * 255)
         case 608:
-            logger.info(r"抓取 mp 信息，自动将新帖子保存到：B:\0.整理\BT\rare")
+            logger.info(r"抓取 mp 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
             logger.info(r"半个小时出现 403，手动过验证码，更新 Cookie")
-            logger.info(r"完成后手动更新 end_url")
+            logger.info(r"开始前手动更新 end_url，找没有更新的发布。结束后记录位置")
             logger.info(r"检查 rare 目录，处理后移动到 rare—old")
+            """
+9.27
+Dällebach Kari 1970
+Trilogy of Lust 1995
+Guantanamero 2007
+Adulthood 2025
+            """
             logger.info("=" * 255)
             from scrapy_mp import scrapy_mp
-            scrapy_mp(start_page=3172, end="a-place-in-heaven")
-            # 完成后 end = 'stalin'
+            scrapy_mp(start_page=2, end="dallebach-kari")
             logger.info("=" * 255)
         case 609:
             logger.info(r"搜索数据库，将已整理过的导演种子找出来")
@@ -422,14 +428,23 @@ copy(results);
                 logger.warning("-" * 255)
                 time.sleep(0.1)
         case 809:
-            logger.info(r"提取电影目录的所有电影 id")
+            logger.info(r"提取电影目录的所有电影 id，并去数据库校验")
+            logger.info(r"电影目录储存到 config/!00.txt 中")
             logger.info("=" * 255)
             from sort_movie_ops import extract_movie_ids
             from my_module import read_file_to_list
+            from sort_movie_mysql import check_movie_ids
             source_file = r'config/!00.txt'
             temp_list = read_file_to_list(source_file)
             id_list = extract_movie_ids(temp_list[0])
             for i in id_list:
+                print(i)
+            # 归档硬盘，检查是否都记录到数据库
+            result_list = check_movie_ids(id_list)
+            if not result_list:
+                print(f"共 {len(id_list)} 电影，已经全部记录")
+                return
+            for i in result_list:
                 print(i)
 
         case _:
@@ -451,37 +466,19 @@ def temp(m_path):
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-ERROR: https://yts.mx/movies/ne-zha-ii-2025
-ERROR: https://yts.mx/movies/na-plech-2025
-ERROR: https://yts.mx/movies/juliette-au-printemps-2024
-ERROR: https://yts.mx/movies/moon-le-panda-2025
-ERROR: https://yts.mx/movies/night-of-the-werewolves-2025
-ERROR: https://yts.mx/movies/i%c2%b4ll-never-let-you-go-2025
-ERROR: https://yts.mx/movies/war-of-the-worlds-revival-2025
-ERROR: https://yts.mx/movies/dangerous-animals-2025
-ERROR: https://yts.mx/movies/housefull-5-a-2025
-ERROR: https://yts.mx/movies/familia-pero-no-mucho-2025
-ERROR: https://yts.mx/movies/koston-enkeli-2024
-ERROR: https://yts.mx/movies/mike-and-dave-need-wedding-dates-2016
-ERROR: https://yts.mx/movies/2-1-girls-2022
-ERROR: https://yts.mx/movies/ainsley-mcgregor-mysteries-a-case-for-the-winemaker-2024
-ERROR: https://yts.mx/movies/the-room-next-door-2024
-ERROR: https://yts.mx/movies/stand-your-ground-2024
-ERROR: https://yts.mx/movies/i-was-octomom-2025
-ERROR: https://yts.mx/movies/follemente-2025
-ERROR: https://yts.mx/movies/alles-fifty-fifty-2024
-ERROR: https://yts.mx/movies/im-the-man-2025
-ERROR: https://yts.mx/movies/homem-com-h-2025
-ERROR: https://yts.mx/movies/viva-a-vida-2024
-ERROR: https://yts.mx/movies/infiltrada-en-el-bunker-2025
-ERROR: https://yts.mx/movies/vivacious-lady-1938
-ERROR: https://yts.mx/movies/not-just-a-goof-2025
-ERROR: https://yts.mx/movies/karol-g-tomorrow-will-be-beautiful-2025
-ERROR: https://yts.mx/movies/iconic-2024
-ERROR: https://yts.mx/movies/the-good-life-2025
-ERROR: https://yts.mx/movies/the-masquerade-2025
-ERROR: https://yts.mx/movies/when-evil-lurks-2023
-ERROR: https://yts.mx/movies/small-soldiers-1998
+https://yts.mx/movies/denial-1998
+https://yts.mx/movies/dracula-a-love-tale-2025
+https://yts.mx/movies/freakier-friday-2025
+https://yts.mx/movies/joe-rogan-live-from-the-belly-of-the-beast-2001
+https://yts.mx/movies/le-assaggiatrici-2025
+https://yts.mx/movies/screamboat-2025
+https://yts.mx/movies/sometimes-i-think-about-dying-2023
+https://yts.mx/movies/the-sundowners-1960
+https://yts.mx/movies/iconic-2024
+https://yts.mx/movies/mike-and-dave-need-wedding-dates-2016
+https://yts.mx/movies/small-soldiers-1998
+https://yts.mx/movies/the-room-next-door-2024
+https://yts.mx/movies/vivacious-lady-1938
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -495,7 +492,7 @@ ERROR: https://yts.mx/movies/small-soldiers-1998
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(608)
+        main(802)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')

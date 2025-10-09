@@ -23,7 +23,7 @@ requests.packages.urllib3.disable_warnings()
 CONFIG_PATH = 'config/scrapy_ru.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 
-SCRAPY_GROUP = CONFIG['scrapy_group']  # 栏目地址列表
+SCRAPY_GROUP = CONFIG['scrapy_process'].keys()  # 栏目地址列表
 USER_COOKIE = CONFIG['user_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
