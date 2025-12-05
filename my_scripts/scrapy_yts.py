@@ -27,8 +27,7 @@ YTS_URL = CONFIG['yts_url']  # yts 地址
 YTS_USER = CONFIG['yts_user']  # yts 用户
 YTS_PASS = CONFIG['yts_pass']  # yts 密码
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
-BASE_URL = CONFIG['base_url']  # 基本地址
-API_URL = CONFIG['api_url']  # api 请求地址
+API_PATH = CONFIG['api_path']  # api 请求地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 
 
@@ -125,7 +124,7 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
         d_name = director_name[0]
 
     # 向 API 发送请求，获取响应，返回最终数据
-    api_url = f"{BASE_URL}{API_URL}{movie_id[0]}"
+    api_url = f"{YTS_URL}/{API_PATH}{movie_id[0]}"
     r1 = session.get(api_url, verify=False)
     movie_detail = r1.json()
     # api 请求的数据有可能滞后，获取不到

@@ -49,6 +49,8 @@ MOVIES_UPDATE_SQL = """
                 bitrate=%s,
                 duration=%s,
                 size=%s,
+                release_group=%s,
+                filename=%s,
                 dl_link=%s,
                 comment=%s,
                 updated_at=%s
@@ -59,14 +61,15 @@ MOVIES_INSERT_SQL = """
                 director, year, original_title, chinese_title, genres,
                 country, language, runtime, titles, directors,
                 tmdb, douban, imdb, source, quality, resolution,
-                codec, bitrate, duration, size, dl_link, comment,
+                codec, bitrate, duration, size, release_group, filename, dl_link, comment,
                 created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s, %s,
+                %s
             )
         """
 MOVIES_SEARCH_SQL = "SELECT resolution, bitrate, size, tmdb, douban, imdb FROM movies WHERE id = %s"
@@ -163,6 +166,8 @@ def sort_movie_mysql(path: str) -> None:
         merged_dict['bitrate'],
         merged_dict['duration'],
         merged_dict['size'],
+        merged_dict['release_group'],
+        merged_dict['filename'],
         merged_dict['dl_link'],
         merged_dict['comment']
     )
@@ -271,6 +276,54 @@ def get_wanted_batch(conn: Any, imdb_ids: set) -> list[dict]:
         return cursor.fetchall()
 
 
+def check_rls_grp(conn: any, name: str) -> str:
+    """
+    检查发布组是否已存在（不区分大小写）。如果存在，则返回数据库中已有的 “name”。
+    否则插入一个新记录，返回插入时使用的 name。
+
+    :param conn: MySQL 数据库连接 (DB-API)
+    :param name: 要检查或插入的发布组名（原始大小写形式）
+    :return: 最终使用的发布组名（即数据库里真实的 name 字段值）
+    """
+    name_low = name.casefold()  # 或 name.lower()
+
+    with conn.cursor(dictionary=True) as cursor:
+        # 先尝试查找已有记录
+        cursor.execute(
+            "SELECT id, name FROM release_group WHERE name_lower = %s",
+            (name_low,)
+        )
+        row = cursor.fetchone()
+        if row:
+            # 找到了：复用已有 name（原始大小写），然后返回 name
+            return row['name']
+
+        # 没找到，需要插入
+        try:
+            cursor.execute(
+                "INSERT INTO release_group (name, name_lower) VALUES (%s, %s)",
+                (name, name_low)
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(e)
+            # 插入可能失败（理论上是 UNIQUE 冲突，再做一次查找，防止并发插入）
+            conn.rollback()
+            cursor.execute(
+                "SELECT id, name FROM release_group WHERE name_lower = %s",
+                (name_low,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row['name']
+            else:
+                # 真出错了：抛出异常或把错误暴露
+                raise
+
+    # 插入成功：返回刚插入的 name
+    return name
+
+
 def get_movie_batch(conn: Any, imdb_ids: set) -> list[dict]:
     """
     用 imdb 编号去数据库查找记录
@@ -296,43 +349,35 @@ def check_movie_ids(ids: list) -> list:
 
     :param ids: 电影 id 列表
     :return: 没查询到的电影 id 列表
-
     """
     # 建立数据库连接
-    def check_movie_ids(ids: list) -> list:
-        """用电影 id 去数据库查询，检查是否有没记录的电影
+    conn = create_conn()
+    cursor = conn.cursor()
 
-        :param ids: 电影 id 列表
-        :return: 没查询到的电影 id 列表
-        """
-        # 建立数据库连接
-        conn = create_conn()
-        cursor = conn.cursor()
+    not_found = []
 
-        not_found = []
+    for mid in ids:
+        if mid.startswith("tt"):
+            col, val = "imdb", mid
+        elif mid.startswith("tmdb"):
+            col, val = "tmdb", mid.replace("tmdb", "")
+        elif mid.startswith("db"):
+            col, val = "douban", mid.replace("db", "")
+        else:
+            # 未知类型，直接加入结果
+            not_found.append(mid)
+            continue
 
-        for mid in ids:
-            if mid.startswith("tt"):
-                col, val = "imdb", mid
-            elif mid.startswith("tmdb"):
-                col, val = "tmdb", mid.replace("tmdb", "")
-            elif mid.startswith("db"):
-                col, val = "douban", mid.replace("db", "")
-            else:
-                # 未知类型，直接加入结果
-                not_found.append(mid)
-                continue
+        sql = f"SELECT id FROM movies WHERE {col} = %s LIMIT 1"
+        cursor.execute(sql, (val,))
+        row = cursor.fetchone()
 
-            sql = f"SELECT 1 FROM movies WHERE {col} = %s LIMIT 1"
-            cursor.execute(sql, (val,))
-            row = cursor.fetchone()
+        if not row:
+            not_found.append(mid)
 
-            if not row:
-                not_found.append(mid)
-
-        cursor.close()
-        conn.close()
-        return not_found
+    cursor.close()
+    conn.close()
+    return not_found
 
 
 def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:

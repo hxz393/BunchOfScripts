@@ -15,7 +15,7 @@ from retrying import retry
 
 from my_module import sanitize_filename, write_dict_to_json, read_json_to_dict
 from sort_movie_mysql import sort_movie_mysql
-from sort_movie_ops import scan_ids, safe_get, move_all_files_to_root, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_movie, get_movie_id
+from sort_movie_ops import scan_ids, safe_get, build_movie_folder_name, merged_dict, create_aka_movie, get_video_info, check_movie, get_movie_id, fix_douban_name
 from sort_movie_request import get_tmdb_movie_details, get_imdb_movie_details, get_douban_response, get_tmdb_movie_cover
 
 logger = logging.getLogger(__name__)
@@ -332,4 +332,5 @@ def get_douban_movie_info(movie_id: str, movie_info: dict) -> None:
     if aka_tag and aka_tag.next_sibling:
         aka_name = aka_tag.next_sibling.strip()
         aka_names = aka_name.split("/")
-        movie_info["titles"].extend(aka_names)
+        alias = [fix_douban_name(name) for name in aka_names]
+        movie_info["titles"].extend(alias)

@@ -155,7 +155,7 @@ def download_and_save_pictures(picture_urls: List[str],
             logger.exception(f"下载图片时发生错误: {picture_url}")
 
 
-@retry(stop_max_attempt_number=3, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=3, wait_random_min=300, wait_random_max=3000)
 def request_url(url: str) -> Optional[Response]:
     """
     向指定的URL发送请求并返回响应内容。

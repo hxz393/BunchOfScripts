@@ -75,7 +75,7 @@ def sort_ru(source_path: str, target_path: str) -> Dict[str, str]:
     return final_path_dict
 
 
-@retry(stop_max_attempt_number=30, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=30, wait_random_min=300, wait_random_max=3000)
 def ru_search(name: str) -> Optional[Tuple[str, int]]:
     """
     通过session搜索名字，并返回搜索结果。不加入错误处理，让出错后自动重试。

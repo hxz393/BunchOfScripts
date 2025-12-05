@@ -38,6 +38,7 @@ TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
 DHD_SOURCE = CONFIG['dhd_source']  # dhd 种子来源路径
 SK_SOURCE = CONFIG['sk_source']  # sk 种子来源路径
 RARE_SOURCE = CONFIG['rare_source']  # rare 文件路径
+RLS_SOURCE = CONFIG['rls_source']  # rare 文件路径
 CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
@@ -54,8 +55,8 @@ RARE_PATH = CONFIG['rare_path']  # rare 文件路径
 BD_SOURCE = ['BDRemux', 'BluRay', 'BDRip']
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
-# 编译正则，从文件名中提取信息
-RE_NAME = re.compile(
+# 编译正则，从目录名中提取信息
+RE_DIR_NAME = re.compile(
     r'^'
     r'(?P<year>\d+)\s*-\s*'  # 放映年（4位数字）和分隔符
     r'(?P<title>[^{]+)'  # 电影原名：匹配除 { 和 ( 之外的字符
@@ -66,6 +67,18 @@ RE_NAME = re.compile(
     r'\[(?P<encoding>[^]@]+)@(?P<bitrate>[^]]+)]'  # 文件编码和码率，例如 [XVID@1074kbps]
     r'$',
     re.IGNORECASE
+)
+# 编译正则，从文件名中提取信息
+RE_VIDEO_NAME = re.compile(
+    r'^'  # 开头
+    r'[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\.'  # 名称 (点号分隔单词)
+    r'\d{4}\.'  # 年份 (4 位数字 + 点)
+    r'(?:[A-Za-z0-9]+\.)?'  # 可选版本 (xxx.) — 非必须
+    r'(?:480p|720p|1080p|2160p)\.'  # 分辨率 + 点
+    r'(?:[A-Za-z0-9]+\.)?'  # 可选 site + 点
+    r'[A-Za-z0-9\-]+\.'  # source + 点
+    r'[A-Za-z0-9.@\-]+'  # encoding（允许字母数字和点号，以及 @ 之类） + 连字符
+    r'-.+$'  # group (小组)
 )
 # 编译正则，便于复用
 RE_JSON_FILE_NAME = re.compile(
@@ -89,6 +102,7 @@ PRE_LOAD_FP.extend(get_file_paths(TTG_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(DHD_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(SK_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
+PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 
 def get_ids(source_path: str) -> None:
@@ -433,6 +447,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     :return: 文件信息字典
     """
     logger.info(f"获取视频信息：{os.path.basename(filepath)}")
+    dirname, filename = os.path.split(filepath)
     # 构造并运行 ffprobe 命令
     file_info = {"source": "", "resolution": "", "codec": "", "bitrate": ""}
     cmd = [
@@ -486,7 +501,8 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     elif file_info["codec"].lower() == "xvid":
         file_info["codec"] = "XviD"
     file_info["codec"] = file_info["codec"][:49]
-    file_info["codec"] = file_info["codec"].replace("VOLOHEVC", "hevc").replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
+    file_info["codec"] = file_info["codec"].replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
+    file_info["codec"] = file_info["codec"].replace("VOLOHEVC", "hevc").replace("ATEME Titan File", "hevc").replace("ATEME Titan KFE", "hevc")
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -503,36 +519,29 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         duration = duration_data.get("duration")
     file_info["duration"] = int(float(duration) / 60)
 
-    # 视频来源，需要根据文件名判断
-    matched = False
-    # 先仅使用当前视频文件名做匹配
+    # 视频来源，需要根据文件名判断。先仅使用当前视频文件名做匹配
+    file_info["source"] = "未知"
     for source in SOURCE_LIST:
         # 使用 re.IGNORECASE 或在模式中用 (?i) 来忽略大小写
         # 注意 [A-Za-z] 仅排除英文字母，如果想排除数字可以改成 [A-Za-z0-9]
         pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
         if re.search(pattern, filepath):
             file_info["source"] = source
-            matched = True
             break
-    # 匹配失败则扫描同级目录里的所有文件再尝试匹配（仅匹配log文件）
-    if not matched:
-        file_list = os.listdir(os.path.dirname(filepath))
-        for f in file_list:
-            if not f.endswith(".log"):
-                continue
-            for source in SOURCE_LIST:
-                pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
-                if re.search(pattern, f):
-                    file_info["source"] = source
-                    matched = True
-                    break
-            if matched:
-                break  # 结束 file_list 循环
 
-    if file_info["source"]:
-        file_info["source"] = file_info["source"].replace("BrRip", "BDRip").replace("Blu-ray", "BluRay")
-        file_info["source"] = file_info["source"].replace("WEB-DL", "WEB").replace("WEBDL", "WEB").replace("WEBRip", "WEB")
+    # 发布组
+    # from sort_movie_mysql import check_rls_grp, create_conn
+    # conn = create_conn()
+    # release_group = re.search(r'-(?P<group>[^-.]+)(?=\.[^.]+$)', os.path.basename(filepath))
+    # if release_group:
+    #     file_info["release_group"] = check_rls_grp(conn, release_group.group(1))
+    file_info["release_group"] = ""
 
+    # 文件名
+    # file_info["filename"] = filename
+    file_info["filename"] = ""
+
+    # 注释
     match = re.search(r'「(.*?)」', os.path.basename(filepath))
     if match:
         file_info["comment"] = match.group(1)
@@ -777,7 +786,7 @@ def check_movie(path: str) -> Optional[str]:
     # 检查其他字段信息
     for k, v in movie_info.items():
         if not v:
-            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb"]:  # 能为空的字段
+            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb", "release_group", "filename"]:  # 能为空的字段
                 logger.warning(f"{p.name} 缺少字段信息：{k}")
 
     # 查找多余目录
@@ -786,9 +795,14 @@ def check_movie(path: str) -> Optional[str]:
         return f"{p.name} 目录中有二级目录：{dir_list}"
 
     # 检查子目录是否符合规范
-    match = RE_NAME.match(p.name)
+    match = RE_DIR_NAME.match(p.name)
     if not match:
         return f"{p.name} 目录名格式错误或缺少必须字段"
+
+    # 检查文件名是否符合规范
+    # video_name = os.path.splitext(os.path.basename(get_largest_file(path)))[0]
+    # if not RE_VIDEO_NAME.match(video_name):
+    #     return f"{video_name} 文件名格式不规范"
 
     # 检查本地库存
     imdb = movie_info['imdb']
@@ -803,22 +817,20 @@ def check_movie(path: str) -> Optional[str]:
     if delete_counts:
         logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
 
-    # 检查码率是否过高
+    # 检查码率是否过低
     info = match.groupdict()
     file_bitrate = int(info['bitrate'].split('kbps')[0])
-    high_bitrate = False
-    if quality == '2160p' and file_bitrate > MAX_BITRATE * 20:
-        high_bitrate = True
-    elif quality == '1080p' and file_bitrate > MAX_BITRATE * 10:
-        high_bitrate = True
-    elif quality == '720p' and file_bitrate > MAX_BITRATE * 5:
-        high_bitrate = True
-    elif quality == '480p' and file_bitrate > MAX_BITRATE * 2:
-        high_bitrate = True
-    elif quality == '240p' and file_bitrate > MAX_BITRATE:
-        high_bitrate = True
-    if high_bitrate:
-        logger.warning(f"{p.name} 码率过高：{file_bitrate}kbps")
+    low_bitrate = False
+    if quality == '2160p' and source == 'BluRay' and file_bitrate < MAX_BITRATE * 40:
+        low_bitrate = True
+    elif quality == '1080p' and source == 'BluRay' and file_bitrate < MAX_BITRATE * 8:
+        low_bitrate = True
+    elif quality == '720p' and file_bitrate < MAX_BITRATE * 2:
+        low_bitrate = True
+    elif quality == '480p' and file_bitrate < MAX_BITRATE:
+        low_bitrate = True
+    if low_bitrate:
+        logger.warning(f"{p.name} 码率过低：{file_bitrate}kbps")
 
     # 查找视频数量
     video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]

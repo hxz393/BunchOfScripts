@@ -411,7 +411,7 @@ def bulk_query_ids(r: redis.Redis, set_key: str, ids: list) -> list:
     return results
 
 
-@retry(stop_max_attempt_number=5, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=5, wait_random_min=300, wait_random_max=3000)
 def scrapy_magnet(topic_info: dict) -> bool:
     """
     获取帖子内磁力链接。

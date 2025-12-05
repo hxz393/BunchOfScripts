@@ -179,7 +179,7 @@ copy(results);
             logger.info(r"检查 sk 目录，处理后移动到 sk—old")
             logger.info("=" * 255)
             from scrapy_sk import scrapy_sk
-            scrapy_sk(start_page=0,end_data="26/09/2025")
+            scrapy_sk(start_page=0,end_data="23/11/2025")
             logger.info("=" * 255)
         case 607:
             logger.info(r"抓取 rare 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
@@ -196,15 +196,15 @@ copy(results);
             logger.info(r"开始前手动更新 end_url，找没有更新的发布。结束后记录位置")
             logger.info(r"检查 rare 目录，处理后移动到 rare—old")
             """
-9.27
-Dällebach Kari 1970
-Trilogy of Lust 1995
-Guantanamero 2007
-Adulthood 2025
+11.25
+Train Dreams Nov. 05, 2025
+BlackJack: In the Money Sep. 11, 2005
+Romancero marroquí Jul. 16, 1939
+Kurelek Jan. 01, 1967
             """
             logger.info("=" * 255)
             from scrapy_mp import scrapy_mp
-            scrapy_mp(start_page=2, end="dallebach-kari")
+            scrapy_mp(start_page=2, end="romancero-marroqui")
             logger.info("=" * 255)
         case 609:
             logger.info(r"搜索数据库，将已整理过的导演种子找出来")
@@ -214,6 +214,31 @@ Adulthood 2025
             target_path = r'A:\1'
             sort_new_torrents_by_mysql(target_path)
             logger.info("=" * 255)
+        case 610:
+            logger.info(r"抓取 hde 信息，自动将新发布保存到：B:\0.整理\BT\rls")
+            logger.info(r"完成后手动更新 end_title")
+            logger.info("=" * 255)
+            from scrapy_hde import scrapy_hde
+            scrapy_hde(start_page=2,end_title="The.Family.Plan.2023.2160p.ATVP.WEB-DL.DDPA.5.1.H.265-PiRaTeS – 17.3 GB")
+            logger.info("=" * 255)
+        case 611:
+            logger.info(r"抓取 rlsbb 信息，自动将新发布保存到：B:\0.整理\BT\rls")
+            logger.info(r"完成后手动更新 end_title")
+            logger.info("=" * 255)
+            from scrapy_rls import scrapy_rls
+            # scrapy_rls(start_page=2, f_mode=True, end_title="Agents Un Peu Trop Secrets 2025 720p WEBRip x264-YIFY (856MB)")
+            # scrapy_rls(start_page=2, f_mode=False, end_title="Baby Blue 2023 1080P BLURAY H262-UNDERTAKERS (13.6GB)")
+            logger.info("=" * 255)
+        case 612:
+            logger.info(r"抓取 sc 信息，将新链接丢如 jd 中去抓取")
+            """
+            https://softcore-index.info/
+            11-26
+            Angel 2: Dominatrix of Mystery (1997)
+            Angel: I’ll Be Your First (1997)
+            Chikan densha: Kuikomi yume (dream) match (2019) HD
+            Groper Train: Lewd Course is Full of Dreams (2016) HD
+            """
         case 701:
             logger.info("整理导演目录，在导演目录生成导演别名和代表链接的空文件")
             logger.info("来源文本首行为导演目录路径，后面三行为导演链接")
@@ -466,19 +491,15 @@ def temp(m_path):
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-https://yts.mx/movies/denial-1998
-https://yts.mx/movies/dracula-a-love-tale-2025
-https://yts.mx/movies/freakier-friday-2025
-https://yts.mx/movies/joe-rogan-live-from-the-belly-of-the-beast-2001
-https://yts.mx/movies/le-assaggiatrici-2025
-https://yts.mx/movies/screamboat-2025
-https://yts.mx/movies/sometimes-i-think-about-dying-2023
-https://yts.mx/movies/the-sundowners-1960
-https://yts.mx/movies/iconic-2024
-https://yts.mx/movies/mike-and-dave-need-wedding-dates-2016
-https://yts.mx/movies/small-soldiers-1998
-https://yts.mx/movies/the-room-next-door-2024
-https://yts.mx/movies/vivacious-lady-1938
+ERROR: https://yts.lt/movies/screamboat-2025
+ERROR: https://yts.lt/movies/denial-1998
+ERROR: https://yts.lt/movies/mike-and-dave-need-wedding-dates-2016
+ERROR: https://yts.lt/movies/small-soldiers-1998
+ERROR: https://yts.lt/movies/iconic-2024
+ERROR: https://yts.lt/movies/the-sundowners-1960
+ERROR: https://yts.lt/movies/sometimes-i-think-about-dying-2023
+ERROR: https://yts.lt/movies/vivacious-lady-1938
+ERROR: https://yts.lt/movies/the-room-next-door-2024
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -492,7 +513,7 @@ https://yts.mx/movies/vivacious-lady-1938
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(802)
+        main(806)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')

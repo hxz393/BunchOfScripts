@@ -61,7 +61,7 @@ TMDB = TMDb()
 TMDB.api_key = TMDB_KEY
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
 def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     """
     从 IMDB 搜索，返回结果供解析
@@ -100,7 +100,7 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
         raise Exception(f"查询 TMDB 失败：{e}")
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
 def get_tmdb_director_details(director_id: str) -> AsObj:
     """
     从 TMDB 获取导演个人信息
@@ -112,7 +112,7 @@ def get_tmdb_director_details(director_id: str) -> AsObj:
     return person.details(director_id)
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
 def get_tmdb_director_movies(director_id: str) -> AsObj:
     """
     从 TMDB 获取导演电影信息
@@ -124,7 +124,7 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
     return person.movie_credits(director_id)
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=15330, wait_random_max=65800)
+@retry(stop_max_attempt_number=50, wait_random_min=5330, wait_random_max=15800)
 def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
     """
     从 TMDB 获取电影海报地址
@@ -151,7 +151,7 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
         raise Exception(f"封面下载失败 {image_url}")
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
 def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取电影信息，返回结果供解析
@@ -168,7 +168,7 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     return response
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
 def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取导演信息，返回结果供解析
@@ -213,7 +213,7 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
         return
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=30, wait_random_max=300)
+@retry(stop_max_attempt_number=50, wait_random_min=1000, wait_random_max=3000)
 def get_csfd_response(url: str) -> Optional[requests.Response]:
     """
     从 CSFD 获取电影信息，返回结果供解析
@@ -221,11 +221,22 @@ def get_csfd_response(url: str) -> Optional[requests.Response]:
     :param url: csfd 链接
     :return: 成功时返回响应
     """
-    response = requests.get(url, timeout=15, verify=False, allow_redirects=True, headers=CSFD_HEADER)
-    if response.status_code != 200:
-        logger.error(f"CSFD 访问失败！状态码：{response.status_code}")
-        return
-    return response
+    try:
+        response = requests.get(
+            url,
+            timeout=15,
+            verify=False,
+            allow_redirects=True,
+            headers=CSFD_HEADER,
+        )
+        # 如果不是 2xx，会抛出 requests.exceptions.HTTPError -> 触发重试
+        response.raise_for_status()
+        return response
+
+    except requests.exceptions.RequestException as e:
+        # 记录错误并重新抛出，让 @retry 生效
+        logger.warning(f"请求 CSFD 失败（将重试）: {e}  url={url}")
+        raise
 
 
 def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
