@@ -8,26 +8,15 @@
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 
 import requests
 from bs4 import BeautifulSoup, NavigableString
 from retrying import retry
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file
-from sort_movie_request import get_csfd_response, get_csfd_movie_details
-import concurrent.futures
-import logging
-import os
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict
-
-import requests
-from lxml import etree
-from retrying import retry
-
-from my_module import read_json_to_dict, sanitize_filename, write_dict_to_json, read_file_to_list
+from my_module import read_json_to_dict, sanitize_filename, read_file_to_list
+from my_module import write_list_to_file
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()

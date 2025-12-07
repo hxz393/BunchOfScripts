@@ -239,6 +239,17 @@ Kurelek Jan. 01, 1967
             Chikan densha: Kuikomi yume (dream) match (2019) HD
             Groper Train: Lewd Course is Full of Dreams (2016) HD
             """
+        case 613:
+            logger.info(r"抓取 hde 信息，自动将新发布保存到：B:\0.整理\BT\rls")
+            logger.info(r"完成后手动更新 end_time")
+            """
+const titles = Array.from(document.querySelectorAll('div.file-name')).map(div => div.getAttribute('title')).join('\n');   // 一行一个
+copy(titles); // 复制115文件列表到剪切板
+            """
+            from scrapy_bds import scrapy_bds
+            scrapy_bds(start_page=1,end_time="2025-12-07")
+            logger.info("=" * 255)
+
         case 701:
             logger.info("整理导演目录，在导演目录生成导演别名和代表链接的空文件")
             logger.info("来源文本首行为导演目录路径，后面三行为导演链接")
@@ -513,7 +524,7 @@ ERROR: https://yts.lt/movies/the-room-next-door-2024
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(806)
+        main(613)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')
