@@ -130,12 +130,8 @@ def main(chosen: int) -> None:
             logger.info(r"手动检查 yts 目录，处理后移动到 yts—old")
             logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本：")
             js = """
-// 只提取 class 包含 EntryTitleLink 的 <a> 元素
-const articles = Array.from(document.querySelectorAll('a.EntryTitleLink'));
-const results = articles.map(article => ({title: article.innerText.trim(),link: article.href}));
-console.log("提取到的标题和链接：", results);
-// 将结果复制到剪贴板（在支持的环境下）
-copy(results);
+const results = Array.from(document.querySelectorAll('a.EntryTitleLink')).map(article => (article.href)).join('\n');
+copy(results); // 用于 feedly 阅读器提取
             """
             logger.info(js)
             logger.info("=" * 255)
@@ -248,6 +244,14 @@ copy(titles); // 复制115文件列表到剪切板
             """
             from scrapy_bds import scrapy_bds
             scrapy_bds(start_page=1,end_time="2025-12-07")
+            logger.info("=" * 255)
+        case 614:
+            logger.info(r"抓取 mt 信息，自动将新帖子保存到：B:\0.整理\BT\mt")
+            logger.info(r"手动检查 mt 目录，处理后移动到 mt—old")
+            logger.info(r"完成后手动更新 start_time 和 end_time")
+            logger.info("=" * 255)
+            from scrapy_mt import scrapy_mt
+            scrapy_mt(start_time="2025-12-17", end_time="2025-12-18")
             logger.info("=" * 255)
 
         case 701:
@@ -524,7 +528,7 @@ ERROR: https://yts.lt/movies/the-room-next-door-2024
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(613)
+        main(807)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')

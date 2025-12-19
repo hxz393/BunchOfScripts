@@ -503,6 +503,7 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     file_info["codec"] = file_info["codec"][:49]
     file_info["codec"] = file_info["codec"].replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
     file_info["codec"] = file_info["codec"].replace("VOLOHEVC", "hevc").replace("ATEME Titan File", "hevc").replace("ATEME Titan KFE", "hevc")
+    file_info["codec"] = file_info["codec"].replace("x264pro - Adobe CS Exporter Plug-in", "x264")
 
     # 比特率，mkv 获取不到，改为获取总比特率
     bit_rate_bps = video_stream.get("bit_rate")
@@ -786,7 +787,9 @@ def check_movie(path: str) -> Optional[str]:
     # 检查其他字段信息
     for k, v in movie_info.items():
         if not v:
-            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb", "release_group", "filename"]:  # 能为空的字段
+            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment",
+                         "poster_path", "runtime_tmdb", "runtime_imdb", "release_group",
+                         "filename", "version", "dvhdr", "publisher", "pubdate"]:  # 能为空的字段
                 logger.warning(f"{p.name} 缺少字段信息：{k}")
 
     # 查找多余目录

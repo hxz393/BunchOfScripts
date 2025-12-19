@@ -61,15 +61,17 @@ MOVIES_INSERT_SQL = """
                 director, year, original_title, chinese_title, genres,
                 country, language, runtime, titles, directors,
                 tmdb, douban, imdb, source, quality, resolution,
-                codec, bitrate, duration, size, release_group, filename, dl_link, comment,
-                created_at, updated_at
+                codec, bitrate, duration, size, release_group, filename, version,
+                publisher, pubdate, dvhdr, audio, subtitle,
+                dl_link, comment, created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
-                %s
+                %s, %s, %s, %s, %s, 
+                %s, %s
             )
         """
 MOVIES_SEARCH_SQL = "SELECT resolution, bitrate, size, tmdb, douban, imdb FROM movies WHERE id = %s"
@@ -168,6 +170,12 @@ def sort_movie_mysql(path: str) -> None:
         merged_dict['size'],
         merged_dict['release_group'],
         merged_dict['filename'],
+        merged_dict['version'],
+        merged_dict['publisher'],
+        merged_dict['pubdate'],
+        merged_dict['dvhdr'],
+        merged_dict['audio'],
+        merged_dict['subtitle'],
         merged_dict['dl_link'],
         merged_dict['comment']
     )

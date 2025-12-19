@@ -62,6 +62,12 @@ def sort_movie(path: str, tv: bool = False) -> None:
             "poster_path": "",
             "titles": [],
             "directors": [],
+            "version": "",
+            "publisher": "",
+            "pubdate": "",
+            "dvhdr": "",
+            "audio": "未知",
+            "subtitle": "未知",
             "comment": None
         }
 
