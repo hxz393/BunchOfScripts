@@ -118,29 +118,26 @@ def get_imdb_director(movie_id: str, director_main: str) -> Optional[str]:
     """
     m = get_imdb_movie_details(movie_id)
     if not m:
+        logger.error(f"imdb 解析失败！{movie_id} {director_main}")
         return
 
     # 获取导演列表，这个结构有点特别，需要分步处理
-    directors_list = safe_get(
+    principal_credits = safe_get(
         m,
-        ["props", "pageProps", "aboveTheFoldData", "directorsPageTitle"],
+        ["props", "pageProps", "aboveTheFoldData", "principalCreditsV2"],
         default=[]
     )
-    if len(directors_list) > 1:
-        logger.error(f"导演列表有多个元素：{directors_list}")
-        sys.exit(1)
-    first_item = directors_list[0] if directors_list else {}
-    credits_list = safe_get(first_item, ["credits"], default=[])
-
-    # 提取列表中的导演和编号
+    # 查找导演并提取名字
     directors = []
-    for credit in credits_list:
-        name = safe_get(credit, ["name", "nameText", "text"], default="")
-        nm_id = safe_get(credit, ["name", "id"], default="")
-        directors.append({
-            "name": name,
-            "link": f"{IMDB_PERSON_URL}/{nm_id}"
-        })
+    for group in principal_credits:
+        if safe_get(group, ["grouping", "text"]) == "Director" or safe_get(group, ["grouping", "text"]) == "Directors":
+            for credit in safe_get(group, ["credits"], default=[]):
+                name = safe_get(credit, ["name", "nameText", "text"])
+                nm_id = safe_get(credit, ["name", "id"])
+                directors.append({
+                    "name": name,
+                    "link": f"{IMDB_PERSON_URL}/{nm_id}"
+                })
 
     # 尝试匹配传入的导演主名字，匹配到了就返回
     for d in directors:

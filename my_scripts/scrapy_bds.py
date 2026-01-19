@@ -59,6 +59,7 @@ def scrapy_bds(start_page: int = 1, end_time: str = "2020-09-21") -> None:
     for group_name, group_id in GROUP_DICT.items():
         # 一次一个栏目
         all_results = []
+        start_page = 1
         while True:
             logger.info(f"爬取栏目 {group_name} ，爬取页面 {start_page} …")
             results, stop = parse_forum_page(group_id, start_page, stop_date)
@@ -83,7 +84,7 @@ def scrapy_bds(start_page: int = 1, end_time: str = "2020-09-21") -> None:
         #     tt = read_thread(item)
         logger.info("-" * 255)
         logger.info(f"总共 {len(all_results)} 个帖子")
-        process_all(all_results, max_workers=5)
+        process_all(all_results, max_workers=6)
         logger.info("-" * 255)
 
 
@@ -177,7 +178,7 @@ def parse_forum_page(group_id, start_page, stop_time):
                     "link": full_link,
                     "date": date_str
                 })
-            else:  # 判断是否达到停止条件
+            elif start_page != 1:  # 判断是否达到停止条件
                 stop = True
         else:
             result_list.append({

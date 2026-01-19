@@ -488,8 +488,14 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     codec_tag_string = video_stream.get("codec_tag_string", "未知编码器")
     codec_name = video_stream.get("codec_name", "未知编码器")
     codec_detail = check_video_codec(filepath)
-    not_allow_codec = ["mpeg-4 visual"]
-    if codec_detail and codec_detail not in not_allow_codec:
+    not_allow_codec = ["mpeg-4 visual", "mpeg video",
+                       "Vimeo Encoder", "Zencoder Video Encoding System",
+                       "VOLOHEVC", "ATEME Titan File", "ATEME Titan KFE",
+                       "x264pro - Adobe CS Exporter Plug-in",
+                       "TMPGEnc", "TMPGEnc MPEG Editor", "TMPGEnc XPress",
+                       ]
+    not_allow_codec_short = ["Womble", "TMPGEnc"]
+    if codec_detail and codec_detail not in not_allow_codec and not any([x in codec_detail for x in not_allow_codec_short]):
         file_info["codec"] = codec_detail
     elif codec_tag_string.startswith("["):
         file_info["codec"] = codec_name
@@ -500,9 +506,9 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         file_info["codec"] = "DivX"
     elif file_info["codec"].lower() == "xvid":
         file_info["codec"] = "XviD"
+    elif file_info["codec"].lower() == "mpeg2video":
+        file_info["codec"] = "mpeg2"
     file_info["codec"] = file_info["codec"][:49]
-    file_info["codec"] = file_info["codec"].replace("Vimeo Encoder", "avc").replace("Zencoder Video Encoding System", "avc")
-    file_info["codec"] = file_info["codec"].replace("VOLOHEVC", "hevc").replace("ATEME Titan File", "hevc").replace("ATEME Titan KFE", "hevc")
     file_info["codec"] = file_info["codec"].replace("x264pro - Adobe CS Exporter Plug-in", "x264")
 
     # 比特率，mkv 获取不到，改为获取总比特率
@@ -529,6 +535,15 @@ def extract_video_info(filepath: str) -> Optional[dict]:
         if re.search(pattern, filepath):
             file_info["source"] = source
             break
+    # 额外处理
+    if "blu-ray remux" in filename.lower().replace(".", ' '):
+        file_info["source"] = "BDRemux"
+    elif "bluray remux" in filename.lower().replace(".", ' '):
+        file_info["source"] = "BDRemux"
+    elif "blu-ray" in filename.lower():
+        file_info["source"] = "BluRay"
+    elif "webdl" in filename.lower():
+        file_info["source"] = "WEB-DL"
 
     # 发布组
     # from sort_movie_mysql import check_rls_grp, create_conn

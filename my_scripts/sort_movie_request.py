@@ -38,6 +38,8 @@ TMDB_IMAGE_URL = CONFIG['tmdb_image_url']  # tmdb 图片地址
 IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
 IMDB_PERSON_URL = CONFIG['imdb_person_url']  # imdb 导演地址
 IMDB_HEADER = CONFIG['imdb_header']  # imdb 请求头
+IMDB_COOKIE = CONFIG['imdb_cookie']  # imdbcookie
+IMDB_HEADER['Cookie'] = IMDB_COOKIE  # 请求头加入认证
 
 DOUBAN_HEADER = CONFIG['douban_header']  # 豆瓣请求头
 DOUBAN_COOKIE = CONFIG['douban_cookie']  # 豆瓣cookie
@@ -164,6 +166,7 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:
         logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
+        print(response.text)
         return
     return response
 
@@ -261,7 +264,7 @@ def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
         h4 = block.find('h4')
         if not h4:
             break
-        if 'Režie' in h4.get_text():
+        if 'Režie' or 'Directed' in h4.get_text():
             a = block.find('a', href=True)
             director = a.get_text(strip=True) if a else ""
             break

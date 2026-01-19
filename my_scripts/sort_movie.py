@@ -48,7 +48,8 @@ def sort_movie(path: str, tv: bool = False) -> None:
     tv = True if movie_ids["tmdb"] and movie_ids["tmdb"].find('tv') != -1 else False
     if local_only:
         logger.warning("本地三无信息处理模式")
-        movie_info = read_json_to_dict(movie_info_file)
+        # movie_info = read_json_to_dict(movie_info_file)
+        return
     else:
         movie_info = {
             "director": "",
@@ -189,6 +190,7 @@ def get_imdb_movie_info(movie_id: str, movie_info: dict) -> None:
     """
     m = get_imdb_movie_details(movie_id)
     if not m:
+        logger.error(f"imdb 解析失败！{movie_id}")
         return
 
     # 解析 JSON 数据，用到一个辅助函数，防止解析异常
@@ -241,28 +243,23 @@ def get_imdb_movie_info(movie_id: str, movie_info: dict) -> None:
     ]
     movie_info["language"].extend(languages)
 
-    # 获取导演列表，这个结构有点特别，需要分步处理
-    # 1.获取 directorsPageTitle ，结果为一个列表
-    directors_list = safe_get(
+    # 获取导演列表
+    principal_credits = safe_get(
         m,
-        ["props", "pageProps", "aboveTheFoldData", "directorsPageTitle"],
+        ["props", "pageProps", "aboveTheFoldData", "principalCreditsV2"],
         default=[]
     )
-    # 2.directors_list 可能是空列表，也可能有多个元素。遇见多个元素开眼看看
-    if len(directors_list) > 1:
-        logger.error(f"导演列表有多个元素：{directors_list}")
-        sys.exit(1)
-    # 3.如果列表不为空，则取第一个元素，否则用空字典
-    first_item = directors_list[0] if directors_list else {}
-    # 4.在 first_item 中安全获取 credits
-    credits_list = safe_get(first_item, ["credits"], default=[])
-    # 5.提取导演名称，用列表装多个
-    directors = [
-        safe_get(credit, ["name", "nameText", "text"], default="")
-        for credit in credits_list
-    ]
+    # 查找导演并提取名字
+    directors_list = []
+    for group in principal_credits:
+        if safe_get(group, ["grouping", "text"]) == "Director" or safe_get(group, ["grouping", "text"]) == "Directors":
+            for credit in safe_get(group, ["credits"], default=[]):
+                director = safe_get(credit, ["name", "nameText", "text"])
+                if director:
+                    directors_list.append(director)
+            break  # 找到导演后可以退出循环
     # 6.最后把结果合并到 movie_info 里
-    movie_info["directors"].extend(directors)
+    movie_info["directors"].extend(directors_list)
 
 
 def get_douban_movie_info(movie_id: str, movie_info: dict) -> None:

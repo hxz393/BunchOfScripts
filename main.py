@@ -130,8 +130,9 @@ def main(chosen: int) -> None:
             logger.info(r"手动检查 yts 目录，处理后移动到 yts—old")
             logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本：")
             js = """
-const results = Array.from(document.querySelectorAll('a.EntryTitleLink')).map(article => (article.href)).join('\n');
-copy(results); // 用于 feedly 阅读器提取
+const links = Array.from(document.querySelectorAll('a.EntryTitleLink')).map(article => article.href);
+console.log(`用于 feedly 阅读器提取链接，总计 ${links.length} 条地址`);
+copy(links.join('\n'));
             """
             logger.info(js)
             logger.info("=" * 255)
@@ -160,6 +161,7 @@ copy(results); // 用于 feedly 阅读器提取
             logger.info("=" * 255)
         case 605:
             logger.info(r"抓取 dhd 信息，自动将新帖子保存到：B:\0.整理\BT\dhd")
+            logger.info(r"先更新 cookie")
             logger.info(r"自动转换 dhd 文件，抓取磁力链接")
             logger.info(r"手动检查 dhd 目录，处理后移动到 dhd—old")
             logger.info("=" * 255)
@@ -171,15 +173,16 @@ copy(results); // 用于 feedly 阅读器提取
             logger.info("=" * 255)
         case 606:
             logger.info(r"抓取 sk 信息，自动将新帖子保存到：B:\0.整理\BT\sk")
+            logger.info(r"先更新 sk 和 csfd 站点 cookie")
             logger.info(r"完成后手动更新 end_data")
             logger.info(r"检查 sk 目录，处理后移动到 sk—old")
             logger.info("=" * 255)
             from scrapy_sk import scrapy_sk
-            scrapy_sk(start_page=0,end_data="23/11/2025")
+            scrapy_sk(start_page=0,end_data="24/12/2025")
             logger.info("=" * 255)
         case 607:
             logger.info(r"抓取 rare 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
-            logger.info(r"来源文档一行一个链接，可以混合")
+            logger.info(r"来源文档一行一个链接，可以混合 4 站点")
             logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本参考 yts")
             logger.info("=" * 255)
             from scrapy_rare import scrapy_rare
@@ -192,15 +195,16 @@ copy(results); // 用于 feedly 阅读器提取
             logger.info(r"开始前手动更新 end_url，找没有更新的发布。结束后记录位置")
             logger.info(r"检查 rare 目录，处理后移动到 rare—old")
             """
-11.25
-Train Dreams Nov. 05, 2025
-BlackJack: In the Money Sep. 11, 2005
-Romancero marroquí Jul. 16, 1939
-Kurelek Jan. 01, 1967
+12.25
+Wake of the Red Witch Dec. 30, 1948
+A Big Bold Beautiful Journey Sep. 17, 2025
+Backfire Jun. 21, 1988
+Princess Arete Aug. 01, 2001
+Dikkenek Jun. 21, 2006
             """
             logger.info("=" * 255)
             from scrapy_mp import scrapy_mp
-            scrapy_mp(start_page=2, end="romancero-marroqui")
+            scrapy_mp(start_page=2, end="princess-arete")
             logger.info("=" * 255)
         case 609:
             logger.info(r"搜索数据库，将已整理过的导演种子找出来")
@@ -215,35 +219,36 @@ Kurelek Jan. 01, 1967
             logger.info(r"完成后手动更新 end_title")
             logger.info("=" * 255)
             from scrapy_hde import scrapy_hde
-            scrapy_hde(start_page=2,end_title="The.Family.Plan.2023.2160p.ATVP.WEB-DL.DDPA.5.1.H.265-PiRaTeS – 17.3 GB")
+            scrapy_hde(start_page=2,end_title="RTE.Sport.Awards.2025.1080p.WEB.H264-CBFM – 4.1 GB")
             logger.info("=" * 255)
         case 611:
             logger.info(r"抓取 rlsbb 信息，自动将新发布保存到：B:\0.整理\BT\rls")
-            logger.info(r"完成后手动更新 end_title")
+            logger.info(r"完成后手动更新 end_title") #
             logger.info("=" * 255)
             from scrapy_rls import scrapy_rls
-            # scrapy_rls(start_page=2, f_mode=True, end_title="Agents Un Peu Trop Secrets 2025 720p WEBRip x264-YIFY (856MB)")
-            # scrapy_rls(start_page=2, f_mode=False, end_title="Baby Blue 2023 1080P BLURAY H262-UNDERTAKERS (13.6GB)")
+            # scrapy_rls(start_page=2, f_mode=True, end_title="The Real Sister 2024 WEB Vietnamese H264-RBB (851MB)")
+            # scrapy_rls(start_page=2, f_mode=False, end_title="Popeye The Slayer Man 2025 INTERNAL 1080p BluRay x264-Replica (8.54GB)")
             logger.info("=" * 255)
         case 612:
             logger.info(r"抓取 sc 信息，将新链接丢如 jd 中去抓取")
             """
             https://softcore-index.info/
-            11-26
-            Angel 2: Dominatrix of Mystery (1997)
-            Angel: I’ll Be Your First (1997)
-            Chikan densha: Kuikomi yume (dream) match (2019) HD
-            Groper Train: Lewd Course is Full of Dreams (2016) HD
+            12-25
+            Aliwan Inn (2025) HD
+            Newaza Gal: Straight From Behind (1987)
+            Gen’eki Joshidaisei: Kahanshin Focus (1986)
+            Kai neko (2016) HD
             """
         case 613:
-            logger.info(r"抓取 hde 信息，自动将新发布保存到：B:\0.整理\BT\rls")
+            logger.info(r"抓取 bds 信息，自动将新发布保存到：B:\0.整理\BT\bds")
+            logger.info(r"需要手动更新 cookie")
             logger.info(r"完成后手动更新 end_time")
             """
 const titles = Array.from(document.querySelectorAll('div.file-name')).map(div => div.getAttribute('title')).join('\n');   // 一行一个
 copy(titles); // 复制115文件列表到剪切板
             """
             from scrapy_bds import scrapy_bds
-            scrapy_bds(start_page=1,end_time="2025-12-07")
+            scrapy_bds(start_page=1,end_time="2025-12-24") #
             logger.info("=" * 255)
         case 614:
             logger.info(r"抓取 mt 信息，自动将新帖子保存到：B:\0.整理\BT\mt")
@@ -251,7 +256,19 @@ copy(titles); // 复制115文件列表到剪切板
             logger.info(r"完成后手动更新 start_time 和 end_time")
             logger.info("=" * 255)
             from scrapy_mt import scrapy_mt
-            scrapy_mt(start_time="2025-12-17", end_time="2025-12-18")
+            scrapy_mt(start_time="2025-12-17", end_time="2025-12-25")
+            logger.info("=" * 255)
+        case 615:
+            logger.info(r"抓取 onk 信息，自动将新发布保存到：B:\0.整理\BT\onk")
+            logger.info(r"完成后手动更新 end_time")
+            from scrapy_onk import scrapy_onk
+            scrapy_onk(start_page=1, end_time="2026-01-16")
+            logger.info("=" * 255)
+        case 616:
+            logger.info(r"抓取 dlb 信息，自动将新发布保存到：B:\0.整理\BT\dlb")
+            logger.info(r"完成后手动更新 end_title")
+            from scrapy_dlb import scrapy_dlb
+            scrapy_dlb(start_page=200, end_title="2024-01-15")
             logger.info("=" * 255)
 
         case 701:
@@ -506,15 +523,28 @@ def temp(m_path):
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-ERROR: https://yts.lt/movies/screamboat-2025
+ERROR: https://yts.lt/movies/frontline-2025
+ERROR: https://yts.lt/movies/the-dam-2025
+ERROR: https://yts.lt/movies/perrengue-fashion-2025
+ERROR: https://yts.lt/movies/the-lost-chapter-yukis-revenge-2025
+ERROR: https://yts.lt/movies/lali-la-que-le-gana-al-tiempo-2025
+ERROR: https://yts.lt/movies/predator-badlands-2025
+ERROR: https://yts.lt/movies/zamach-na-papieza-2025
+ERROR: https://yts.lt/movies/sore-wife-from-the-future-2025
+ERROR: https://yts.lt/movies/wake-up-dead-man-a-knives-out-mystery-2025
+ERROR: https://yts.lt/movies/verliefd-op-bali-2024
+ERROR: https://yts.lt/movies/dashing-through-the-snow-2025
+ERROR: https://yts.lt/movies/london-has-fallen-2016
+ERROR: https://yts.lt/movies/ohryis-project-2025
 ERROR: https://yts.lt/movies/denial-1998
 ERROR: https://yts.lt/movies/mike-and-dave-need-wedding-dates-2016
+ERROR: https://yts.lt/movies/screamboat-2025
 ERROR: https://yts.lt/movies/small-soldiers-1998
 ERROR: https://yts.lt/movies/iconic-2024
-ERROR: https://yts.lt/movies/the-sundowners-1960
-ERROR: https://yts.lt/movies/sometimes-i-think-about-dying-2023
 ERROR: https://yts.lt/movies/vivacious-lady-1938
 ERROR: https://yts.lt/movies/the-room-next-door-2024
+ERROR: https://yts.lt/movies/the-sundowners-1960
+ERROR: https://yts.lt/movies/sometimes-i-think-about-dying-2023
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -528,7 +558,7 @@ ERROR: https://yts.lt/movies/the-room-next-door-2024
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
-        main(807)
+        main(616)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')
