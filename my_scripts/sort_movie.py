@@ -334,6 +334,7 @@ def get_douban_movie_info(movie_id: str, movie_info: dict) -> None:
     aka_tag = info_div.find("span", class_="pl", string="又名:")
     if aka_tag and aka_tag.next_sibling:
         aka_name = aka_tag.next_sibling.strip()
+        aka_name = aka_name.replace("(港/台)", '')
         aka_names = aka_name.split("/")
         alias = [fix_douban_name(name) for name in aka_names]
         movie_info["titles"].extend(alias)

@@ -21,6 +21,8 @@ from bs4 import BeautifulSoup
 from retrying import retry
 from tmdbv3api import TMDb, Movie, TV, Person
 from tmdbv3api.as_obj import AsObj
+from tmdbv3api.exceptions import TMDbException
+from playwright.sync_api import sync_playwright
 
 from my_module import read_json_to_dict
 
@@ -58,6 +60,13 @@ KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
 
 JACKETT_SEARCH_URL = CONFIG['jackett_search_url']  # jackett 搜索地址
 JACKETT_API_KEY = CONFIG['jackett_api_key']  # jackett api 密钥
+
+
+import time
+
+# 缓存变量
+_last_cookie_time = 0
+_cached_cookie = None
 
 TMDB = TMDb()
 TMDB.api_key = TMDB_KEY
@@ -98,6 +107,15 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
             logger.info("获取 {movie_id} 电影信息失败，重试")
             raise Exception("从 TMDB 获取电影信息失败")
         return result
+    except TMDbException as e:
+        # 处理 TMDB API 抛出的特定异常
+        error_msg = str(e)
+        if "could not be found" in error_msg.lower():
+            logger.warning(f"TMDB 没有记录 {movie_id}")
+            return None
+        # 其他 TMDB 错误也返回 None
+        logger.warning(f"TMDB 查询失败 {movie_id}: {error_msg}")
+        return None
     except Exception as e:
         raise Exception(f"查询 TMDB 失败：{e}")
 
@@ -153,7 +171,59 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
         raise Exception(f"封面下载失败 {image_url}")
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
+def get_imdb_cookie():
+    """模拟浏览器的方式获取 IMDB Cookie"""
+    global _last_cookie_time, _cached_cookie
+    now = time.time()
+
+    # 如果缓存存在且未超过5分钟，直接返回缓存的cookie
+    if _cached_cookie is not None and (now - _last_cookie_time) < 300:
+        return _cached_cookie
+    logger.warning("更新 IMDB Cookie")
+
+    # 否则重新获取
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            channel="chrome",
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-web-security',
+                '--disable-gpu',
+            ]
+        )
+        context = browser.new_context(
+            viewport={'width': 1280, 'height': 800},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
+        """)
+
+        page = context.new_page()
+        try:
+            page.goto("https://www.imdb.com/title/tt0759924/", wait_until="domcontentloaded")
+            page.wait_for_selector('#suggestion-search', timeout=15000)
+        except Exception as e:
+            logger.error(f"等待搜索框超时或失败: {e}")
+            browser.close()
+            raise e
+        cookies = context.cookies()
+        browser.close()
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+
+    # 更新缓存
+    _cached_cookie = cookie_str
+    _last_cookie_time = now
+    return cookie_str
+
+
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000, retry_on_exception=lambda e: isinstance(e, requests.RequestException))
 def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取电影信息，返回结果供解析
@@ -163,15 +233,16 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     """
     logger.info(f"查询 IMDB：{movie_id}")
     url = f"{IMDB_MOVIE_URL}/{movie_id}/"
+    cookie_dict = get_imdb_cookie()
+    IMDB_HEADER['Cookie'] = cookie_dict  # 请求头加入认证
     response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:
         logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
-        print(response.text)
-        return
+        sys.exit(f"被墙了 {response.status_code}：{url}")
     return response
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
+@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000, retry_on_exception=lambda e: isinstance(e, requests.RequestException))
 def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     """
     从 IMDB 获取导演信息，返回结果供解析
@@ -180,10 +251,12 @@ def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     :return: 成功时返回响应
     """
     url = f"{IMDB_PERSON_URL}/{director_id}/"
+    cookie_dict = get_imdb_cookie()
+    IMDB_HEADER['Cookie'] = cookie_dict  # 请求头加入认证
     response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:
         logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
-        return
+        sys.exit(f"被墙了 {response.status_code}：{url}")
     return response
 
 

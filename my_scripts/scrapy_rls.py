@@ -8,6 +8,7 @@
 import logging
 import os
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -24,7 +25,11 @@ CONFIG_PATH = 'config/scrapy_rls.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 
 RLS_URL = CONFIG['rls_url']  # rlsbb 地址
+RLS_COOKIE = CONFIG['rls_cookie']  # 用户甜甜
+REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+
+REQUEST_HEAD["Cookie"] = RLS_COOKIE  # 请求头加入认证
 
 
 def scrapy_rls(start_page: int = 1, f_mode=True, end_title="The Gangster The Cop The Devil 2019 HDRip AC3 X264-CMRG (1.35GB)") -> None:
@@ -87,9 +92,11 @@ def process_all(result_list, max_workers=5):
 @retry(stop_max_attempt_number=150, wait_random_min=1000, wait_random_max=10000)
 def get_rls_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, timeout=35)
+    response = requests.get(url, timeout=35, headers=REQUEST_HEAD)
     response.encoding = 'utf-8'
-    if response.status_code != 200:
+    if response.status_code == 403:
+        sys.exit(f"被墙了 {response.status_code}：{url}")
+    elif response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
 
     return response

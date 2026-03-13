@@ -9,14 +9,22 @@ import datetime
 import logging
 import os
 import re
+import logging
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict
 
+import requests
+from bs4 import BeautifulSoup
+from retrying import retry
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util.retry import Retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, read_file_to_list
 
 CONFIG_PATH = 'config/scrapy_onk.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -168,7 +176,7 @@ def parse_forum_page(group_id, start_page, stop_time):
     return results, stop
 
 
-@retry(stop_max_attempt_number=15, wait_random_min=15000, wait_random_max=20000)
+@retry(stop_max_attempt_number=5, wait_random_min=15000, wait_random_max=20000)
 def get_onk_response(url: str) -> requests.Response:
     """请求流程"""
     logger.info(f"访问 {url}")
@@ -183,3 +191,85 @@ def get_onk_response(url: str) -> requests.Response:
         raise Exception(f"请求被封锁")
 
     return response
+
+
+def fix_onk_imdb():
+    """修复没有 imdb 编号的 onk 文件名"""
+    fix_list = []
+    # 先获取所有待修复的文件名和链接
+    for i in os.listdir(OUTPUT_DIR):
+        if "[].onk" in i:
+            file_path = os.path.join(OUTPUT_DIR, i)
+            url = read_file_to_list(file_path)[0]
+            fix_list.append({"file_path": file_path, "url": url})
+
+    # for fix_item in fix_list:
+    #     visit_onk_url(fix_item)
+    # return
+
+    process_all(fix_list, max_workers=10)
+
+
+def process_all(result_list, max_workers=5):
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_item = {
+            executor.submit(visit_onk_url, item): item
+            for item in result_list
+        }
+        # 按完成顺序收集结果或捕获异常
+        for future in as_completed(future_to_item):
+            item = future_to_item[future]
+            try:
+                ret = future.result()
+            except Exception as exc:
+                logger.error(f"[ERROR] {item} -> {exc!r}")
+            else:
+                results.append(ret)
+    return results
+
+
+def visit_onk_url(result_item: dict):
+    """访问详情页"""
+    url = result_item["url"]
+    response = get_onk_response(url)
+    soup = BeautifulSoup(response.text, 'lxml')
+
+    imdb_id = ""
+    file_path = result_item["file_path"]
+    main_div = soup.find('div', class_='message-cell message-cell--main')
+
+    if main_div:
+        # 提取 div 内所有文本
+        # text = main_div.get_text(" ", strip=True)
+        text = main_div.getText()
+        # 在文本里找所有 tt 编号
+        ids = re.findall(r"\btt\d+\b", text)
+        # 去重
+        ids = list(set(ids))
+        if len(ids) == 1:
+            imdb_id = ids[0]
+        elif len(ids) > 1:
+            logger.warning(f"{file_path} 找到多个 IMDB ID: {ids}。")
+            return
+        else:
+            logger.warning("未找到任何 IMDB ID")
+    else:
+        logger.error(f"无法获取帖子内容: {url}")
+        return
+
+    # 修改文件名
+    if imdb_id:
+        new_file_path = file_path.replace("[].onk", f"[{imdb_id}].onk")
+        logger.info(f"{file_path} -> {new_file_path}")
+    else:
+        new_file_path = file_path.replace("[].onk", f"[无].onk")
+        logger.warning(f"无法获取 {os.path.basename(file_path)} 的 imdb 编号")
+
+    if os.path.exists(new_file_path):
+        os.remove(file_path)
+    else:
+        os.rename(file_path, new_file_path)
+    logger.info("=" * 250)
+

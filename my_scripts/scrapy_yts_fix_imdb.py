@@ -20,11 +20,13 @@ from sort_movie_request import get_tmdb_movie_details
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
-CONFIG = read_json_to_dict('config/scrapy_yts_fix_imdb.json')  # 配置文件
+CONFIG = read_json_to_dict('config/sort_movie.json')  # 配置文件
 
-FILE_PATH = CONFIG['file_path']  # json 文件储存路径
-HEADER_IMDB = CONFIG['header_imdb']  # IMDB 请求头
-BASE_URL = CONFIG['base_url']  # 搜索地址
+FILE_PATH = CONFIG['yts_file_path']  # json 文件储存路径
+HEADER_IMDB = CONFIG['imdb_header']  # IMDB 请求头
+BASE_URL = CONFIG['imdb_movie_url']  # 搜索地址
+IMDB_COOKIE = CONFIG['imdb_cookie']  # imdb cookie
+HEADER_IMDB['Cookie'] = IMDB_COOKIE  # 请求头加入认证
 
 
 def scrapy_yts_fix_imdb() -> None:

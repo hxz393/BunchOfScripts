@@ -323,6 +323,7 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     movie_dict = movie_info | movie_ids | file_info
     movie_dict["director"] = Path(path).parent.name
     movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'").replace("  ", " ")
+    movie_dict["titles"] = [re.sub(r'\s+', ' ', title.strip()).replace("　", " ") for title in movie_dict["titles"]]
     movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob('*') if file.is_file()) / (1024 * 1024))
     movie_dict["dl_link"] = get_dl_link(path)
     movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
@@ -493,8 +494,9 @@ def extract_video_info(filepath: str) -> Optional[dict]:
                        "VOLOHEVC", "ATEME Titan File", "ATEME Titan KFE",
                        "x264pro - Adobe CS Exporter Plug-in",
                        "TMPGEnc", "TMPGEnc MPEG Editor", "TMPGEnc XPress",
+                       "Created by Nero",
                        ]
-    not_allow_codec_short = ["Womble", "TMPGEnc"]
+    not_allow_codec_short = ["Womble", "TMPGEnc", "HCenc"]
     if codec_detail and codec_detail not in not_allow_codec and not any([x in codec_detail for x in not_allow_codec_short]):
         file_info["codec"] = codec_detail
     elif codec_tag_string.startswith("["):
@@ -536,9 +538,11 @@ def extract_video_info(filepath: str) -> Optional[dict]:
             file_info["source"] = source
             break
     # 额外处理
-    if "blu-ray remux" in filename.lower().replace(".", ' '):
+    if "blu-ray" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
         file_info["source"] = "BDRemux"
-    elif "bluray remux" in filename.lower().replace(".", ' '):
+    elif "bluray" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
+        file_info["source"] = "BDRemux"
+    elif "bd" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
         file_info["source"] = "BDRemux"
     elif "blu-ray" in filename.lower():
         file_info["source"] = "BluRay"
