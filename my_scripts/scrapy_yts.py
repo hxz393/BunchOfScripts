@@ -30,6 +30,31 @@ THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 API_PATH = CONFIG['api_path']  # api 请求地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 
+HEADERS = {
+    "Host": "yts.bz",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,pt;q=0.5",
+    "Cache-Control": "max-age=0",
+    "Cookie": "PHPSESSID=ku5km3g13iodpaveu989vnh1he; cf_clearance=CD9YIsV4Qu16MSD6D5zfb7BG6pjFWkh7la.dcQ2HdW4-1774403203-1.2.1.1-AkOCuEZZ9f2pd4K_fq1FCvqgD7o8SHb4Zt.1HYrlGjqJ3zxyY.QT_CIqJERH0h8eI.8QIzrWi_4h2UIxdbgVktALHmJfGUHNe3B9vYaor7qGMms44BXolym0vvP2SbggSm91Qn6tOBQnbQpIvmSVEBYAi.BU06SggNi_K7pN45rsDCwTzS6QDt0DNpUSOQ1bMS8Cdce6CRE4FkyBoIZkb0fSiWrkg2SooRLXq0Oec4AiXLHJlVn49oBlLtEFvGGg",
+    "DNT": "1",
+    "Priority": "u=0, i",
+    "Sec-Ch-Ua": '"Not:A-Brand";v="99", "Microsoft Edge";v="145", "Chromium";v="145"',
+    "Sec-Ch-Ua-Arch": '"x86"',
+    "Sec-Ch-Ua-Bitness": '"64"',
+    "Sec-Ch-Ua-Full-Version": '"145.0.3800.97"',
+    "Sec-Ch-Ua-Full-Version-List": '"Not:A-Brand";v="99.0.0.0", "Microsoft Edge";v="145.0.3800.97", "Chromium";v="145.0.7632.160"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Model": '""',
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Ch-Ua-Platform-Version": '"10.0.0"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0"
+}
 
 def scrapy_yts(url_path: str) -> None:
     """
@@ -88,7 +113,7 @@ def yts_login(session: requests.Session) -> bool:
         "username": YTS_USER,
         "password": YTS_PASS
     }
-    response = session.post(login_endpoint, data=data)
+    response = session.post(login_endpoint, headers=HEADERS, data=data)
     # 登录成功时，返回内容通常为 "Ok."
     if response.json()["status"] == "ok":
         logger.info("yts: 登录成功。")
@@ -108,7 +133,7 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
     :return: json 返回数据
     """
     # 访问网页，获取电影 ID
-    r2 = session.get(link, verify=False)
+    r2 = session.get(link, headers=HEADERS, verify=False)
     tree = etree.HTML(r2.text)
     movie_id = tree.xpath('//div[@id="movie-info"]/@data-movie-id')
     if not movie_id:
@@ -125,7 +150,7 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
 
     # 向 API 发送请求，获取响应，返回最终数据
     api_url = f"{YTS_URL}/{API_PATH}{movie_id[0]}"
-    r1 = session.get(api_url, verify=False)
+    r1 = session.get(api_url, headers=HEADERS, verify=False)
     movie_detail = r1.json()
     # api 请求的数据有可能滞后，获取不到
     if not movie_detail['data']['movie']['id']:

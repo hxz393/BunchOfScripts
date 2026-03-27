@@ -36,7 +36,6 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
     抓取发布信息写入到文件。
     """
     logger.info("抓取 mp 站点发布信息")
-    end_url = f"{MP_URL}movies/{end}/"
     while True:
         # 请求 mp 主页
         logger.info(f"抓取第 {start_page} 页")
@@ -48,7 +47,9 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
         process_all(result_list, max_workers=20)
 
         # 检查帖子
-        if end_url in (result_item['link'] for result_item in result_list):
+        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end)
+
+        if all_exist:
             logger.info("没有新发布，完成")
             break
 

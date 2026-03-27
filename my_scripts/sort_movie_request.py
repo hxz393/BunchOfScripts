@@ -172,20 +172,22 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
 
 
 @retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
-def get_imdb_cookie():
+def get_imdb_cookie(force=False, hl=True):
     """模拟浏览器的方式获取 IMDB Cookie"""
     global _last_cookie_time, _cached_cookie
     now = time.time()
 
     # 如果缓存存在且未超过5分钟，直接返回缓存的cookie
-    if _cached_cookie is not None and (now - _last_cookie_time) < 300:
+    if force:
+        _cached_cookie = None
+    elif _cached_cookie is not None and (now - _last_cookie_time) < 300:
         return _cached_cookie
     logger.warning("更新 IMDB Cookie")
 
     # 否则重新获取
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,
+            headless=hl,
             channel="chrome",
             args=[
                 '--disable-blink-features=AutomationControlled',
@@ -251,7 +253,7 @@ def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
     :return: 成功时返回响应
     """
     url = f"{IMDB_PERSON_URL}/{director_id}/"
-    cookie_dict = get_imdb_cookie()
+    cookie_dict = get_imdb_cookie(force=True, hl=False)
     IMDB_HEADER['Cookie'] = cookie_dict  # 请求头加入认证
     response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
     if response.status_code != 200:

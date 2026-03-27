@@ -126,6 +126,7 @@ def main(chosen: int) -> None:
         case 602:
             logger.info(r"抓取 yts 链接，来源文档一行一个链接，需要自行去重")
             logger.info(r"自动将结果 json 文件保存到：B:\0.整理\BT\yts")
+            logger.info(r"有 CF 盾，需要手动更新 Cookie")
             logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本：")
             js = """
 const links = Array.from(document.querySelectorAll('a.EntryTitleLink')).map(article => article.href);
@@ -173,7 +174,7 @@ copy(links.join('\n'));
             logger.info(r"完成后手动更新 end_data")
             logger.info("=" * 255)
             from scrapy_sk import scrapy_sk
-            scrapy_sk(start_page=0,end_data="21/02/2026")
+            scrapy_sk(start_page=0,end_data="24/03/2026")
             logger.info("=" * 255)
         case 607:
             logger.info(r"抓取 rare 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
@@ -187,18 +188,19 @@ copy(links.join('\n'));
         case 608:
             logger.info(r"抓取 mp 站点信息，自动将新帖子保存到：B:\0.整理\BT\rare")
             logger.info(r"半个小时出现 403，手动过验证码，更新 Cookie")
-            logger.info(r"开始前检查 end_url，确保没有更新的发布。结束后手动更新记录 end")
+            logger.info(r"结束后，查找修改时间最早的靠谱文件名，手动更新记录 end_list")
             """
-2.22
-Law and Order 1932
-Invincible 2006
-Revolver 2024
-The Lovers 1958
-Weber: Der Freischütz 2024
             """
             logger.info("=" * 255)
             from scrapy_mp import scrapy_mp
-            scrapy_mp(start_page=2, end="law-and-order-2")
+            end_list = [
+                "Visions…(1972) - mp [tt0069465].rare",
+                "I Am Hooligan(2016) - mp [tt4717746].rare",
+                "Operation Dalmatian- The Big Adventure(1997) - mp [tt0200930].rare",
+                "Light Visions() - mp [tt8894778].rare",
+                "ODDSAC(2010) - mp [tt1560776].rare"
+            ]
+            scrapy_mp(start_page=2, end=end_list)
             logger.info("=" * 255)
         case 609:
             logger.info(r"搜索数据库，将已整理过的导演种子找出来")
@@ -213,7 +215,7 @@ Weber: Der Freischütz 2024
             logger.info(r"完成后手动更新 end_title")
             logger.info("=" * 255)
             from scrapy_hde import scrapy_hde
-            scrapy_hde(start_page=2,end_title="Invisible.Lies.2021.1080p.PCOK.WEB-DL.AAC.2.0.H.264-OnlyWeb – 3.8 GB")
+            scrapy_hde(start_page=2, end_title="Chateau.2024.1080p.WEB.H264-iTSHAUNTED – 1.8 GB")
             logger.info("=" * 255)
         case 611:
             logger.info(r"抓取 rlsbb 信息，自动将新发布保存到：B:\0.整理\BT\rls")
@@ -222,8 +224,8 @@ Weber: Der Freischütz 2024
             logger.info(r"需要抓取两轮") #
             logger.info("=" * 255)
             from scrapy_rls import scrapy_rls
-            # scrapy_rls(start_page=2, f_mode=True, end_title="Vermist 2007 WEB Dutch H264-RBB (707MB)")
-            # scrapy_rls(start_page=2, f_mode=False, end_title="How To Make A Killing 2026 720p TELESYNC x264-SyncUP (2.15GB)")
+            # scrapy_rls(start_page=2, f_mode=True, end_title="Tati Full-Time 2025 1080p NF WEB-DL DD+5 1 H 264-playWEB (4.11GB)")
+            # scrapy_rls(start_page=2, f_mode=False, end_title="Castration Movie Anthology I Traps 2024 720p WEB H264-NGP (5.28GB)")
             logger.info("=" * 255)
         case 612:
             logger.info(r"抓取 sc 信息，查看 RSS 阅读器，将新链接丢入 jd 中去抓取")
@@ -235,28 +237,29 @@ Weber: Der Freischütz 2024
             logger.info(r"需要手动更新 cookie")
             logger.info(r"完成后手动更新 end_time")
             from scrapy_bds import scrapy_bds
-            scrapy_bds(start_page=1,end_time="2026-02-21") #
+            scrapy_bds(start_page=1,end_time="2026-03-25") #
             logger.info("=" * 255)
         case 614:
             logger.info(r"抓取 mt 信息，自动将新帖子保存到：B:\0.整理\BT\mt")
-            logger.info(r"先手动更新 start_time 和 end_time")
+            logger.info(r"先人工访问更新 mt_auth，mt_sign 和 mt_time")
+            logger.info(r"再手动更新 start_time 和 end_time")
             logger.info("=" * 255)
             from scrapy_mt import scrapy_mt
-            scrapy_mt(start_time="2026-01-23", end_time="2026-02-22")
+            scrapy_mt(start_time="2026-02-22", end_time="2026-03-25")
             logger.info("=" * 255)
         case 615:
             logger.info(r"抓取 onk 信息，自动将新发布保存到：B:\0.整理\BT\onk")
             logger.info(r"需要手动更新 cookie")
-            logger.info(r"完成后手动更新 end_time")
+            logger.info(r"完成后手动更新 end_time:") #
             from scrapy_onk import scrapy_onk, fix_onk_imdb
-            scrapy_onk(start_page=1, end_time="2026-02-22")
+            scrapy_onk(start_page=1, end_time="2026-03-25")
             fix_onk_imdb()
             logger.info("=" * 255)
         case 616:
             logger.info(r"抓取 dlb 信息，自动将新发布保存到：B:\0.整理\BT\dlb")
-            logger.info(r"完成后手动更新 end_title")
+            logger.info(r"完成后手动更新 end_title:") #
             from scrapy_dlb import scrapy_dlb
-            scrapy_dlb(start_page=1, end_title="Un.mundo.maravilloso.2006.1080p.NF.WEB-DL.DD+5.1.H.264-playWEB")
+            scrapy_dlb(start_page=1, end_title="Dossier.137.2025.1080p.Blu-ray.Remux.AVC.DTS-HD.MA.5.1-HDT")
             logger.info("=" * 255)
 
         case 701:
@@ -268,7 +271,8 @@ Weber: Der Freischütz 2024
             from my_module import read_file_to_list
             source_file = r'config/!00.txt'
             get_ids(source_file)
-            sort_movie_director(read_file_to_list(source_file)[0])
+            director_info = {"country": [], "aka": []}
+            sort_movie_director(read_file_to_list(source_file)[0], director_info)
             logger.info("=" * 255)
         case 702:
             logger.info("从 ru 搜索电影种子信息，储存到目标目录")
@@ -474,23 +478,33 @@ Weber: Der Freischütz 2024
                 time.sleep(0.1)
         case 809:
             logger.info(r"提取电影目录的所有电影 id，并去数据库校验")
+            logger.info(r"校验视频是否都已经正确命名")
             logger.info(r"电影目录储存到 config/!00.txt 中")
             logger.info("=" * 255)
-            from sort_movie_ops import extract_movie_ids
+            from sort_movie_ops import extract_movie_ids, find_video_files, filter_video_files
             from my_module import read_file_to_list
             from sort_movie_mysql import check_movie_ids
             source_file = r'config/!00.txt'
             temp_list = read_file_to_list(source_file)
             id_list = extract_movie_ids(temp_list[0])
-            for i in id_list:
-                print(i)
             # 归档硬盘，检查是否都记录到数据库
             result_list = check_movie_ids(id_list)
             if not result_list:
-                print(f"共 {len(id_list)} 电影，已经全部记录")
-                return
-            for i in result_list:
-                print(i)
+                logger.info(f"共 {len(id_list)} 电影，已经全部记录")
+            else:
+                logger.error("发现没有记录的电影")
+                for i in result_list:
+                    logger.warning(i)
+            # 检查视频文件名是否正确
+            video_files = find_video_files(temp_list[0])
+            result_list = filter_video_files(video_files)
+            if not result_list:
+                logger.info(f"共 {len(video_files)} 个视频文件，命名全部正确")
+            else:
+                logger.error("发现错误文件名")
+                for i in result_list:
+                    logger.warning(i)
+
 
         case _:
             logger.warning("请输入有效编号")
@@ -511,24 +525,30 @@ def temp(m_path):
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-https://yts.bz/movies/a-chipmunk-christmas-1981
-https://yts.bz/movies/augurk-aan-zee-2025
-https://yts.bz/movies/die-schule-der-magischen-tiere-4-2025
-https://yts.bz/movies/drugi-dnevnik-pauline-p-2025
-https://yts.bz/movies/en-tongs-au-pied-de-lhimalaya-2024
-https://yts.bz/movies/je-navais-que-le-neant-shoah-par-lanzmann-2025
-https://yts.bz/movies/la-grazia-2025
-https://yts.bz/movies/lali-la-que-le-gana-al-tiempo-2025
-https://yts.bz/movies/london-has-fallen-2016
-https://yts.bz/movies/nachtvlinders-2025
-https://yts.bz/movies/persona-2026
-https://yts.bz/movies/prin-ochii-lor-2025
-https://yts.bz/movies/que-huevos-sofia-2025
-https://yts.bz/movies/qing-sheng-3-2025
-https://yts.bz/movies/the-love-doctor-2026
-https://yts.bz/movies/the-tiger-2-2025
-https://yts.bz/movies/wake-up-dead-man-a-knives-out-mystery-2025
-https://yts.bz/movies/zamach-na-papieza-2025
+ERROR: https://yts.bz/movies/los-aitas-2025
+ERROR: https://yts.bz/movies/vyprobuvalnyi-termin-2026
+ERROR: https://yts.bz/movies/murderlust-1985
+ERROR: https://yts.bz/movies/vacances-2022
+ERROR: https://yts.bz/movies/gore-2026
+ERROR: https://yts.bz/movies/glass-ceiling-1971
+ERROR: https://yts.bz/movies/a-beautiful-mind-2001
+ERROR: https://yts.bz/movies/fin-qui-tutto-bene-2025
+ERROR: https://yts.bz/movies/martin-luthur-king-jr-enemies-of-the-dream-2026
+ERROR: https://yts.bz/movies/a-chipmunk-christmas-1981
+ERROR: https://yts.bz/movies/drugi-dnevnik-pauline-p-2025
+ERROR: https://yts.bz/movies/die-schule-der-magischen-tiere-4-2025
+ERROR: https://yts.bz/movies/je-navais-que-le-neant-shoah-par-lanzmann-2025
+ERROR: https://yts.bz/movies/au-dela-du-voile-exploration-du-paranormal-2025
+ERROR: https://yts.bz/movies/en-tongs-au-pied-de-lhimalaya-2024
+ERROR: https://yts.bz/movies/lali-la-que-le-gana-al-tiempo-2025
+ERROR: https://yts.bz/movies/prin-ochii-lor-2025
+ERROR: https://yts.bz/movies/que-huevos-sofia-2025
+ERROR: https://yts.bz/movies/persona-2026
+ERROR: https://yts.bz/movies/qing-sheng-3-2025
+ERROR: https://yts.bz/movies/the-love-doctor-2026
+ERROR: https://yts.bz/movies/the-tiger-2-2025
+ERROR: https://yts.bz/movies/wake-up-dead-man-a-knives-out-mystery-2025
+ERROR: https://yts.bz/movies/zamach-na-papieza-2025
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -542,6 +562,7 @@ https://yts.bz/movies/zamach-na-papieza-2025
         # 806 -> 批量整理电影
         # 807 -> 清理数据库
         # 808 -> 归档导演
+        # 809 -> 归档检查
         main(806)
         # temp(r"A:\1")
     except Exception:

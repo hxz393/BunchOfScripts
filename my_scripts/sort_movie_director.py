@@ -19,20 +19,31 @@ logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
 
-def sort_movie_director(path: str) -> int:
+def sort_movie_director(path: str, director_info) -> int:
     """
     从 TMDB，IMDB，豆瓣 抓取导演信息，生成别名文件
 
     :param path: 导演目录
+    :param director_info: 导演信息
     :return: 返回链接处理成功的数量
     """
     logger.info("开始抓取导演信息")
     path = path.strip()
     # 初始化变量
     director_ids = scan_ids(path)
-    director_info = {"country": [], "aka": []}
     director_info["aka"].append(os.path.basename(path))
     done = 0
+
+    # IMDB 流程
+    imdb = director_ids['imdb']
+    if imdb:
+        # imdb_info = get_imdb_director_info(imdb)
+        # director_info = merge_and_dedup(director_info, imdb_info)
+        imdb_info = director_info
+        done += 1
+        logger.info(f"IMDB 名字：{imdb_info.get('aka', [])[0]}")
+    else:
+        logger.warning("没有 IMDB 编号。")
 
     # TMDB 流程
     tmdb = director_ids['tmdb']
@@ -43,16 +54,6 @@ def sort_movie_director(path: str) -> int:
         logger.info(f"TMDB 名字：{tmdb_info.get('aka', [])[0]}")
     else:
         logger.warning("没有 TMDB 编号。")
-
-    # IMDB 流程
-    imdb = director_ids['imdb']
-    if imdb:
-        imdb_info = get_imdb_director_info(imdb)
-        director_info = merge_and_dedup(director_info, imdb_info)
-        done += 1
-        logger.info(f"IMDB 名字：{imdb_info.get('aka', [])[0]}")
-    else:
-        logger.warning("没有 IMDB 编号。")
 
     # DOUBAN 流程
     douban = director_ids['douban']

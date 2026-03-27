@@ -60,6 +60,7 @@ def sort_director_auto(path: str) -> None:
         return
     imdb_list = list(set(imdb_list))
     director_ids = scan_ids(path)
+    director_info = {"country": [], "aka": []}
 
     # 搜索 imdb，获取导演链接
     nm_id = director_ids['imdb']
@@ -67,6 +68,7 @@ def sort_director_auto(path: str) -> None:
         for imdb_id in imdb_list:
             r = get_imdb_director(imdb_id, director_main)
             if r:
+                director_info["aka"].append(director_main)
                 result_list.append(r)
                 nm_id = m.group(1) if (m := re.search(r'(nm\d+)', r)) else None
                 break
@@ -103,7 +105,7 @@ def sort_director_auto(path: str) -> None:
     target_file = r'B:\2.脚本\!00.txt'
     write_list_to_file(target_file, result_list)
     get_ids(target_file)
-    done = sort_movie_director(read_file_to_list(target_file)[0])
+    done = sort_movie_director(read_file_to_list(target_file)[0], director_info)
     if done == 2:
         shutil.move(path, os.path.join(r'A:\0b.导演别名', director_main))
 

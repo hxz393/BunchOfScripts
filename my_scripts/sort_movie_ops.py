@@ -1321,3 +1321,25 @@ def extract_movie_ids(root_path):
             ids.append(match.group(1))
 
     return ids
+
+
+def find_video_files(path):
+    """获取所有视频文件的路径"""
+    video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv',
+                        '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.3gp'}
+    # 使用 rglob 递归遍历所有文件，检查后缀是否在集合中
+    return [str(p) for p in Path(path).rglob('*') if p.suffix.lower() in video_extensions]
+
+
+def filter_video_files(video_list):
+    """根据文件名规则筛选出错误视频文件名"""
+    result = []
+    for p in video_list:
+        name = Path(p).name  # 仅提取文件名（含扩展名）
+        # 条件1：不包含 ex_ 且 不包含 SUB-
+        cond1 = ("ex_" not in name) and ("SUB-" not in name)
+        # 条件2：包含 (1)
+        cond2 = "(1)" in name
+        if cond1 or cond2:
+            result.append(p)
+    return result
