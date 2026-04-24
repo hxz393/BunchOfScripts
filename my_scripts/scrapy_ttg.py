@@ -125,33 +125,34 @@ def parse_ttg_response(response: requests.Response) -> list:
     return data_list
 
 
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    name = name.replace("{@}", ".").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
+def fix_name(title: str, max_length: int = 220) -> str:
+    """规范化种子标题，并限制标题部分长度。"""
+    title = re.sub(r'\s*\|\s*', '，', title)
+    title = re.sub(r'\s*/\s*', '｜', title)
+    title = re.sub(r'\s*\\\s*', '｜', title)
+    title = re.sub(r'\s+', ' ', title)
+    title = title.replace("{@}", ".").strip()
+    if len(title) <= max_length:
+        return title
 
-    stem, suffix = os.path.splitext(name)
-    if suffix and len(suffix) < max_length:
-        return f"{stem[:max_length - len(suffix)]}{suffix}"
-    return name[:max_length]
+    return title[:max_length]
+
+
+def build_output_filename(result_item: dict) -> str:
+    """根据抓取结果构造输出文件名。"""
+    title = fix_name(result_item['name'])
+    file_name = f"{title}({result_item['size']})[{result_item['imdb']}].ttg"
+    file_name = sanitize_filename(file_name)
+    if not file_name:
+        raise ValueError(f"无效文件名：{result_item['name']}")
+
+    return file_name
 
 
 def write_to_disk(result_list: list) -> None:
     """将一页抓取结果写入到磁盘"""
     for i in result_list:
-        file_name = f"{i['name']}({i['size']})[{i['imdb']}].ttg"
-        file_name = fix_name(file_name)
-        file_name = sanitize_filename(file_name)
-        if not file_name:
-            raise ValueError(f"无效文件名：{i['name']}")
-
+        file_name = build_output_filename(i)
         path = os.path.join(OUTPUT_DIR, file_name)
         links = [i["url"], i["dl"]]
         if not write_list_to_file(path, links):
