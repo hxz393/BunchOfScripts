@@ -64,8 +64,8 @@ def parse_dhd_response(response_text: str) -> list:
     soup = BeautifulSoup(response_text, 'html.parser')
     results = []
 
-    # 查找所有代表电影信息的 div 元素
-    for topic in soup.find_all("div", class_="topic media topic-visited"):
+    # 查找所有代表电影信息的 div 元素，避免依赖 class 顺序或额外 class 是否存在
+    for topic in soup.select("div.topic.media.topic-visited"):
         # 电影名称及地址：在 title media-heading 中的 a 标签
         title_tag_h = topic.find("div", class_="title media-heading")
         if not title_tag_h:
@@ -76,6 +76,9 @@ def parse_dhd_response(response_text: str) -> list:
         if title_tag:
             name = title_tag.get_text(strip=True)
             url_href = title_tag.get("href")
+            if not url_href:
+                logger.warning("解析失败：title media-heading 中的 a 标签缺少 href")
+                continue
             dhd_id = url_href.replace("_11.html", "")
             url = f"{DHD_URL}/{url_href}"
         else:
