@@ -245,6 +245,16 @@ def search_tmdb_director(movie_id: str) -> str:
     return ""
 
 
+def normalize_director_folder_name(folder_name: str) -> str:
+    """
+    规范导演目录名。
+
+    :param folder_name: 原始目录名
+    :return: 清洗后的目录名
+    """
+    return folder_name.strip().replace("\"", "")
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -270,8 +280,7 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
                     if not folder_name:
                         folder_name = NO_DIRECTOR_NAME
 
-                folder_name = folder_name.strip()
-                folder_name = folder_name.replace("\"", "")
+                folder_name = normalize_director_folder_name(folder_name)
                 logger.info(f"导演名：{folder_name}")
 
                 folder_path = Path(os.path.join(Path(root).parent, folder_name))
