@@ -156,6 +156,7 @@ def parse_yts_movie_page(html: str, link: str) -> tuple[str | None, str]:
     return movie_id[0], director_name[0]
 
 
+@retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
 def fetch_movie_detail_by_id(session: requests.Session, movie_id: str, link: str) -> Dict:
     """
     根据电影 ID 请求 YTS API 详情。
@@ -175,7 +176,7 @@ def fetch_movie_detail_by_id(session: requests.Session, movie_id: str, link: str
     return movie_detail
 
 
-@retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
+@retry(stop_max_attempt_number=3, wait_random_min=100, wait_random_max=1200)
 def fetch_data(session: requests.Session, link: str) -> Dict:
     """
     获取 json 数据
