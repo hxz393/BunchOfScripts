@@ -225,6 +225,7 @@ def extract_dl_url(txt: str) -> str:
                 link_href = a_tag.get("href")
                 if link_href:
                     download_link = f"{DHD_URL}/{link_href}"
+                    break
 
     return download_link
 
