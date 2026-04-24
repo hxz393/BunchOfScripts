@@ -62,16 +62,15 @@ def scrapy_ttg() -> None:
 
 def filter_by_id(movie_list: list) -> list:
     """
-    过滤 movie_list 中所有 id 小于 threshold_id 的字典元素
+    删除 movie_list 中所有小于 NEWEST_ID 的 id
     """
-    filtered_list = [movie for movie in movie_list if int(movie['id']) > NEWEST_ID]
-    return filtered_list
+    return [movie for movie in movie_list if int(movie['id']) > NEWEST_ID]
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
 def get_ttg_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, headers=REQUEST_HEAD)
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=30)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
