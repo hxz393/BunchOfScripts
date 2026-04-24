@@ -171,6 +171,35 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
     return movie_detail
 
 
+def build_result_file_name(result: Dict) -> str:
+    """
+    根据抓取结果生成输出文件名。
+
+    :param result: 请求返回结果
+    :return: 清洗后的文件名
+    """
+    movie = result['data']['movie']
+    title = movie['title']
+    year = movie['year']
+    imdb = "{" + movie['imdb_code'] + "}"
+    quality = get_best_quality(result)
+    new_file_name = f'{title}({year})[{quality}]{imdb}.json'
+    return sanitize_filename(new_file_name)
+
+
+def build_result_output_path(result: Dict) -> str:
+    """
+    根据抓取结果生成输出路径。
+
+    :param result: 请求返回结果
+    :return: 输出路径
+    """
+    movie = result['data']['movie']
+    director = normalize_director_folder_name(movie['director'])
+    file_name = build_result_file_name(result)
+    return os.path.join(OUTPUT_DIR, director, file_name)
+
+
 def handle_result(result: Dict, link: str) -> None:
     """
     将数据写入到本地 JSON 文件
@@ -179,15 +208,7 @@ def handle_result(result: Dict, link: str) -> None:
     :param link: 链接
     :return: 无
     """
-    director = result['data']['movie']['director']
-    title = result['data']['movie']['title']
-    year = result['data']['movie']['year']
-    imdb = result['data']['movie']['imdb_code']
-    imdb = "{" + imdb + "}"
-    quality = get_best_quality(result)
-    new_file_name = f'{title}({year})[{quality}]{imdb}.json'
-    file_name = sanitize_filename(new_file_name)
-    file_path = os.path.join(OUTPUT_DIR, director, file_name)
+    file_path = build_result_output_path(result)
     write_dict_to_json(file_path, result)
     logger.info(f"完成：{link}")
 
