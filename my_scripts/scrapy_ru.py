@@ -168,6 +168,45 @@ def write_topic_file(file_name: str, file_content: str) -> None:
         file.write(file_content)
 
 
+def process_page_rows(row_elements, stop_id: int, current_max_id: str | None) -> tuple[bool, str | None]:
+    """
+    处理单页中的所有帖子行，返回是否需要停止翻页及更新后的最大帖子 ID。
+
+    :param row_elements: 当前页的帖子行列表
+    :param stop_id: 本栏目上次已记录的最大帖子 ID
+    :param current_max_id: 目前为止已抓到的最大帖子 ID
+    :return: ``(stop, max_id)``
+    """
+    stop = False
+    new_max_id = current_max_id
+
+    for row in row_elements:
+        topic_info = parse_topic_row(row)
+        if topic_info is None:
+            continue
+        title_text = topic_info["title_text"]
+        topic_id = topic_info["topic_id"]
+        topic_link = topic_info["topic_link"]
+        size_text = topic_info["size_text"]
+        download_link = topic_info["download_link"]
+
+        # 拼凑出文件名，由帖子标题+ID+大小组成
+        file_name = build_output_filename(title_text, topic_id, size_text)
+        # 文件内容，为帖子地址和种子下载链接，共两行
+        file_content = f"{topic_link}\n{download_link}"
+
+        # 计算是否中断，小于最后记录则跳过写文件
+        if int(topic_id) < stop_id:
+            stop = True
+        else:
+            # 写入到本地文本文件
+            write_topic_file(file_name, file_content)
+            if new_max_id is None or int(topic_id) > int(new_max_id):
+                new_max_id = topic_id
+
+    return stop, new_max_id
+
+
 def scripy(url: str) -> None:
     """
     抓取所有链接，并写入到文件。
@@ -190,31 +229,7 @@ def scripy(url: str) -> None:
         if not row_elements:
             raise RuntimeError(f"链接：{current_url} 未找到种子行")
 
-        # 遍历每一行
-        stop = False
-        for row in row_elements:
-            topic_info = parse_topic_row(row)
-            if topic_info is None:
-                continue
-            title_text = topic_info["title_text"]
-            topic_id = topic_info["topic_id"]
-            topic_link = topic_info["topic_link"]
-            size_text = topic_info["size_text"]
-            download_link = topic_info["download_link"]
-
-            # 拼凑出文件名，由帖子标题+ID+大小组成
-            file_name = build_output_filename(title_text, topic_id, size_text)
-            # 文件内容，为帖子地址和种子下载链接，共两行
-            file_content = f"{topic_link}\n{download_link}"
-
-            # 计算是否中断，小于最后记录则跳过写文件
-            if int(topic_id) < stop_id:
-                stop = True
-            else:
-                # 写入到本地文本文件
-                write_topic_file(file_name, file_content)
-                if new_max_id is None or int(topic_id) > int(new_max_id):
-                    new_max_id = topic_id
+        stop, new_max_id = process_page_rows(row_elements, stop_id, new_max_id)
 
         if stop:
             break
