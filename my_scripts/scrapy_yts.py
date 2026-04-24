@@ -226,6 +226,25 @@ def extract_imdb_id_from_filename(file_name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def search_tmdb_director(movie_id: str) -> str:
+    """
+    使用 IMDb 标识查询 TMDb，返回第一个导演名。
+
+    :param movie_id: IMDb 标识，例如 tt1234567
+    :return: 导演名；查不到时返回空字符串
+    """
+    movie_details = get_tmdb_movie_details(movie_id)
+    if not movie_details:
+        return ""
+
+    crew_list = movie_details['casts'].get('crew', [])
+    for member in crew_list:
+        if member.get('job') == 'Director':
+            return member.get('name') or ""
+
+    return ""
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -247,14 +266,7 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
                 folder_name = search_imdb_local(imdb)
                 if not folder_name:
                     # IMDB 没有导演，尝试查询 TMDB 获取导演
-                    movie_details = get_tmdb_movie_details(imdb)
-                    if movie_details:
-                        crew_list = movie_details['casts'].get('crew', [])
-                        for member in crew_list:
-                            if member.get('job') == 'Director':
-                                folder_name = member.get('name')
-                                break
-
+                    folder_name = search_tmdb_director(imdb)
                     if not folder_name:
                         folder_name = NO_DIRECTOR_NAME
 
