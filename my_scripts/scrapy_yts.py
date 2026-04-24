@@ -1,5 +1,5 @@
 """
-抓取 yts.mx 站点发布。将结果储存到 json 文件中
+抓取 yts 站点发布。将结果储存到 json 文件中
 
 :author: assassing
 :contact: https://github.com/hxz393
@@ -8,8 +8,11 @@
 import concurrent.futures
 import logging
 import os
+import re
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Dict
 
 import requests
@@ -18,6 +21,8 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_dict_to_json, read_file_to_list
+from sort_movie_mysql import query_imdb_local_director
+from sort_movie_request import get_tmdb_movie_details
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -30,7 +35,12 @@ YTS_PASS = CONFIG['yts_pass']  # yts 密码
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 API_PATH = CONFIG['api_path']  # api 请求地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
-HEADERS = CONFIG['headers'] # 请求头
+HEADERS = CONFIG['headers']  # 请求头
+COOKIE = CONFIG['cookie']  # 用户甜甜
+MISS_DIRECTOR_NAME = "_"
+NO_DIRECTOR_NAME = "没有导演"
+
+HEADERS["cookie"] = COOKIE  # 请求头加入认证
 
 
 def scrapy_yts(url_path: str) -> None:
@@ -45,6 +55,7 @@ def scrapy_yts(url_path: str) -> None:
     failed = threading.Lock()
     failed_count = 0
     failed_list = []
+    need_fix_imdb = False
 
     session = requests.Session()
     adapter = HTTPAdapter(pool_connections=THREAD_NUMBER, pool_maxsize=THREAD_NUMBER)
@@ -71,12 +82,17 @@ def scrapy_yts(url_path: str) -> None:
                             failed_list.append(link)
                     else:
                         handle_result(result, link)
+                        if result['data']['movie'].get('director') == MISS_DIRECTOR_NAME:
+                            need_fix_imdb = True
                 except Exception:
                     logger.exception(f"链接：{link} 在处理进程中发生错误")
                     failed_list.append(link)
     except Exception:
         logger.exception(f"链接：{link} 在分配线程时发生错误")
     finally:
+        if need_fix_imdb:
+            logger.info("来自 yts 没有导演的种子，试图自行补全")
+            scrapy_yts_fix_imdb()
         logger.warning(f"总计数量：{len(links)}，失败数量：{failed_count}。失败链接：")
         for i in failed_list:
             logger.error(i)
@@ -95,7 +111,6 @@ def yts_login(session: requests.Session) -> bool:
         "password": YTS_PASS
     }
     response = session.post(login_endpoint, headers=HEADERS, data=data)
-    print(response.text)
     # 登录成功时，返回内容通常为 "Ok."
     if response.json()["status"] == "ok":
         logger.info("yts: 登录成功。")
@@ -186,3 +201,70 @@ def get_best_quality(result: Dict) -> str:
                 best_value = value
                 best_quality = quality
     return best_quality
+
+
+def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
+    """
+    去 IMDB 获取导演信息，并整理文件
+
+    :return: 无
+    """
+    # 根据文件名获取 tt 编号
+    for root, dirs, files in os.walk(miss_path):
+        for file_name in files:
+            if file_name.endswith('.json'):
+                logger.info(f"处理：{file_name}")
+                file_path = Path(os.path.join(root, file_name))
+                # imdb = file_name.split('{')[1].split('}')[0]
+                imdb = m.group(1) if (m := re.search(r'(tt\d+)', file_name)) else None
+                if not imdb:
+                    logger.error(f"没有找到 tt 编号：{file_name}")
+                    continue
+
+                # 查询 IMDB
+                folder_name = search_imdb_local(imdb)
+                # folder_name = search_imdb(imdb) # 线上模式
+                if not folder_name:
+                    # 查询 TMDB
+                    movie_details = get_tmdb_movie_details(imdb)
+                    if movie_details:
+                        crew_list = movie_details['casts'].get('crew', [])
+                        for member in crew_list:
+                            if member.get('job') == 'Director':
+                                folder_name = member.get('name')
+                                break
+
+                    if not folder_name:
+                        folder_name = NO_DIRECTOR_NAME
+
+                folder_name = folder_name.strip()
+                folder_name = folder_name.replace("\"", "")
+                logger.info(f"导演名：{folder_name}")
+
+                folder_path = Path(os.path.join(Path(root).parent, folder_name))
+                folder_path.mkdir(parents=True, exist_ok=True)
+                target_file_path = folder_path / file_path.name
+                shutil.move(file_path, target_file_path)
+                logger.info("*" * 255)
+
+
+def search_imdb_local(movie_id: str) -> str:
+    """
+    查询本地 IMDb 库，返回用于建目录的导演名。
+    查不到或查询失败时返回空字符串。
+
+    :param movie_id: imdb 编号，例如 tt1234567
+    :return: 导演名
+    """
+    logger.info(f"查询本地 IMDb：{movie_id}")
+    directors = query_imdb_local_director(movie_id)
+
+    if directors is None:
+        return ""
+
+    for director in directors:
+        director_name = (director.get("director_name") or "").strip()
+        if director_name:
+            return director_name
+
+    return ""
