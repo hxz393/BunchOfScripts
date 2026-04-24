@@ -10,7 +10,6 @@ import logging
 import os
 import re
 import shutil
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict
@@ -52,8 +51,6 @@ def scrapy_yts(url_path: str) -> None:
     :return: 无
     """
     # 初始化变量
-    failed = threading.Lock()
-    failed_count = 0
     failed_list = []
     need_fix_imdb = False
 
@@ -77,17 +74,13 @@ def scrapy_yts(url_path: str) -> None:
                 try:
                     result = future.result()
                     if not result:
-                        with failed:
-                            failed_count += 1
-                            failed_list.append(link)
+                        failed_list.append(link)
                     else:
                         handle_result(result, link)
                         if result['data']['movie'].get('director') == MISS_DIRECTOR_NAME:
                             need_fix_imdb = True
                 except Exception:
-                    with failed:
-                        failed_count += 1
-                        failed_list.append(link)
+                    failed_list.append(link)
                     logger.exception(f"链接：{link} 在处理进程中发生错误")
     except Exception:
         logger.exception(f"链接：{link} 在分配线程时发生错误")
@@ -95,7 +88,7 @@ def scrapy_yts(url_path: str) -> None:
         if need_fix_imdb:
             logger.info("来自 yts 没有导演的种子，试图自行补全")
             scrapy_yts_fix_imdb()
-        logger.warning(f"总计数量：{len(links)}，失败数量：{failed_count}。失败链接：")
+        logger.warning(f"总计数量：{len(links)}，失败数量：{len(failed_list)}。失败链接：")
         for i in failed_list:
             logger.error(i)
 
