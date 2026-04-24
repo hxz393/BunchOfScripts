@@ -279,14 +279,12 @@ def process_dhd_file(file_path: str, directory: str) -> None:
         try:
             get_dhd_torrent(session, dl_url, torrent_path)
             magnet = torrent_to_magnet(torrent_path)
+            if not magnet:
+                raise ValueError("转换磁链失败")
         except Exception:
             if os.path.exists(torrent_path):
                 os.remove(torrent_path)
             raise
-        if not magnet:
-            logger.warning(f"文件 {file_path}: 转换磁链失败")
-            os.remove(torrent_path)
-            return
 
         # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
         new_file_path = file_path.replace(".dhd", ".log")
