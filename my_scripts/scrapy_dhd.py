@@ -275,16 +275,22 @@ def process_dhd_file(file_path: str, directory: str) -> None:
         if not dl_url:
             return
 
-        # 下载种子文件并转换为磁链
-        try:
-            get_dhd_torrent(session, dl_url, torrent_path)
-            magnet = torrent_to_magnet(torrent_path)
-            if not magnet:
-                raise ValueError("转换磁链失败")
-        except Exception:
-            if os.path.exists(torrent_path):
-                os.remove(torrent_path)
-            raise
+        # 下载种子文件并转换为磁链。坏种子时最多重试 3 次。
+        magnet = ""
+        for attempt in range(1, 4):
+            try:
+                get_dhd_torrent(session, dl_url, torrent_path)
+                magnet = torrent_to_magnet(torrent_path)
+                if not magnet:
+                    raise ValueError("转换磁链失败")
+                break
+            except Exception as e:
+                if os.path.exists(torrent_path):
+                    os.remove(torrent_path)
+                if attempt == 3:
+                    logger.error(f"文件 {file_path}: 连续 3 次下载到无效种子，已放弃: {e}")
+                    return
+                logger.warning(f"文件 {file_path}: 第 {attempt}/3 次下载到无效种子，重试下载: {e}")
 
         # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
         new_file_path = file_path.replace(".dhd", ".log")
