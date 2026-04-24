@@ -5,15 +5,14 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-import asyncio
 import concurrent.futures
 import hashlib
 import logging
 import os
 import re
+import time
 import urllib.parse
 
-import aiohttp
 import bencodepy
 import requests
 from bs4 import BeautifulSoup
@@ -39,22 +38,16 @@ THREAD_NUMBER = CONFIG['thread_number']  # 并发数
 REQUEST_HEAD["Cookie"] = DHD_COOKIE  # 请求头加入认证
 
 
-async def get_dhd_response(url: str, session: aiohttp.ClientSession, retries: int = 15) -> str:
+@retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
+def get_dhd_response(url: str) -> str:
     """
-    异步请求 URL，重试多次后返回响应文本
+    请求 URL 并返回响应文本。
     """
-    for attempt in range(retries):
-        try:
-            async with session.get(url, timeout=15) as response:
-                if response.status != 200:
-                    raise Exception(f"请求失败，状态码：{response.status}")
-                # 指定编码为 gbk，忽略错误
-                text = await response.text(encoding='gbk', errors='replace')
-                return text
-        except Exception as e:
-            logger.error(f"请求 {url} 出错，重试 {attempt + 1}/{retries}。错误：{e}")
-            await asyncio.sleep(1)  # 简单延时，可根据需要实现指数退避
-    raise Exception(f"请求 {url} 连续 {retries} 次失败")
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=15, verify=False)
+    if response.status_code != 200:
+        raise Exception(f"请求失败，状态码：{response.status_code}：{url}")
+    response.encoding = 'gbk'
+    return response.text
 
 
 def parse_dhd_response(response_text: str) -> list:
@@ -90,14 +83,13 @@ def parse_dhd_response(response_text: str) -> list:
     return results
 
 
-async def working_dhd_async(info: dict, session: aiohttp.ClientSession) -> None:
+def working_dhd(info: dict) -> None:
     """
-    异步抓取单个信息项
-    使用异步方式获取页面后，再调用同步的处理函数完成后续操作。
+    抓取单个信息项。
     """
     name = info["name"]
     url = info["url"]
-    response_text = await get_dhd_response(url, session)
+    response_text = get_dhd_response(url)
     imdb = extract_imdb_id(response_text)
     dl_url = extract_dl_url(response_text)
     content = [url, dl_url]
@@ -109,16 +101,15 @@ async def working_dhd_async(info: dict, session: aiohttp.ClientSession) -> None:
     write_list_to_file(file_path, content)
 
 
-async def scrapy_dhd_async(start_page: int = 1) -> None:
+def scrapy_dhd(start_page: int = 1) -> None:
     """
-    异步抓取 dhd 站点发布信息，采用 aiohttp 并发请求，同时批量抓取多个页面。
+    使用最简单的线程池方式抓取 dhd 站点发布信息。
     """
     logger.info("抓取 dhd 站点发布信息")
     max_ids = []
     pages_per_batch = 1  # 每次批量请求1个页面，合计约100个链接
 
-    connector = aiohttp.TCPConnector(ssl=False, limit=THREAD_NUMBER)
-    async with aiohttp.ClientSession(connector=connector, headers=REQUEST_HEAD, trust_env=True) as session:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
         while True:
             # 为当前批次增加重试逻辑
             batch_attempt = 0
@@ -127,12 +118,14 @@ async def scrapy_dhd_async(start_page: int = 1) -> None:
             while batch_attempt < max_batch_attempts:
                 logger.info(f"批量抓取第 {start_page} 到 {start_page + pages_per_batch - 1} 页，尝试次数 {batch_attempt + 1}")
                 page_numbers = [start_page + i for i in range(pages_per_batch)]
-                tasks = [get_dhd_response(f"{DHD_MOVIE_URL}{page}.html", session) for page in page_numbers]
-                responses = await asyncio.gather(*tasks, return_exceptions=True)
+                page_urls = [f"{DHD_MOVIE_URL}{page}.html" for page in page_numbers]
+                page_futures = [executor.submit(get_dhd_response, page_url) for page_url in page_urls]
                 combined_result_list = []
-                for resp in responses:
-                    if isinstance(resp, Exception):
-                        logger.error(f"页面请求失败：{resp}")
+                for future in concurrent.futures.as_completed(page_futures):
+                    try:
+                        resp = future.result()
+                    except Exception as e:
+                        logger.error(f"页面请求失败：{e}")
                         continue
                     if not resp:
                         continue
@@ -140,10 +133,9 @@ async def scrapy_dhd_async(start_page: int = 1) -> None:
                     combined_result_list.extend(result_list)
                 if combined_result_list:
                     break  # 请求到内容，跳出重试循环
-                else:
-                    batch_attempt += 1
-                    logger.error(f"批量请求返回空结果，第 {batch_attempt} 次重试")
-                    await asyncio.sleep(3)  # 重试前延时
+                batch_attempt += 1
+                logger.error(f"批量请求返回空结果，第 {batch_attempt} 次重试")
+                time.sleep(3)  # 重试前延时
             if not combined_result_list:
                 # 连续多次重试后依然为空，认为请求出错，不再继续
                 logger.error("连续多次重试后，批量请求依然返回空结果")
@@ -156,11 +148,13 @@ async def scrapy_dhd_async(start_page: int = 1) -> None:
                 break
 
             # 并发抓取每个新链接的详情
-            tasks = [working_dhd_async(item, session) for item in new_list]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for item, result in zip(new_list, results):
-                if isinstance(result, Exception):
-                    logger.error(f"抓取出错：{item['url']}，错误：{result}")
+            future_to_item = {executor.submit(working_dhd, item): item for item in new_list}
+            for future in concurrent.futures.as_completed(future_to_item):
+                item = future_to_item[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"抓取出错：{item['url']}，错误：{e}")
 
             start_page += pages_per_batch
             max_ids.append(max(int(i['id']) for i in new_list))

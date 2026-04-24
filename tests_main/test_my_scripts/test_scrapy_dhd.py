@@ -18,7 +18,7 @@ import unittest
 import urllib.parse
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import Mock, call, patch
 
 import requests
 
@@ -88,7 +88,7 @@ def load_scrapy_dhd(config: dict | None = None):
     在隔离环境中加载 ``scrapy_dhd`` 模块。
 
     被测模块在 import 时就会读取配置并导入 ``my_module`` / ``retrying`` /
-    ``aiohttp`` / ``bencodepy``，所以这里先注入假的依赖，避免测试依赖本地真实环境。
+    ``bencodepy``，所以这里先注入假的依赖，避免测试依赖本地真实环境。
     """
     temp_dir = tempfile.TemporaryDirectory()
     module_config = {
@@ -119,28 +119,25 @@ def load_scrapy_dhd(config: dict | None = None):
     fake_my_module.read_file_to_list = lambda path: Path(path).read_text(encoding="utf-8").splitlines()
 
     fake_retrying = types.ModuleType("retrying")
-    fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
-    fake_aiohttp = types.ModuleType("aiohttp")
+    def fake_retry(*args, **kwargs):
+        max_attempts = kwargs.get("stop_max_attempt_number", 1)
 
-    class DummyTCPConnector:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
+        def decorator(func):
+            def wrapper(*func_args, **func_kwargs):
+                last_exception = None
+                for _ in range(max_attempts):
+                    try:
+                        return func(*func_args, **func_kwargs)
+                    except Exception as exc:  # pragma: no cover - 仅用于模拟第三方重试
+                        last_exception = exc
+                raise last_exception
 
-    class DummyClientSession:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
+            return wrapper
 
-        async def __aenter__(self):
-            return self
+        return decorator
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    fake_aiohttp.TCPConnector = DummyTCPConnector
-    fake_aiohttp.ClientSession = DummyClientSession
+    fake_retrying.retry = fake_retry
 
     fake_bencodepy = types.ModuleType("bencodepy")
     fake_bencodepy.encode = fake_bencode_encode
@@ -156,7 +153,6 @@ def load_scrapy_dhd(config: dict | None = None):
         {
             "my_module": fake_my_module,
             "retrying": fake_retrying,
-            "aiohttp": fake_aiohttp,
             "bencodepy": fake_bencodepy,
         },
     ):
@@ -170,37 +166,27 @@ def build_topic_html(
         title: str = "Movie Title",
         include_title_wrapper: bool = True,
         include_anchor: bool = True,
+        href: str | None = None,
+        extra_classes: str = "",
 ) -> str:
     """构造一条最小可用的 DHD 帖子 HTML。"""
     if not include_title_wrapper:
         inner_html = ""
     elif include_anchor:
-        inner_html = f'<div class="title media-heading"><a href="{topic_id}_11.html">{title}</a></div>'
+        if href is None:
+            href = f"{topic_id}_11.html"
+        href_attr = f' href="{href}"' if href is not None else ""
+        inner_html = f'<div class="title media-heading"><a{href_attr}>{title}</a></div>'
     else:
         inner_html = '<div class="title media-heading"></div>'
 
-    return f'<div class="topic media topic-visited">{inner_html}</div>'
+    extra_class_attr = f" {extra_classes.strip()}" if extra_classes.strip() else ""
+    return f'<div class="topic media topic-visited{extra_class_attr}">{inner_html}</div>'
 
 
 def build_page_html(*topics: str) -> str:
     """把若干帖子块拼成最小可用页面。"""
     return f"<html><body>{''.join(topics)}</body></html>"
-
-
-class AsyncContextManager:
-    """把同步 mock 响应包装成可 ``async with`` 使用的对象。"""
-
-    def __init__(self, response=None, exc: Exception | None = None):
-        self.response = response
-        self.exc = exc
-
-    async def __aenter__(self):
-        if self.exc is not None:
-            raise self.exc
-        return self.response
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
 
 
 class TestModuleLoad(unittest.TestCase):
@@ -217,8 +203,8 @@ class TestModuleLoad(unittest.TestCase):
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
 
 
-class TestGetDhdResponse(unittest.IsolatedAsyncioTestCase):
-    """验证异步单页请求逻辑。"""
+class TestGetDhdResponse(unittest.TestCase):
+    """验证同步单页请求逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_dhd()
@@ -226,34 +212,31 @@ class TestGetDhdResponse(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    async def test_get_dhd_response_returns_text_when_request_succeeds(self):
+    def test_get_dhd_response_returns_text_when_request_succeeds(self):
         """请求成功时应返回按 GBK 解码后的文本。"""
-        response = Mock(status=200)
-        response.text = AsyncMock(return_value="页面内容")
-        session = Mock()
-        session.get.return_value = AsyncContextManager(response=response)
+        response = Mock(status_code=200, text="页面内容")
 
-        result = await self.module.get_dhd_response("https://example.com/topic/1", session, retries=1)
+        with patch.object(self.module.requests, "get", return_value=response) as mock_get:
+            result = self.module.get_dhd_response("https://example.com/topic/1")
 
         self.assertEqual(result, "页面内容")
-        session.get.assert_called_once_with("https://example.com/topic/1", timeout=15)
-        response.text.assert_awaited_once_with(encoding="gbk", errors="replace")
+        self.assertEqual(response.encoding, "gbk")
+        mock_get.assert_called_once_with(
+            "https://example.com/topic/1",
+            headers=self.module.REQUEST_HEAD,
+            timeout=15,
+            verify=False,
+        )
 
-    async def test_get_dhd_response_retries_and_raises_after_retries_exhausted(self):
+    def test_get_dhd_response_retries_and_raises_after_retries_exhausted(self):
         """状态码持续异常时，应按重试次数耗尽后抛错。"""
-        bad_response = Mock(status=503)
-        session = Mock()
-        session.get.side_effect = [
-            AsyncContextManager(response=bad_response),
-            AsyncContextManager(response=bad_response),
-        ]
+        bad_response = Mock(status_code=503, text="")
 
-        with patch.object(self.module.asyncio, "sleep", new=AsyncMock()) as mock_sleep:
-            with self.assertRaisesRegex(Exception, "连续 2 次失败"):
-                await self.module.get_dhd_response("https://example.com/topic/1", session, retries=2)
+        with patch.object(self.module.requests, "get", return_value=bad_response) as mock_get:
+            with self.assertRaisesRegex(Exception, "请求失败，状态码：503"):
+                self.module.get_dhd_response("https://example.com/topic/1")
 
-        self.assertEqual(session.get.call_count, 2)
-        self.assertEqual(mock_sleep.await_count, 2)
+        self.assertEqual(mock_get.call_count, 15)
 
 
 class TestParseDhdResponse(unittest.TestCase):
@@ -305,6 +288,48 @@ class TestParseDhdResponse(unittest.TestCase):
         )
         self.assertIn("没有找到 title media-heading", logs.output[0])
         self.assertIn("没有找到 title media-heading 中的 a 标签", logs.output[1])
+
+    def test_parse_dhd_response_accepts_topic_with_extra_classes(self):
+        """额外 class 不应影响帖子块的匹配。"""
+        html = build_page_html(
+            build_topic_html(topic_id="300", title="带额外类名", extra_classes="pinned highlight"),
+        )
+
+        result = self.module.parse_dhd_response(html)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "name": "带额外类名",
+                    "url": "https://example.com/300_11.html",
+                    "id": "300",
+                }
+            ],
+        )
+
+    def test_parse_dhd_response_logs_and_skips_topic_when_href_is_missing(self):
+        """标题链接缺少 href 时，应跳过当前帖子而不是中断整页解析。"""
+        html = build_page_html(
+            build_topic_html(topic_id="400", title="正常帖子"),
+            build_topic_html(topic_id="401", title="坏帖子", href=None),
+        )
+        html = html.replace(' href="401_11.html"', "")
+
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            result = self.module.parse_dhd_response(html)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "name": "正常帖子",
+                    "url": "https://example.com/400_11.html",
+                    "id": "400",
+                }
+            ],
+        )
+        self.assertIn("a 标签缺少 href", logs.output[0])
 
 
 class TestRenameAndExtractHelpers(unittest.TestCase):
@@ -383,7 +408,7 @@ class TestGetDhdAndTorrent(unittest.TestCase):
         self.assertEqual(response.encoding, "gbk")
         session.get.assert_called_once_with(
             "https://example.com/topic/1",
-            timeout=10,
+            timeout=15,
             verify=False,
             headers=self.module.REQUEST_HEAD,
         )
@@ -409,7 +434,7 @@ class TestGetDhdAndTorrent(unittest.TestCase):
         self.assertEqual(torrent_path.read_bytes(), b"torrent-bytes")
         session.get.assert_called_once_with(
             "https://example.com/download.php?id=1",
-            timeout=10,
+            timeout=25,
             verify=False,
             headers=self.module.REQUEST_HEAD,
         )
@@ -424,8 +449,8 @@ class TestTorrentToMagnet(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_torrent_to_magnet_prefers_first_tracker_from_announce_list(self):
-        """存在 ``announce-list`` 时，应使用第一个 tracker 并带上显示名。"""
+    def test_torrent_to_magnet_keeps_all_trackers_from_announce_list(self):
+        """存在 ``announce-list`` 时，应保留全部 tracker 并带上显示名。"""
         torrent_dict = {
             b"announce-list": [
                 [b"https://tracker.example/announce"],
@@ -448,6 +473,7 @@ class TestTorrentToMagnet(unittest.TestCase):
             f"magnet:?xt=urn:btih:{info_hash}"
             f"&dn={urllib.parse.quote('Example Name')}"
             f"&tr={urllib.parse.quote('https://tracker.example/announce')}"
+            f"&tr={urllib.parse.quote('https://backup.example/announce')}"
         )
         self.assertEqual(result, expected)
 
@@ -476,7 +502,7 @@ class TestTorrentToMagnet(unittest.TestCase):
         self.assertEqual(result, expected)
 
 
-class TestWorkingDhdAsync(unittest.IsolatedAsyncioTestCase):
+class TestWorkingDhd(unittest.TestCase):
     """验证单条详情抓取和落盘逻辑。"""
 
     def setUp(self):
@@ -485,19 +511,19 @@ class TestWorkingDhdAsync(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    async def test_working_dhd_async_writes_expected_file(self):
+    def test_working_dhd_writes_expected_file(self):
         """应写出经过重命名后的 ``.dhd`` 文件，并保存发布页和下载页链接。"""
         info = {
             "name": "中文名.Original.Title.2024.1080p.BluRay",
             "url": "https://example.com/topic/123",
         }
 
-        with patch.object(self.module, "get_dhd_response", new=AsyncMock(return_value="<html></html>")), patch.object(
+        with patch.object(self.module, "get_dhd_response", return_value="<html></html>"), patch.object(
             self.module, "extract_imdb_id", return_value="tt1234567"
         ), patch.object(
             self.module, "extract_dl_url", return_value="https://example.com/download.php?id=123"
         ):
-            await self.module.working_dhd_async(info, session=Mock())
+            self.module.working_dhd(info)
 
         output_path = Path(self.module.OUTPUT_DIR) / "Original Title 2024.1080p.BluRay [中文名][tt1234567].dhd"
         self.assertTrue(output_path.exists())
@@ -507,8 +533,8 @@ class TestWorkingDhdAsync(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class TestScrapyDhdAsync(unittest.IsolatedAsyncioTestCase):
-    """验证异步主抓取流程的编排逻辑。"""
+class TestScrapyDhd(unittest.TestCase):
+    """验证线程池主抓取流程的编排逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_dhd({"newest_id": 100})
@@ -516,43 +542,22 @@ class TestScrapyDhdAsync(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    async def test_scrapy_dhd_async_stops_when_first_page_has_no_new_items(self):
+    def test_scrapy_dhd_stops_when_first_page_has_no_new_items(self):
         """第一页全部是旧项目时，应停止抓取并保留原 newest_id。"""
-        session_kwargs = []
-
-        class CaptureSession:
-            def __init__(self, *args, **kwargs):
-                session_kwargs.append(kwargs)
-
-            async def __aenter__(self):
-                return "SESSION"
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with patch.object(self.module.aiohttp, "TCPConnector", return_value="connector") as mock_connector, patch.object(
-            self.module.aiohttp, "ClientSession", CaptureSession
-        ), patch.object(
-            self.module, "get_dhd_response", new=AsyncMock(return_value="page-1")
-        ) as mock_get, patch.object(
+        with patch.object(self.module, "get_dhd_response", return_value="page-1") as mock_get, patch.object(
             self.module, "parse_dhd_response", return_value=[{"id": "100", "name": "Old", "url": "u"}]
         ), patch.object(
-            self.module, "working_dhd_async", new=AsyncMock()
+            self.module, "working_dhd"
         ) as mock_work, patch.object(
             self.module, "update_json_config"
         ) as mock_update:
-            await self.module.scrapy_dhd_async(start_page=1)
+            self.module.scrapy_dhd(start_page=1)
 
-        mock_connector.assert_called_once_with(ssl=False, limit=self.module.THREAD_NUMBER)
-        self.assertEqual(
-            session_kwargs,
-            [{"connector": "connector", "headers": self.module.REQUEST_HEAD, "trust_env": True}],
-        )
-        mock_get.assert_awaited_once_with("https://example.com/movie/1.html", "SESSION")
+        mock_get.assert_called_once_with("https://example.com/movie/1.html")
         mock_work.assert_not_called()
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 100)
 
-    async def test_scrapy_dhd_async_processes_multiple_pages_and_updates_max_id(self):
+    def test_scrapy_dhd_processes_multiple_pages_and_updates_max_id(self):
         """多页抓取时应处理每一页的新项目，并回写本轮最大 ID。"""
         parsed_pages = [
             [
@@ -567,68 +572,50 @@ class TestScrapyDhdAsync(unittest.IsolatedAsyncioTestCase):
             ],
         ]
 
-        class CaptureSession:
-            async def __aenter__(self):
-                return "SESSION"
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with patch.object(self.module.aiohttp, "TCPConnector", return_value="connector"), patch.object(
-            self.module.aiohttp, "ClientSession", return_value=CaptureSession()
-        ), patch.object(
-            self.module, "get_dhd_response", new=AsyncMock(side_effect=["page-1", "page-2", "page-3"])
+        with patch.object(
+            self.module, "get_dhd_response", side_effect=["page-1", "page-2", "page-3"]
         ) as mock_get, patch.object(
             self.module, "parse_dhd_response", side_effect=parsed_pages
         ), patch.object(
-            self.module, "working_dhd_async", new=AsyncMock()
+            self.module, "working_dhd"
         ) as mock_work, patch.object(
             self.module, "update_json_config"
         ) as mock_update:
-            await self.module.scrapy_dhd_async(start_page=1)
+            self.module.scrapy_dhd(start_page=1)
 
         self.assertEqual(
-            mock_get.await_args_list,
+            mock_get.call_args_list,
             [
-                call("https://example.com/movie/1.html", "SESSION"),
-                call("https://example.com/movie/2.html", "SESSION"),
-                call("https://example.com/movie/3.html", "SESSION"),
+                call("https://example.com/movie/1.html"),
+                call("https://example.com/movie/2.html"),
+                call("https://example.com/movie/3.html"),
             ],
         )
-        self.assertEqual(
-            mock_work.await_args_list,
+        mock_work.assert_has_calls(
             [
-                call(parsed_pages[0][0], "SESSION"),
-                call(parsed_pages[0][1], "SESSION"),
-                call(parsed_pages[1][0], "SESSION"),
+                call(parsed_pages[0][0]),
+                call(parsed_pages[0][1]),
+                call(parsed_pages[1][0]),
             ],
+            any_order=True,
         )
+        self.assertEqual(mock_work.call_count, 3)
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 105)
 
-    async def test_scrapy_dhd_async_raises_when_batch_keeps_returning_no_results(self):
+    def test_scrapy_dhd_raises_when_batch_keeps_returning_no_results(self):
         """列表页连续返回空结果时，应在重试耗尽后抛出异常且不回写配置。"""
-
-        class CaptureSession:
-            async def __aenter__(self):
-                return "SESSION"
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with patch.object(self.module.aiohttp, "TCPConnector", return_value="connector"), patch.object(
-            self.module.aiohttp, "ClientSession", return_value=CaptureSession()
-        ), patch.object(
-            self.module, "get_dhd_response", new=AsyncMock(return_value="")
+        with patch.object(
+            self.module, "get_dhd_response", return_value=""
         ) as mock_get, patch.object(
-            self.module.asyncio, "sleep", new=AsyncMock()
+            self.module.time, "sleep"
         ) as mock_sleep, patch.object(
             self.module, "update_json_config"
         ) as mock_update:
             with self.assertRaisesRegex(Exception, "批量请求失败"):
-                await self.module.scrapy_dhd_async(start_page=1)
+                self.module.scrapy_dhd(start_page=1)
 
-        self.assertEqual(mock_get.await_count, 5)
-        self.assertEqual(mock_sleep.await_count, 5)
+        self.assertEqual(mock_get.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 5)
         mock_update.assert_not_called()
 
 
@@ -682,6 +669,137 @@ class TestDhdToLog(unittest.TestCase):
         self.assertFalse((self.base_dir / "movie.log").exists())
         mock_download.assert_not_called()
         mock_magnet.assert_not_called()
+
+    def test_dhd_to_log_stops_when_write_log_fails(self):
+        """写日志失败时，不应继续记录转换完成。"""
+        source_file = self.base_dir / "movie.dhd"
+        source_file.write_text("https://example.com/topic/123\n", encoding="utf-8")
+        torrent_path = self.base_dir / "movie.torrent"
+        log_path = self.base_dir / "movie.log"
+
+        def fake_get_dhd_torrent(_session, _url: str, torrent_path: str) -> None:
+            Path(torrent_path).write_bytes(b"fake torrent")
+
+        with patch.object(
+            self.module,
+            "get_dhd",
+            return_value=Mock(text='<p class="attnm"><a href="download.php?id=123">torrent</a></p>'),
+        ), patch.object(
+            self.module, "get_dhd_torrent", side_effect=fake_get_dhd_torrent
+        ), patch.object(
+            self.module, "torrent_to_magnet", return_value="magnet:?xt=urn:btih:test"
+        ), patch.object(
+            self.module, "write_list_to_file", return_value=False
+        ), patch.object(self.module.logger, "info") as mock_info:
+            self.module.dhd_to_log(str(self.base_dir))
+
+        self.assertTrue(source_file.exists())
+        self.assertTrue(torrent_path.exists())
+        self.assertFalse(log_path.exists())
+        self.assertNotIn(f"文件 {source_file}: 转换完成", [call.args[0] for call in mock_info.call_args_list])
+
+    def test_dhd_to_log_deletes_temp_torrent_when_magnet_conversion_raises(self):
+        """连续三次坏种子异常时，应保留 ``.dhd``，且删除临时 ``.torrent``。"""
+        source_file = self.base_dir / "movie.dhd"
+        source_file.write_text("https://example.com/topic/123\n", encoding="utf-8")
+        torrent_path = self.base_dir / "movie.torrent"
+        log_path = self.base_dir / "movie.log"
+
+        def fake_get_dhd_torrent(_session, _url: str, torrent_path: str) -> None:
+            Path(torrent_path).write_bytes(b"fake torrent")
+
+        with patch.object(
+            self.module,
+            "get_dhd",
+            return_value=Mock(text='<p class="attnm"><a href="download.php?id=123">torrent</a></p>'),
+        ), patch.object(
+            self.module, "get_dhd_torrent", side_effect=fake_get_dhd_torrent
+        ), patch.object(
+            self.module, "torrent_to_magnet", side_effect=ValueError("bad torrent")
+        ) as mock_magnet, patch.object(self.module.logger, "error") as mock_error:
+            self.module.dhd_to_log(str(self.base_dir))
+
+        self.assertTrue(source_file.exists())
+        self.assertFalse(torrent_path.exists())
+        self.assertFalse(log_path.exists())
+        self.assertEqual(mock_magnet.call_count, 3)
+        self.assertIn("连续 3 次下载到无效种子", mock_error.call_args[0][0])
+
+    def test_dhd_to_log_deletes_temp_torrent_when_magnet_conversion_returns_empty(self):
+        """连续三次空磁链结果时，应保留 ``.dhd``，且删除临时 ``.torrent``。"""
+        source_file = self.base_dir / "movie.dhd"
+        source_file.write_text("https://example.com/topic/123\n", encoding="utf-8")
+        torrent_path = self.base_dir / "movie.torrent"
+        log_path = self.base_dir / "movie.log"
+
+        def fake_get_dhd_torrent(_session, _url: str, torrent_path: str) -> None:
+            Path(torrent_path).write_bytes(b"fake torrent")
+
+        with patch.object(
+            self.module,
+            "get_dhd",
+            return_value=Mock(text='<p class="attnm"><a href="download.php?id=123">torrent</a></p>'),
+        ), patch.object(
+            self.module, "get_dhd_torrent", side_effect=fake_get_dhd_torrent
+        ), patch.object(
+            self.module, "torrent_to_magnet", return_value=""
+        ) as mock_magnet, patch.object(self.module.logger, "error") as mock_error:
+            self.module.dhd_to_log(str(self.base_dir))
+
+        self.assertTrue(source_file.exists())
+        self.assertFalse(torrent_path.exists())
+        self.assertFalse(log_path.exists())
+        self.assertEqual(mock_magnet.call_count, 3)
+        self.assertIn("连续 3 次下载到无效种子", mock_error.call_args[0][0])
+
+    def test_dhd_to_log_retries_bad_torrent_and_succeeds(self):
+        """坏种子前两次失败、第三次成功时，应最终写出 ``.log``。"""
+        source_file = self.base_dir / "movie.dhd"
+        source_file.write_text("https://example.com/topic/123\n", encoding="utf-8")
+        torrent_path = self.base_dir / "movie.torrent"
+        log_path = self.base_dir / "movie.log"
+
+        def fake_get_dhd_torrent(_session, _url: str, torrent_path: str) -> None:
+            Path(torrent_path).write_bytes(b"fake torrent")
+
+        magnet_results = [ValueError("bad torrent"), ValueError("bad torrent"), "magnet:?xt=urn:btih:ok"]
+
+        def fake_torrent_to_magnet(_torrent_path: str) -> str:
+            result = magnet_results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(
+            self.module,
+            "get_dhd",
+            return_value=Mock(text='<p class="attnm"><a href="download.php?id=123">torrent</a></p>'),
+        ), patch.object(
+            self.module, "get_dhd_torrent", side_effect=fake_get_dhd_torrent
+        ) as mock_download, patch.object(
+            self.module, "torrent_to_magnet", side_effect=fake_torrent_to_magnet
+        ) as mock_magnet:
+            self.module.dhd_to_log(str(self.base_dir))
+
+        self.assertFalse(source_file.exists())
+        self.assertFalse(torrent_path.exists())
+        self.assertTrue(log_path.exists())
+        self.assertEqual(log_path.read_text(encoding="utf-8"), "magnet:?xt=urn:btih:ok")
+        self.assertEqual(mock_download.call_count, 3)
+        self.assertEqual(mock_magnet.call_count, 3)
+
+    def test_dhd_to_log_logs_file_path_when_worker_raises(self):
+        """线程任务抛异常时，汇总日志应带上对应文件路径。"""
+        source_file = self.base_dir / "movie.dhd"
+        source_file.write_text("https://example.com/topic/123\n", encoding="utf-8")
+
+        with patch.object(self.module, "process_dhd_file", side_effect=RuntimeError("boom")), patch.object(
+            self.module.logger, "error"
+        ) as mock_error:
+            self.module.dhd_to_log(str(self.base_dir))
+
+        self.assertIn(str(source_file), mock_error.call_args[0][0])
+        self.assertIn("boom", mock_error.call_args[0][0])
 
 
 if __name__ == "__main__":
