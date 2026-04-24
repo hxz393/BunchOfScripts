@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import requests
+from bs4 import BeautifulSoup
 
 requests.packages.urllib3.disable_warnings()
 
@@ -148,7 +149,7 @@ class TestGetTtgResponse(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/page", headers=self.module.REQUEST_HEAD)
+        mock_get.assert_called_once_with("https://example.com/page", headers=self.module.REQUEST_HEAD, timeout=30)
 
     def test_get_ttg_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
@@ -158,9 +159,15 @@ class TestGetTtgResponse(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "503"):
                 self.module.get_ttg_response("https://example.com/page")
 
+    def test_get_ttg_response_propagates_request_exception(self):
+        """底层请求异常时应直接抛出，交给重试装饰器处理。"""
+        with patch.object(self.module.requests, "get", side_effect=requests.Timeout("timed out")):
+            with self.assertRaisesRegex(requests.Timeout, "timed out"):
+                self.module.get_ttg_response("https://example.com/page")
 
-class TestParseTtgResponse(unittest.TestCase):
-    """验证 TTG 页面解析逻辑。"""
+
+class TestParseTtgRow(unittest.TestCase):
+    """验证 TTG 单行解析逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_ttg()
@@ -168,8 +175,93 @@ class TestParseTtgResponse(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_parse_ttg_response_returns_structured_rows(self):
+    def test_parse_ttg_row_returns_structured_data(self):
         """结构完整的行应被解析成带 URL 和 IMDb 信息的字典。"""
+        row = BeautifulSoup(
+            build_page_html(
+                build_torrent_row(
+                    torrent_id="123",
+                    torrent_name="Movie Title",
+                    download_href="/download.php?id=123",
+                    imdb_href="https://www.imdb.com/title/tt7654321/",
+                    size_text="15.2 GB",
+                )
+            ),
+            "html.parser",
+        ).find("tr")
+
+        result = self.module.parse_ttg_row(row)
+
+        self.assertEqual(
+            result,
+            {
+                "id": "123",
+                "url": "https://example.com/t/123/",
+                "name": "Movie Title",
+                "dl": "https://example.com/download.php?id=123",
+                "imdb": "tt7654321",
+                "size": "15.2 GB",
+            },
+        )
+
+    def test_parse_ttg_row_uses_empty_values_when_optional_nodes_are_missing(self):
+        """缺少下载链接、IMDb 链接或标题时，应回退为空字符串。"""
+        row = BeautifulSoup(
+            build_page_html(
+                build_torrent_row(
+                    torrent_id="321",
+                    torrent_name=None,
+                    download_href=None,
+                    imdb_href=None,
+                    size_text="700 MB",
+                )
+            ),
+            "html.parser",
+        ).find("tr")
+
+        result = self.module.parse_ttg_row(row)
+
+        self.assertEqual(
+            result,
+            {
+                "id": "321",
+                "url": "https://example.com/t/321/",
+                "name": "",
+                "dl": "",
+                "imdb": "",
+                "size": "700 MB",
+            },
+        )
+
+    def test_parse_ttg_row_returns_none_when_id_is_missing(self):
+        """缺少种子 ID 时，应跳过当前行。"""
+        row = BeautifulSoup(
+            build_page_html(
+                build_torrent_row(
+                    torrent_id="123",
+                    torrent_name="Movie Title",
+                )
+            ).replace(' id="123"', ""),
+            "html.parser",
+        ).find("tr")
+
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            self.assertIsNone(self.module.parse_ttg_row(row))
+
+        self.assertIn("缺少种子 id", logs.output[0])
+
+
+class TestParseTtgResponse(unittest.TestCase):
+    """验证 TTG 整页解析逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_ttg()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_parse_ttg_response_collects_only_valid_rows(self):
+        """整页解析时应收集有效行并跳过无效行。"""
         response = Mock(
             text=build_page_html(
                 build_torrent_row(
@@ -179,58 +271,108 @@ class TestParseTtgResponse(unittest.TestCase):
                     imdb_href="https://www.imdb.com/title/tt7654321/",
                     size_text="15.2 GB",
                 )
-            )
+            ).replace(' id="123"', "")
         )
 
-        result = self.module.parse_ttg_response(response)
+        with patch.object(
+            self.module,
+            "parse_ttg_row",
+            side_effect=[
+                {
+                    "id": "200",
+                    "url": "https://example.com/t/200/",
+                    "name": "Valid Row",
+                    "dl": "https://example.com/download.php?id=200",
+                    "imdb": "tt0000200",
+                    "size": "1 GB",
+                },
+                None,
+            ],
+        ) as mock_parse_row:
+            response.text = build_page_html(
+                build_torrent_row(torrent_id="200", torrent_name="Valid Row", size_text="1 GB"),
+                build_torrent_row(torrent_id="201", torrent_name="Broken Row", size_text="2 GB").replace(' id="201"', ""),
+            )
+            result = self.module.parse_ttg_response(response)
 
         self.assertEqual(
             result,
             [
                 {
-                    "id": "123",
-                    "url": "https://example.com/t/123/",
-                    "name": "Movie Title",
-                    "dl": "https://example.com/download.php?id=123",
-                    "imdb": "tt7654321",
-                    "size": "15.2 GB",
+                    "id": "200",
+                    "url": "https://example.com/t/200/",
+                    "name": "Valid Row",
+                    "dl": "https://example.com/download.php?id=200",
+                    "imdb": "tt0000200",
+                    "size": "1 GB",
                 }
             ],
         )
+        self.assertEqual(mock_parse_row.call_count, 2)
 
-    def test_parse_ttg_response_uses_empty_values_when_optional_nodes_are_missing(self):
-        """缺少下载链接、IMDb 链接或标题时，应回退为空字符串。"""
+    def test_parse_ttg_response_raises_when_torrent_table_is_missing(self):
+        """页面缺少 ``torrent_table`` 时应显式抛错。"""
+        response = Mock(text="<html><body><div>blocked</div></body></html>")
+
+        with self.assertRaisesRegex(ValueError, "torrent_table"):
+            self.module.parse_ttg_response(response)
+
+    def test_parse_ttg_response_passes_each_row_to_parse_ttg_row(self):
+        """整页解析应逐行委托给 ``parse_ttg_row``。"""
         response = Mock(
             text=build_page_html(
-                build_torrent_row(
-                    torrent_id="321",
-                    torrent_name=None,
-                    download_href=None,
-                    imdb_href=None,
-                    size_text="700 MB",
-                )
+                build_torrent_row(torrent_id="123", torrent_name="Row 1"),
+                build_torrent_row(torrent_id="124", torrent_name="Row 2"),
             )
         )
 
-        result = self.module.parse_ttg_response(response)
+        with patch.object(
+            self.module,
+            "parse_ttg_row",
+            side_effect=[
+                {"id": "123", "url": "u1", "name": "n1", "dl": "d1", "imdb": "", "size": "1 GB"},
+                {"id": "124", "url": "u2", "name": "n2", "dl": "d2", "imdb": "", "size": "2 GB"},
+            ],
+        ) as mock_parse_row:
+            result = self.module.parse_ttg_response(response)
 
         self.assertEqual(
             result,
             [
-                {
-                    "id": "321",
-                    "url": "https://example.com/t/321/",
-                    "name": "",
-                    "dl": "",
-                    "imdb": "",
-                    "size": "700 MB",
-                }
+                {"id": "123", "url": "u1", "name": "n1", "dl": "d1", "imdb": "", "size": "1 GB"},
+                {"id": "124", "url": "u2", "name": "n2", "dl": "d2", "imdb": "", "size": "2 GB"},
             ],
         )
+        self.assertEqual(mock_parse_row.call_count, 2)
+
+    def test_parse_ttg_response_logs_and_skips_row_when_parse_ttg_row_raises(self):
+        """单行解析抛异常时，应记录错误并继续处理后续行。"""
+        response = Mock(
+            text=build_page_html(
+                build_torrent_row(torrent_id="123", torrent_name="Row 1"),
+                build_torrent_row(torrent_id="124", torrent_name="Row 2"),
+            )
+        )
+
+        with patch.object(
+            self.module,
+            "parse_ttg_row",
+            side_effect=[
+                RuntimeError("boom"),
+                {"id": "124", "url": "u2", "name": "n2", "dl": "d2", "imdb": "", "size": "2 GB"},
+            ],
+        ), self.assertLogs(self.module.logger.name, level="ERROR") as logs:
+            result = self.module.parse_ttg_response(response)
+
+        self.assertEqual(
+            result,
+            [{"id": "124", "url": "u2", "name": "n2", "dl": "d2", "imdb": "", "size": "2 GB"}],
+        )
+        self.assertIn("解析第 1 行种子信息失败", logs.output[0])
 
 
 class TestFilterAndFixName(unittest.TestCase):
-    """验证 ID 过滤和文件名修剪逻辑。"""
+    """验证 ID 过滤和标题修剪逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_ttg({"newest_id": 100})
@@ -252,13 +394,47 @@ class TestFilterAndFixName(unittest.TestCase):
 
         self.assertEqual(result, "Title｜A｜B")
 
-    def test_fix_name_truncates_name_when_exceeding_max_length(self):
+    def test_fix_name_truncates_title_when_exceeding_max_length(self):
         """标题超长时应按上限截断。"""
         long_name = "A" * 230
 
         result = self.module.fix_name(long_name, max_length=220)
 
         self.assertEqual(result, "A" * 220)
+
+
+class TestBuildOutputFilename(unittest.TestCase):
+    """验证输出文件名拼装逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_ttg()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_build_output_filename_combines_fixed_title_size_and_imdb(self):
+        """应基于修剪后的标题拼出最终输出文件名。"""
+        result = self.module.build_output_filename(
+            {
+                "name": "Title / A \\ B",
+                "size": "2 GB",
+                "imdb": "tt1234567",
+            }
+        )
+
+        self.assertEqual(result, "Title｜A｜B(2 GB)[tt1234567].ttg")
+
+    def test_build_output_filename_raises_when_sanitize_returns_empty(self):
+        """清洗结果为空时应显式抛错。"""
+        with patch.object(self.module, "sanitize_filename", return_value=""):
+            with self.assertRaisesRegex(ValueError, "无效文件名"):
+                self.module.build_output_filename(
+                    {
+                        "name": "Title",
+                        "size": "2 GB",
+                        "imdb": "tt1234567",
+                    }
+                )
 
 
 class TestWriteToDisk(unittest.TestCase):
@@ -327,8 +503,8 @@ class TestWriteToDisk(unittest.TestCase):
                     ]
                 )
 
-    def test_write_to_disk_keeps_ttg_suffix_when_filename_is_truncated(self):
-        """完整文件名超长时，截断后仍应保留 ``.ttg`` 后缀。"""
+    def test_write_to_disk_truncates_only_title_before_appending_suffix(self):
+        """超长标题应先被截断，再拼接大小、IMDb 和 ``.ttg`` 后缀。"""
         long_name = "A" * 240
 
         self.module.write_to_disk(
@@ -346,7 +522,7 @@ class TestWriteToDisk(unittest.TestCase):
         output_files = list(Path(self.module.OUTPUT_DIR).iterdir())
         self.assertEqual(len(output_files), 1)
         self.assertEqual(output_files[0].suffix, ".ttg")
-        self.assertEqual(len(output_files[0].name), 220)
+        self.assertEqual(output_files[0].name, f"{'A' * 220}(2 GB)[tt1234567].ttg")
 
 
 class TestScrapyTtgMain(unittest.TestCase):
@@ -408,6 +584,30 @@ class TestScrapyTtgMain(unittest.TestCase):
                 self.module.scrapy_ttg()
 
         mock_update.assert_not_called()
+
+    def test_scrapy_ttg_updates_newest_id_when_page_keeps_partial_success_results(self):
+        """页内已有失败日志时，只要仍返回新结果，主流程就按当前契约继续推进。"""
+        parsed_pages = [
+            [{"id": "101"}, {"id": "105"}],
+            [{"id": "100"}],
+        ]
+
+        with patch.object(self.module, "get_ttg_response", side_effect=[Mock(), Mock()]) as mock_get, patch.object(
+            self.module, "parse_ttg_response", side_effect=parsed_pages
+        ), patch.object(self.module, "write_to_disk") as mock_write, patch.object(
+            self.module, "update_json_config"
+        ) as mock_update:
+            self.module.scrapy_ttg()
+
+        self.assertEqual(
+            mock_get.call_args_list,
+            [
+                call("https://example.com/browse.php?cat=movie&&page=0&"),
+                call("https://example.com/browse.php?cat=movie&&page=1&"),
+            ],
+        )
+        mock_write.assert_called_once_with([{"id": "101"}, {"id": "105"}])
+        mock_update.assert_called_once_with("config/scrapy_ttg.json", "newest_id", 105)
 
 
 if __name__ == "__main__":
