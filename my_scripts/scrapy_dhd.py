@@ -7,6 +7,7 @@
 """
 import concurrent.futures
 import hashlib
+import json
 import logging
 import os
 import re
@@ -14,6 +15,7 @@ import time
 import urllib.parse
 
 import bencodepy
+import redis
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
@@ -34,6 +36,14 @@ DHD_COOKIE = CONFIG['dhd_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 并发数
+REDIS_HOST = CONFIG.get('redis_host', '127.0.0.1')  # Redis 主机
+REDIS_PORT = CONFIG.get('redis_port', 6379)  # Redis 端口
+REDIS_DB = CONFIG.get('redis_db', 0)  # Redis DB
+
+REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'dhd_pending')  # 待处理队列
+REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'dhd_processing')  # 处理中队列
+REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'dhd_failed')  # 失败队列
+REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'dhd_seen')  # 已入队帖子集合
 
 REQUEST_HEAD["Cookie"] = DHD_COOKIE  # 请求头加入认证
 
@@ -101,66 +111,193 @@ def working_dhd(info: dict) -> None:
     write_list_to_file(file_path, content)
 
 
-def scrapy_dhd(start_page: int = 1) -> None:
+def get_dhd_redis_client() -> redis.Redis:
+    """获取 DHD 任务队列使用的 Redis 客户端。"""
+    return redis.Redis(host=REDIS_HOST, decode_responses=True)
+
+
+def serialize_dhd_info(info: dict) -> str:
+    """将帖子信息序列化为 Redis 中保存的字符串。"""
+    payload = {
+        "id": str(info["id"]),
+        "name": info["name"],
+        "url": info["url"],
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def deserialize_dhd_info(payload: str) -> dict:
+    """将 Redis 中保存的字符串还原为帖子信息。"""
+    return json.loads(payload)
+
+
+def push_dhd_posts_to_queue(redis_client: redis.Redis, items: list[dict]) -> int:
     """
-    使用最简单的线程池方式抓取 dhd 站点发布信息。
+    将新帖子写入 Redis 队列，并使用 set 做去重。
+    返回本次真正入队的任务数量。
     """
+    if not items:
+        return 0
+
+    pipe = redis_client.pipeline()
+    for item in items:
+        pipe.sadd(REDIS_SEEN_KEY, str(item["id"]))
+    added_results = pipe.execute()
+
+    queue_pipe = redis_client.pipeline()
+    enqueued_count = 0
+    for added, item in zip(added_results, items):
+        if added:
+            queue_pipe.rpush(REDIS_PENDING_KEY, serialize_dhd_info(item))
+            enqueued_count += 1
+
+    if enqueued_count:
+        queue_pipe.execute()
+
+    return enqueued_count
+
+
+def fetch_dhd_batch(start_page: int, pages_per_batch: int = 1, max_batch_attempts: int = 5) -> list:
+    """抓取一批列表页，并在返回空结果时按批次重试。"""
+    batch_attempt = 0
+    while batch_attempt < max_batch_attempts:
+        logger.info(f"批量抓取第 {start_page} 到 {start_page + pages_per_batch - 1} 页，尝试次数 {batch_attempt + 1}")
+        page_numbers = [start_page + i for i in range(pages_per_batch)]
+        combined_result_list = []
+        for page in page_numbers:
+            page_url = f"{DHD_MOVIE_URL}{page}.html"
+            try:
+                response_text = get_dhd_response(page_url)
+            except Exception as e:
+                logger.error(f"页面请求失败：{e}")
+                continue
+            if not response_text:
+                continue
+            result_list = parse_dhd_response(response_text)
+            combined_result_list.extend(result_list)
+
+        if combined_result_list:
+            return combined_result_list
+
+        batch_attempt += 1
+        logger.error(f"批量请求返回空结果，第 {batch_attempt} 次重试")
+        time.sleep(3)
+
+    logger.error("连续多次重试后，批量请求依然返回空结果")
+    raise Exception("批量请求失败")
+
+
+def enqueue_dhd_posts(start_page: int = 1, redis_client: redis.Redis | None = None) -> None:
+    """顺序翻页，收集新帖子并写入 Redis 待处理队列。"""
     logger.info("抓取 dhd 站点发布信息")
+    if redis_client is None:
+        redis_client = get_dhd_redis_client()
+
     max_ids = []
-    pages_per_batch = 1  # 每次批量请求1个页面，合计约100个链接
+    pages_per_batch = 1
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
-        while True:
-            # 为当前批次增加重试逻辑
-            batch_attempt = 0
-            max_batch_attempts = 5
-            combined_result_list = []
-            while batch_attempt < max_batch_attempts:
-                logger.info(f"批量抓取第 {start_page} 到 {start_page + pages_per_batch - 1} 页，尝试次数 {batch_attempt + 1}")
-                page_numbers = [start_page + i for i in range(pages_per_batch)]
-                page_urls = [f"{DHD_MOVIE_URL}{page}.html" for page in page_numbers]
-                page_futures = [executor.submit(get_dhd_response, page_url) for page_url in page_urls]
-                combined_result_list = []
-                for future in concurrent.futures.as_completed(page_futures):
-                    try:
-                        resp = future.result()
-                    except Exception as e:
-                        logger.error(f"页面请求失败：{e}")
-                        continue
-                    if not resp:
-                        continue
-                    result_list = parse_dhd_response(resp)
-                    combined_result_list.extend(result_list)
-                if combined_result_list:
-                    break  # 请求到内容，跳出重试循环
-                batch_attempt += 1
-                logger.error(f"批量请求返回空结果，第 {batch_attempt} 次重试")
-                time.sleep(3)  # 重试前延时
-            if not combined_result_list:
-                # 连续多次重试后依然为空，认为请求出错，不再继续
-                logger.error("连续多次重试后，批量请求依然返回空结果")
-                raise Exception("批量请求失败")
+    while True:
+        combined_result_list = fetch_dhd_batch(start_page, pages_per_batch)
 
-            # 比较最新 id，过滤结果
-            new_list = [i for i in combined_result_list if int(i['id']) > NEWEST_ID]
-            if len(new_list) == 0:
-                logger.info("没有新发布")
-                break
+        new_list = [i for i in combined_result_list if int(i['id']) > NEWEST_ID]
+        if len(new_list) == 0:
+            logger.info("没有新发布")
+            break
 
-            # 并发抓取每个新链接的详情
-            future_to_item = {executor.submit(working_dhd, item): item for item in new_list}
-            for future in concurrent.futures.as_completed(future_to_item):
-                item = future_to_item[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"抓取出错：{item['url']}，错误：{e}")
+        enqueued_count = push_dhd_posts_to_queue(redis_client, new_list)
+        logger.info(f"第 {start_page} 页新增 {len(new_list)} 条，入队 {enqueued_count} 条")
 
-            start_page += pages_per_batch
-            max_ids.append(max(int(i['id']) for i in new_list))
+        start_page += pages_per_batch
+        max_ids.append(max(int(i['id']) for i in new_list))
 
     max_id = max(max_ids) if max_ids else NEWEST_ID
     update_json_config(CONFIG_PATH, "newest_id", max_id)
+
+
+def recover_dhd_processing_queue(redis_client: redis.Redis) -> int:
+    """将中断时残留在 processing 队列中的任务恢复回 pending 队列。"""
+    recovered_count = 0
+    while True:
+        payload = redis_client.rpoplpush(REDIS_PROCESSING_KEY, REDIS_PENDING_KEY)
+        if not payload:
+            break
+        recovered_count += 1
+
+    if recovered_count:
+        logger.warning(f"恢复 {recovered_count} 条未完成的 DHD 任务回待处理队列")
+
+    return recovered_count
+
+
+def pop_next_dhd_payload(redis_client: redis.Redis) -> str | None:
+    """从 pending 队列中取出一个任务，并移动到 processing 队列。"""
+    return redis_client.rpoplpush(REDIS_PENDING_KEY, REDIS_PROCESSING_KEY)
+
+
+def drain_dhd_queue(redis_client: redis.Redis | None = None) -> None:
+    """从 Redis 队列中取帖子，使用多线程访问详情页并写出 .dhd 文件。"""
+    if redis_client is None:
+        redis_client = get_dhd_redis_client()
+
+    recover_dhd_processing_queue(redis_client)
+    initial_pending_count = redis_client.llen(REDIS_PENDING_KEY)
+    if initial_pending_count == 0:
+        logger.info("DHD 队列为空，没有待处理任务")
+        return
+
+    logger.info(f"DHD 队列开始处理：待处理 {initial_pending_count} 条")
+    processed_count = 0
+    success_count = 0
+    failed_count = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
+        future_to_task = {}
+
+        while True:
+            while len(future_to_task) < THREAD_NUMBER:
+                payload = pop_next_dhd_payload(redis_client)
+                if not payload:
+                    break
+                info = deserialize_dhd_info(payload)
+                future = executor.submit(working_dhd, info)
+                future_to_task[future] = (payload, info)
+
+            if not future_to_task:
+                break
+
+            done, _ = concurrent.futures.wait(
+                future_to_task,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                payload, info = future_to_task.pop(future)
+                processed_count += 1
+                try:
+                    future.result()
+                    success_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"抓取出错：{info['url']}，错误：{e}")
+                    redis_client.rpush(REDIS_FAILED_KEY, payload)
+                finally:
+                    redis_client.lrem(REDIS_PROCESSING_KEY, 1, payload)
+
+                if processed_count % 100 == 0:
+                    remaining_count = redis_client.llen(REDIS_PENDING_KEY) + len(future_to_task)
+                    logger.info(
+                        f"DHD 队列进度：已处理 {processed_count} 条，成功 {success_count} 条，"
+                        f"失败 {failed_count} 条，剩余约 {remaining_count} 条"
+                    )
+
+    logger.info(
+        f"DHD 队列处理完成：总计 {processed_count} 条，成功 {success_count} 条，失败 {failed_count} 条"
+    )
+
+
+def scrapy_dhd(start_page: int = 1) -> None:
+    """先翻页入 Redis，再从 Redis 队列中多线程抓取详情。"""
+    enqueue_dhd_posts(start_page=start_page)
+    drain_dhd_queue()
 
 
 def rename_file(filename: str) -> str:
