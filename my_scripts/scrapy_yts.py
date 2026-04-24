@@ -118,7 +118,7 @@ def yts_login(session: requests.Session) -> bool:
         logger.error(f"yts: 登录请求失败：{exc}")
         return False
     except ValueError:
-        logger.error(f"yts: 登录返回了非 JSON 响应，status={response.status_code}")
+        logger.error(f"yts: 登录返回了非 JSON 响应")
         return False
 
     # 登录成功时，返回内容通常为 "Ok."
@@ -289,6 +289,30 @@ def move_file_to_director_folder(file_path: Path, target_root: Path, folder_name
     return target_file_path
 
 
+def process_missing_director_file(file_path: Path, target_root: Path) -> None:
+    """
+    处理单个缺少导演信息的 JSON 文件。
+
+    :param file_path: 源文件路径
+    :param target_root: 导演目录的目标根目录
+    :return: 无
+    """
+    file_name = file_path.name
+    logger.info(f"处理：{file_name}")
+
+    imdb = extract_imdb_id_from_filename(file_name)
+    if not imdb:
+        logger.error(f"没有找到 tt 编号：{file_name}")
+        return
+
+    folder_name = resolve_director_name(imdb)
+    folder_name = normalize_director_folder_name(folder_name)
+    logger.info(f"导演名：{folder_name}")
+
+    move_file_to_director_folder(file_path, target_root, folder_name)
+    logger.info("*" * 255)
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -299,19 +323,8 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
     for root, dirs, files in os.walk(miss_path):
         for file_name in files:
             if file_name.endswith('.json'):
-                logger.info(f"处理：{file_name}")
                 file_path = Path(os.path.join(root, file_name))
-                imdb = extract_imdb_id_from_filename(file_name)
-                if not imdb:
-                    logger.error(f"没有找到 tt 编号：{file_name}")
-                    continue
-
-                folder_name = resolve_director_name(imdb)
-                folder_name = normalize_director_folder_name(folder_name)
-                logger.info(f"导演名：{folder_name}")
-
-                move_file_to_director_folder(file_path, Path(root).parent, folder_name)
-                logger.info("*" * 255)
+                process_missing_director_file(file_path, Path(root).parent)
 
 
 def search_imdb_local(movie_id: str) -> str:
