@@ -83,14 +83,18 @@ def scrapy_yts(url_path: str) -> None:
                     failed_list.append(link)
                     logger.exception(f"链接：{link} 在处理进程中发生错误")
     except Exception:
-        logger.exception(f"链接：{link} 在分配线程时发生错误")
+        logger.exception(f"来源文件：{url_path} 在线程分配阶段发生错误")
     finally:
-        if need_fix_imdb:
-            logger.info("来自 yts 没有导演的种子，试图自行补全")
-            scrapy_yts_fix_imdb()
         logger.warning(f"总计数量：{len(links)}，失败数量：{len(failed_list)}。失败链接：")
         for i in failed_list:
             logger.error(i)
+
+        if need_fix_imdb:
+            logger.info("来自 yts 没有导演的种子，试图自行补全")
+            try:
+                scrapy_yts_fix_imdb()
+            except Exception:
+                logger.exception("yts: 自动补导演时发生错误")
 
 
 def yts_login(session: requests.Session) -> bool:
