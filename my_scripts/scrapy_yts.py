@@ -36,6 +36,7 @@ API_PATH = CONFIG['api_path']  # api 请求地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 HEADERS = CONFIG['headers']  # 请求头
 COOKIE = CONFIG['cookie']  # 用户甜甜
+REQUEST_TIMEOUT = 15
 MISS_DIRECTOR_NAME = "_"
 NO_DIRECTOR_NAME = "没有导演"
 
@@ -110,7 +111,7 @@ def yts_login(session: requests.Session) -> bool:
         "password": YTS_PASS
     }
     try:
-        response = session.post(login_endpoint, headers=HEADERS, data=data, timeout=15)
+        response = session.post(login_endpoint, headers=HEADERS, data=data, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as exc:
@@ -164,7 +165,7 @@ def fetch_movie_detail_by_id(session: requests.Session, movie_id: str, link: str
     :return: 电影详情 JSON；查不到时返回空字典
     """
     api_url = f"{API_PATH}{movie_id}"
-    response = session.get(api_url, headers=HEADERS, verify=False)
+    response = session.get(api_url, headers=HEADERS, verify=False, timeout=REQUEST_TIMEOUT)
     movie_detail = response.json()
     if not movie_detail['data']['movie']['id']:
         logger.error(f"链接：{link} 没有返回有效 JSON 数据")
@@ -183,7 +184,7 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
     :return: json 返回数据
     """
     # 访问网页，获取电影 ID
-    r2 = session.get(link, headers=HEADERS, verify=False)
+    r2 = session.get(link, headers=HEADERS, verify=False, timeout=REQUEST_TIMEOUT)
     movie_id, director_name = parse_yts_movie_page(r2.text, link)
     if not movie_id:
         return {}
