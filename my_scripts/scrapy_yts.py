@@ -110,14 +110,26 @@ def yts_login(session: requests.Session) -> bool:
         "username": YTS_USER,
         "password": YTS_PASS
     }
-    response = session.post(login_endpoint, headers=HEADERS, data=data)
+    try:
+        response = session.post(login_endpoint, headers=HEADERS, data=data, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        logger.error(f"yts: 登录请求失败：{exc}")
+        return False
+    except ValueError:
+        logger.error(f"yts: 登录返回了非 JSON 响应，status={response.status_code}")
+        return False
+
     # 登录成功时，返回内容通常为 "Ok."
-    if response.json()["status"] == "ok":
+    if payload.get("status") == "ok":
         logger.info("yts: 登录成功。")
         return True
-    else:
-        logger.error(f"yts: 登录失败，响应内容: {response.text}")
-        return False
+
+    logger.error(
+        f"yts: 登录失败，status={response.status_code}，响应片段：{response.text[:200]!r}"
+    )
+    return False
 
 
 @retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
@@ -223,9 +235,8 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
 
                 # 查询 IMDB
                 folder_name = search_imdb_local(imdb)
-                # folder_name = search_imdb(imdb) # 线上模式
                 if not folder_name:
-                    # 查询 TMDB
+                    # IMDB 没有导演，尝试查询 TMDB 获取导演
                     movie_details = get_tmdb_movie_details(imdb)
                     if movie_details:
                         crew_list = movie_details['casts'].get('crew', [])
