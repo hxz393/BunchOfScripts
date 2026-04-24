@@ -266,30 +266,30 @@ def process_dhd_file(file_path: str, directory: str) -> None:
     3. 下载种子文件，并转换为磁链
     4. 回写磁链到 .log 文件，并删除临时种子文件
     """
-    # 每个线程创建自己的 requests.Session
-    session = requests.Session()
     logger.info(f"处理文件：{file_path}")
 
-    # 构造 torrent 文件保存路径
-    torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
+    # 每个线程创建自己的 requests.Session，并在任务结束后关闭
+    with requests.Session() as session:
+        # 构造 torrent 文件保存路径
+        torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
 
-    dl_url = get_dhd_download_url(session, file_path)
-    if not dl_url:
-        return
+        dl_url = get_dhd_download_url(session, file_path)
+        if not dl_url:
+            return
 
-    # 下载种子文件并转换为磁链
-    get_dhd_torrent(session, dl_url, torrent_path)
-    magnet = torrent_to_magnet(torrent_path)
-    if not magnet:
-        logger.warning(f"文件 {file_path}: 转换磁链失败")
+        # 下载种子文件并转换为磁链
+        get_dhd_torrent(session, dl_url, torrent_path)
+        magnet = torrent_to_magnet(torrent_path)
+        if not magnet:
+            logger.warning(f"文件 {file_path}: 转换磁链失败")
+            os.remove(torrent_path)
+            return
+
+        # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
+        new_file_path = file_path.replace(".dhd", ".log")
+        os.rename(file_path, new_file_path)
+        write_list_to_file(new_file_path, [magnet])
         os.remove(torrent_path)
-        return
-
-    # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
-    new_file_path = file_path.replace(".dhd", ".log")
-    os.rename(file_path, new_file_path)
-    write_list_to_file(new_file_path, [magnet])
-    os.remove(torrent_path)
 
     logger.info(f"文件 {file_path}: 转换完成")
     logger.info("-" * 255)
