@@ -85,8 +85,10 @@ def scrapy_yts(url_path: str) -> None:
                         if result['data']['movie'].get('director') == MISS_DIRECTOR_NAME:
                             need_fix_imdb = True
                 except Exception:
+                    with failed:
+                        failed_count += 1
+                        failed_list.append(link)
                     logger.exception(f"链接：{link} 在处理进程中发生错误")
-                    failed_list.append(link)
     except Exception:
         logger.exception(f"链接：{link} 在分配线程时发生错误")
     finally:
