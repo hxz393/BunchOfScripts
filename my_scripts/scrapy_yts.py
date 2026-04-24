@@ -134,7 +134,6 @@ def yts_login(session: requests.Session) -> bool:
     return False
 
 
-@retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
 def parse_yts_movie_page(html: str, link: str) -> tuple[str | None, str]:
     """
     解析 YTS 电影详情页，提取电影 ID 和导演名。
@@ -157,6 +156,25 @@ def parse_yts_movie_page(html: str, link: str) -> tuple[str | None, str]:
     return movie_id[0], director_name[0]
 
 
+def fetch_movie_detail_by_id(session: requests.Session, movie_id: str, link: str) -> Dict:
+    """
+    根据电影 ID 请求 YTS API 详情。
+
+    :param session: 已登录的 requests.Session
+    :param movie_id: 电影 ID
+    :param link: 原始链接，用于日志
+    :return: 电影详情 JSON；查不到时返回空字典
+    """
+    api_url = f"{API_PATH}{movie_id}"
+    response = session.get(api_url, headers=HEADERS, verify=False)
+    movie_detail = response.json()
+    if not movie_detail['data']['movie']['id']:
+        logger.error(f"链接：{link} 没有返回有效 JSON 数据")
+        return {}
+
+    return movie_detail
+
+
 @retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
 def fetch_data(session: requests.Session, link: str) -> Dict:
     """
@@ -172,14 +190,10 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
     if not movie_id:
         return {}
 
-    # 向 API 发送请求，获取响应，返回最终数据
-    api_url = f"{API_PATH}{movie_id}"
-    r1 = session.get(api_url, headers=HEADERS, verify=False)
-    movie_detail = r1.json()
-    # api 请求的数据有可能滞后，获取不到
-    if not movie_detail['data']['movie']['id']:
-        logger.error(f"链接：{link} 没有返回有效 JSON 数据")
+    movie_detail = fetch_movie_detail_by_id(session, movie_id, link)
+    if not movie_detail:
         return {}
+
     movie_detail['data']['movie']['director'] = director_name
     return movie_detail
 
