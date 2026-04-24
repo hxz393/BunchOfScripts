@@ -79,49 +79,66 @@ def get_ttg_response(url: str) -> requests.Response:
 
 
 def parse_ttg_response(response: requests.Response) -> list:
-    """解析流程"""
+    """解析整页 TTG 响应。"""
     soup = BeautifulSoup(response.text, "html.parser")
 
     # 定位 id 为 torrent_table 的 table
     table = soup.find("table", id="torrent_table")
+    if table is None:
+        raise ValueError("页面中未找到 torrent_table")
+
     # 找到所有 class 包含 hover_hr 的 tr 标签
     rows = table.find_all("tr", class_=lambda x: x and "hover_hr" in x)
 
     data_list = []
-    for row in rows:
-        # 提取 torrent id，即 tr 的 id 属性
-        torrent_id = row.get("id")
-        torrent_url = f"{TTG_URL}/t/{torrent_id}/"
+    for index, row in enumerate(rows, start=1):
+        try:
+            data = parse_ttg_row(row)
+        except Exception:
+            logger.exception(f"解析第 {index} 行种子信息失败")
+            continue
 
-        # 种子名称：在 a.treport 下的 img.report 中的 torrentname 属性
-        torrent_img = row.select_one("a.treport img.report")
-        torrent_name = torrent_img.get("torrentname") if torrent_img else ""
-
-        # 下载地址：class 为 dl_a 的 a 标签的 href 属性
-        dl_a = row.select_one("a.dl_a")
-        download_href = dl_a.get("href") if dl_a else None
-        download_url = f"{TTG_URL}{download_href}" if download_href else ""
-
-        # imdb 地址：在 span.imdb_rate 下 a 标签的 href 属性
-        imdb_a = row.select_one("span.imdb_rate a")
-        imdb_url = imdb_a.get("href") if imdb_a else ""
-        imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', imdb_url)) else ""
-
-        # 大小：该信息位于大小那一列，通常是第7个 td (索引6)
-        tds = row.find_all("td")
-        size = "".join(tds[6].stripped_strings) if len(tds) > 6 else ""
-
-        data = {
-            "id": torrent_id,
-            "url": torrent_url,
-            "name": torrent_name,
-            "dl": download_url,
-            "imdb": imdb_id,
-            "size": size
-        }
-        data_list.append(data)
+        if data is not None:
+            data_list.append(data)
 
     return data_list
+
+
+def parse_ttg_row(row) -> dict | None:
+    """解析单条种子行。"""
+    torrent_id = row.get("id")
+    if not torrent_id:
+        logger.warning("跳过一行：缺少种子 id")
+        return None
+
+    torrent_url = f"{TTG_URL}/t/{torrent_id}/"
+
+    # 种子名称：在 a.treport 下的 img.report 中的 torrentname 属性
+    torrent_img = row.select_one("a.treport img.report")
+    torrent_name = torrent_img.get("torrentname") if torrent_img else ""
+
+    # 下载地址：class 为 dl_a 的 a 标签的 href 属性
+    dl_a = row.select_one("a.dl_a")
+    download_href = dl_a.get("href") if dl_a else None
+    download_url = f"{TTG_URL}{download_href}" if download_href else ""
+
+    # imdb 地址：在 span.imdb_rate 下 a 标签的 href 属性
+    imdb_a = row.select_one("span.imdb_rate a")
+    imdb_url = imdb_a.get("href") if imdb_a else ""
+    imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', imdb_url)) else ""
+
+    # 大小：该信息位于大小那一列，通常是第7个 td (索引6)
+    tds = row.find_all("td")
+    size = "".join(tds[6].stripped_strings) if len(tds) > 6 else ""
+
+    return {
+        "id": torrent_id,
+        "url": torrent_url,
+        "name": torrent_name,
+        "dl": download_url,
+        "imdb": imdb_id,
+        "size": size
+    }
 
 
 def fix_name(title: str, max_length: int = 220) -> str:
