@@ -255,6 +255,24 @@ def normalize_director_folder_name(folder_name: str) -> str:
     return folder_name.strip().replace("\"", "")
 
 
+def resolve_director_name(movie_id: str) -> str:
+    """
+    按既定顺序解析导演名。
+
+    :param movie_id: IMDb 标识，例如 tt1234567
+    :return: 导演目录名
+    """
+    folder_name = search_imdb_local(movie_id)
+    if folder_name:
+        return folder_name
+
+    folder_name = search_tmdb_director(movie_id)
+    if folder_name:
+        return folder_name
+
+    return NO_DIRECTOR_NAME
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -272,15 +290,7 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
                     logger.error(f"没有找到 tt 编号：{file_name}")
                     continue
 
-                # 查询导演名，先走 IMDB
-                folder_name = search_imdb_local(imdb)
-                # IMDB 没有导演，尝试查询 TMDB 获取导演
-                if not folder_name:
-                    folder_name = search_tmdb_director(imdb)
-                    # 也没有找到，置空空
-                    if not folder_name:
-                        folder_name = NO_DIRECTOR_NAME
-
+                folder_name = resolve_director_name(imdb)
                 folder_name = normalize_director_folder_name(folder_name)
                 logger.info(f"导演名：{folder_name}")
 
