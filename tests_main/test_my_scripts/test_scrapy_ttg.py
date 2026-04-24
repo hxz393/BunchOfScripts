@@ -292,6 +292,62 @@ class TestWriteToDisk(unittest.TestCase):
             "https://example.com/t/123/\nhttps://example.com/download.php?id=123",
         )
 
+    def test_write_to_disk_sanitizes_the_full_filename(self):
+        """应在完整文件名拼好后再统一交给 ``sanitize_filename`` 清洗。"""
+        with patch.object(self.module, "sanitize_filename", return_value="safe-name.ttg") as mock_sanitize:
+            self.module.write_to_disk(
+                [
+                    {
+                        "name": "Title / A \\ B",
+                        "size": "2:GB",
+                        "imdb": "tt1234567",
+                        "url": "https://example.com/t/123/",
+                        "dl": "https://example.com/download.php?id=123",
+                    }
+                ]
+            )
+
+        mock_sanitize.assert_called_once_with("Title｜A｜B(2:GB)[tt1234567].ttg")
+        output_file = Path(self.module.OUTPUT_DIR) / "safe-name.ttg"
+        self.assertTrue(output_file.exists())
+
+    def test_write_to_disk_raises_when_write_list_to_file_returns_false(self):
+        """底层写盘失败时应显式抛错，而不是静默继续。"""
+        with patch.object(self.module, "write_list_to_file", return_value=False):
+            with self.assertRaisesRegex(OSError, "写入文件失败"):
+                self.module.write_to_disk(
+                    [
+                        {
+                            "name": "Title",
+                            "size": "2 GB",
+                            "imdb": "tt1234567",
+                            "url": "https://example.com/t/123/",
+                            "dl": "https://example.com/download.php?id=123",
+                        }
+                    ]
+                )
+
+    def test_write_to_disk_keeps_ttg_suffix_when_filename_is_truncated(self):
+        """完整文件名超长时，截断后仍应保留 ``.ttg`` 后缀。"""
+        long_name = "A" * 240
+
+        self.module.write_to_disk(
+            [
+                {
+                    "name": long_name,
+                    "size": "2 GB",
+                    "imdb": "tt1234567",
+                    "url": "https://example.com/t/123/",
+                    "dl": "https://example.com/download.php?id=123",
+                }
+            ]
+        )
+
+        output_files = list(Path(self.module.OUTPUT_DIR).iterdir())
+        self.assertEqual(len(output_files), 1)
+        self.assertEqual(output_files[0].suffix, ".ttg")
+        self.assertEqual(len(output_files[0].name), 220)
+
 
 class TestScrapyTtgMain(unittest.TestCase):
     """验证主抓取流程的编排逻辑。"""
@@ -340,6 +396,18 @@ class TestScrapyTtgMain(unittest.TestCase):
         )
         self.assertEqual(mock_write.call_args_list, [call([{"id": "101"}, {"id": "105"}]), call([{"id": "103"}])])
         mock_update.assert_called_once_with("config/scrapy_ttg.json", "newest_id", 105)
+
+    def test_scrapy_ttg_does_not_update_newest_id_when_write_to_disk_fails(self):
+        """写盘失败时应把异常抛给上层，且不回写 newest_id。"""
+        with patch.object(self.module, "get_ttg_response", return_value=Mock()), patch.object(
+            self.module, "parse_ttg_response", return_value=[{"id": "101"}]
+        ), patch.object(self.module, "write_to_disk", side_effect=OSError("disk full")), patch.object(
+            self.module, "update_json_config"
+        ) as mock_update:
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.module.scrapy_ttg()
+
+        mock_update.assert_not_called()
 
 
 if __name__ == "__main__":

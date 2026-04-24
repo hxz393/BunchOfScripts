@@ -136,20 +136,23 @@ def fix_name(name: str, max_length: int = 220) -> str:
     # 长度不超限，直接返回
     if len(name) <= max_length:
         return name
-    else:
-        return name[:max_length]
+
+    stem, suffix = os.path.splitext(name)
+    if suffix and len(suffix) < max_length:
+        return f"{stem[:max_length - len(suffix)]}{suffix}"
+    return name[:max_length]
 
 
 def write_to_disk(result_list: list) -> None:
-    """写入到磁盘"""
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
+    """将一页抓取结果写入到磁盘"""
     for i in result_list:
-        name = i['name']
-        name = fix_name(name)
-        name = sanitize_filename(name)
-        file_name = f"{name}({i['size']})[{i['imdb']}].ttg"
+        file_name = f"{i['name']}({i['size']})[{i['imdb']}].ttg"
+        file_name = fix_name(file_name)
+        file_name = sanitize_filename(file_name)
+        if not file_name:
+            raise ValueError(f"无效文件名：{i['name']}")
+
         path = os.path.join(OUTPUT_DIR, file_name)
         links = [i["url"], i["dl"]]
-        write_list_to_file(path, links)
+        if not write_list_to_file(path, links):
+            raise OSError(f"写入文件失败：{path}")
