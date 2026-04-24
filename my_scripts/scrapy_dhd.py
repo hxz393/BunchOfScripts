@@ -240,7 +240,7 @@ def fix_name(name: str, max_length: int = 230) -> str:
     """修剪文件名"""
     name = re.sub(r'\s*\|\s*', '，', name)
     name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
+    name = re.sub(r'\s*\\\s*', '｜', name)
     name = re.sub(r'\s+', ' ', name)
     name = name.replace("\t", " ").strip()
     if len(name) <= max_length:
