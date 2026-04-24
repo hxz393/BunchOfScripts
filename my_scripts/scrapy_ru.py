@@ -87,77 +87,144 @@ def get_page(url: str) -> requests.Response:
     return r
 
 
-def scripy(url: str, group_url: str | None = None) -> None:
+def parse_topic_row(row) -> dict[str, str] | None:
+    """
+    从帖子行中提取标题、ID、帖子链接、大小和下载链接。
+
+    :param row: 单条帖子对应的 ``tr`` 节点
+    :return: 成功时返回解析结果，缺少关键字段时返回 ``None``
+    """
+    # 找标题及链接
+    title_element = row.xpath('.//td[@class="vf-col-t-title tt"]//a[contains(@class, "torTopic bold tt-text")]')
+    if not title_element:
+        return None
+
+    # 取第一个匹配到的 <a> 标签
+    a_tag = title_element[0]
+    title_text = a_tag.xpath('string(.)').strip()  # 帖子标题
+    topic_href = a_tag.xpath('@href')[0]  # 类似 "viewtopic.php?t=6375868"
+    topic_id = topic_href.split('t=', 1)[1]  # 纯 ID "6375868"
+    topic_link = f"{FORUM_URL}{topic_href}"  # 拼凑出完整链接
+
+    # 找文件大小和下载地址
+    dl_element = row.xpath('.//td[@class="vf-col-tor tCenter med nowrap"]//a[@class="small f-dl dl-stub"]')
+    if not dl_element:
+        return None
+
+    dl_tag = dl_element[0]
+    size_text = dl_tag.xpath('string(.)').strip()  # 例如 "272.1 MB"
+    dl_href = dl_tag.xpath('@href')[0]  # 例如 "dl.php?t=6375868"
+    download_link = f"{FORUM_URL}{dl_href}"
+
+    return {
+        "title_text": title_text,
+        "topic_id": topic_id,
+        "topic_link": topic_link,
+        "size_text": size_text,
+        "download_link": download_link,
+    }
+
+
+def build_output_filename(title_text: str, topic_id: str, size_text: str) -> str:
+    """
+    根据标题、帖子 ID 和大小生成输出文件名。
+
+    :param title_text: 帖子标题
+    :param topic_id: 帖子 ID
+    :param size_text: 页面展示的大小文本
+    :return: 处理后的输出文件名
+    """
+    if len(title_text) > 228:
+        title_text = title_text[:228]
+
+    file_name = f"{title_text}[{topic_id}][{size_text}].txt"
+    file_name = file_name.replace("/", "｜").replace("\\", "｜")
+    return sanitize_filename(file_name)
+
+
+def get_next_page_url(tree) -> str | None:
+    """
+    从当前页面中提取下一页完整链接。
+
+    :param tree: 当前页面的 HTML 树
+    :return: 存在下一页时返回完整 URL，否则返回 ``None``
+    """
+    next_link = tree.xpath('//a[@class="pg" and text()="След."]')
+    if not next_link:
+        return None
+
+    return f"{FORUM_URL}{next_link[0].get('href')}"
+
+
+def write_topic_file(file_name: str, file_content: str) -> None:
+    """
+    将帖子内容写入到目标目录中的文本文件。
+
+    :param file_name: 输出文件名
+    :param file_content: 文件内容
+    :return: 无
+    """
+    with open(os.path.join(TORRENT_PATH, file_name), "w", encoding='utf-8') as file:
+        file.write(file_content)
+
+
+def scripy(url: str) -> None:
     """
     抓取所有链接，并写入到文件。
 
     :param url: 栏目地址，例如："https://rutracker.org/forum/viewforum.php?f=106"
-    :param group_url: 原始栏目地址，用于翻页时持续读取和更新同一个配置项
     :return: 无
     """
-    base_url = group_url or url.split('&sort=2')[0]
-
-    # 请求一页内容
-    r = get_page(url)
-
-    # 找到所有种子行，以 class="hl-tr" 为标记
-    tree = etree.HTML(r.text)
-    row_elements = tree.xpath('//tr[@class="hl-tr"]')
-    if not row_elements:
-        raise RuntimeError(f"链接：{url} 未找到种子行")
-
-    # 遍历每一行
-    stop = False
-    stop_id = CONFIG['scrapy_process'].get(base_url, 0)
+    base_url = url.split('&sort=2')[0]
+    stop_id = int(CONFIG['scrapy_process'].get(base_url, 0))
+    current_url = url
     new_max_id = None
-    for row in row_elements:
-        # 找标题及链接
-        title_element = row.xpath('.//td[@class="vf-col-t-title tt"]//a[contains(@class, "torTopic bold tt-text")]')
-        if not title_element:
-            continue
-        # 取第一个匹配到的 <a> 标签
-        a_tag = title_element[0]
-        title_text = a_tag.xpath('string(.)').strip()  # 帖子标题
-        topic_href = a_tag.xpath('@href')[0]  # 类似 "viewtopic.php?t=6375868"
-        topic_id = topic_href.split('t=', 1)[1]  # 纯 ID "6375868"
-        topic_link = f"{FORUM_URL}{topic_href}"  # 拼凑出完整链接
 
-        # 找文件大小和下载地址
-        dl_element = row.xpath('.//td[@class="vf-col-tor tCenter med nowrap"]//a[@class="small f-dl dl-stub"]')
-        if not dl_element:
-            continue
-        dl_tag = dl_element[0]
-        size_text = dl_tag.xpath('string(.)').strip()  # 例如 "272.1 MB"
-        dl_href = dl_tag.xpath('@href')[0]  # 例如 "dl.php?t=6375868"
-        download_link = f"{FORUM_URL}{dl_href}"
+    while current_url:
+        # 请求一页内容
+        r = get_page(current_url)
 
-        # 拼凑出文件名，由帖子标题+ID+大小组成
-        if len(title_text) > 228:
-            title_text = title_text[:228]
-        file_name = f"{title_text}[{topic_id}][{size_text}].txt"
-        file_name = file_name.replace("/", "｜").replace("\\", "｜")
-        file_name = sanitize_filename(file_name)
-        # 文件内容，为帖子地址和种子下载链接，共两行
-        file_content = f"{topic_link}\n{download_link}"
+        # 找到所有种子行，以 class="hl-tr" 为标记
+        tree = etree.HTML(r.text)
+        row_elements = tree.xpath('//tr[@class="hl-tr"]')
+        if not row_elements:
+            raise RuntimeError(f"链接：{current_url} 未找到种子行")
 
-        # 计算是否中断，小于最后记录则跳过写文件
-        if int(topic_id) < int(stop_id):
-            stop = True
-        else:
-            # 写入到本地文本文件
-            with open(os.path.join(TORRENT_PATH, file_name), "w", encoding='utf-8') as file:
-                file.write(file_content)
-            if new_max_id is None or int(topic_id) > int(new_max_id):
-                new_max_id = topic_id
+        # 遍历每一行
+        stop = False
+        for row in row_elements:
+            topic_info = parse_topic_row(row)
+            if topic_info is None:
+                continue
+            title_text = topic_info["title_text"]
+            topic_id = topic_info["topic_id"]
+            topic_link = topic_info["topic_link"]
+            size_text = topic_info["size_text"]
+            download_link = topic_info["download_link"]
 
-    # 查找下一页链接
-    next_link = tree.xpath('//a[@class="pg" and text()="След."]')
-    if next_link and not stop:
-        # 如果能找到此链接，说明还有下一页
-        href_value = f"{FORUM_URL}{next_link[0].get('href')}"
-        logger.info(f"开始下一页链接: {href_value}")
-        scripy(href_value, base_url)
+            # 拼凑出文件名，由帖子标题+ID+大小组成
+            file_name = build_output_filename(title_text, topic_id, size_text)
+            # 文件内容，为帖子地址和种子下载链接，共两行
+            file_content = f"{topic_link}\n{download_link}"
 
-    # 更新本地配置
+            # 计算是否中断，小于最后记录则跳过写文件
+            if int(topic_id) < stop_id:
+                stop = True
+            else:
+                # 写入到本地文本文件
+                write_topic_file(file_name, file_content)
+                if new_max_id is None or int(topic_id) > int(new_max_id):
+                    new_max_id = topic_id
+
+        if stop:
+            break
+
+        next_page_url = get_next_page_url(tree)
+        if not next_page_url:
+            break
+
+        logger.info(f"开始下一页链接: {next_page_url}")
+        current_url = next_page_url
+
     if new_max_id is not None:
         update_json_config(CONFIG_PATH, base_url, new_max_id)
