@@ -266,8 +266,6 @@ def process_dhd_file(file_path: str, directory: str) -> None:
     3. 下载种子文件，并转换为磁链
     4. 回写磁链到 .log 文件，并删除临时种子文件
     """
-    logger.info(f"处理文件：{file_path}")
-
     # 每个线程创建自己的 requests.Session，并在任务结束后关闭
     with requests.Session() as session:
         # 构造 torrent 文件保存路径
@@ -278,8 +276,13 @@ def process_dhd_file(file_path: str, directory: str) -> None:
             return
 
         # 下载种子文件并转换为磁链
-        get_dhd_torrent(session, dl_url, torrent_path)
-        magnet = torrent_to_magnet(torrent_path)
+        try:
+            get_dhd_torrent(session, dl_url, torrent_path)
+            magnet = torrent_to_magnet(torrent_path)
+        except Exception:
+            if os.path.exists(torrent_path):
+                os.remove(torrent_path)
+            raise
         if not magnet:
             logger.warning(f"文件 {file_path}: 转换磁链失败")
             os.remove(torrent_path)
@@ -294,7 +297,6 @@ def process_dhd_file(file_path: str, directory: str) -> None:
         os.remove(torrent_path)
 
     logger.info(f"文件 {file_path}: 转换完成")
-    logger.info("-" * 255)
 
 
 def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
@@ -307,13 +309,13 @@ def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
     max_workers = min(32, len(file_list)) if file_list else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
-        futures = [executor.submit(process_dhd_file, file, directory) for file in file_list]
+        future_to_file = {executor.submit(process_dhd_file, file, directory): file for file in file_list}
         # 可选：等待每个任务执行完毕，并捕获异常
-        for future in concurrent.futures.as_completed(futures):
+        for future in concurrent.futures.as_completed(future_to_file):
             try:
                 future.result()
             except Exception as e:
-                logger.error(f"处理文件时出现异常: {e}")
+                logger.error(f"处理文件 {future_to_file[future]} 时出现异常: {e}")
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
