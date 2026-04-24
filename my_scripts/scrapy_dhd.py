@@ -287,10 +287,10 @@ def process_dhd_file(file_path: str, directory: str) -> None:
 
         # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
         new_file_path = file_path.replace(".dhd", ".log")
-        os.rename(file_path, new_file_path)
         if not write_list_to_file(new_file_path, [magnet]):
             logger.error(f"文件 {file_path}: 写入日志文件失败")
             return
+        os.remove(file_path)
         os.remove(torrent_path)
 
     logger.info(f"文件 {file_path}: 转换完成")
