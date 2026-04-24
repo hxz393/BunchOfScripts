@@ -361,20 +361,6 @@ class TestRenameAndExtractHelpers(unittest.TestCase):
         self.assertEqual(self.module.extract_imdb_id("https://www.imdb.com/title/tt7654321/"), "tt7654321")
         self.assertEqual(self.module.extract_imdb_id("no imdb link here"), "")
 
-    def test_fix_name_replaces_path_separators_including_backslash(self):
-        """应把管道、斜杠和反斜杠统一规整。"""
-        result = self.module.fix_name("Title | A / B \\ C")
-
-        self.assertEqual(result, "Title，A｜B｜C")
-
-    def test_fix_name_truncates_title_when_exceeding_max_length(self):
-        """标题超长时应按长度上限截断。"""
-        long_name = "A" * 240
-
-        result = self.module.fix_name(long_name, max_length=230)
-
-        self.assertEqual(result, "A" * 230)
-
 
 class TestGetDhdAndTorrent(unittest.TestCase):
     """验证同步请求和种子写盘逻辑。"""

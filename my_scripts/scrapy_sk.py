@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from retrying import retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
 from sort_movie_request import get_csfd_response, get_csfd_movie_details
 
 logger = logging.getLogger(__name__)
@@ -146,24 +146,6 @@ def parse_sk_response(response: requests.Response) -> list:
         })
 
     return results
-
-
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = re.sub(r'\s*=\s*CSFD\s*\d+%', '', name)
-    name = name.replace("\t", " ").strip()
-    name = name.replace("{@}", ".").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]
-
-
 def visit_sk_url(result_item: dict):
     """访问详情页"""
     url = result_item["url"]
@@ -186,7 +168,10 @@ def visit_sk_url(result_item: dict):
     if not csfd_data["id"]:
         csfd_data["id"] = "csfd" + csfd_url.split("/")[-1]
     file_name = result_item['title'] + "#" + csfd_data['origin'] + "#" + "{" + csfd_data['director'] + "}"
-    file_name = fix_name(file_name)
+    file_name = normalize_release_title_for_filename(
+        file_name,
+        extra_cleanup_patterns=(r'\s*=\s*CSFD\s*\d+%',),
+    )
     file_name = sanitize_filename(file_name) + "(" + result_item['size'] + ")" + "[" + csfd_data["id"] + "]"
     file_name = f"{file_name}.sk"
     print(file_name)

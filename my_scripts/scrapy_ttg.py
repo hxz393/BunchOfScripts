@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, update_json_config
+from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -142,22 +142,9 @@ def parse_ttg_row(row) -> dict | None:
     }
 
 
-def fix_name(title: str, max_length: int = 220) -> str:
-    """规范化种子标题，并限制标题部分长度。"""
-    title = re.sub(r'\s*\|\s*', '，', title)
-    title = re.sub(r'\s*/\s*', '｜', title)
-    title = re.sub(r'\s*\\\s*', '｜', title)
-    title = re.sub(r'\s+', ' ', title)
-    title = title.replace("{@}", ".").strip()
-    if len(title) <= max_length:
-        return title
-
-    return title[:max_length]
-
-
 def build_output_filename(result_item: dict) -> str:
     """根据抓取结果构造输出文件名。"""
-    title = fix_name(result_item['name'])
+    title = normalize_release_title_for_filename(result_item['name'])
     file_name = f"{title}({result_item['size']})[{result_item['imdb']}].ttg"
     file_name = sanitize_filename(file_name)
     if not file_name:

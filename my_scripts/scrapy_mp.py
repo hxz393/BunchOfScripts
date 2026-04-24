@@ -14,7 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -127,21 +127,6 @@ def parse_mp_response(response: requests.Response) -> list:
     return results
 
 
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    name = name.replace("{@}", ".").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]
-
-
 def visit_mp_url(result_item: dict):
     """访问详情页"""
     url = result_item["link"]
@@ -181,7 +166,7 @@ def visit_mp_url(result_item: dict):
     # 获取纯文本，保持标签间适当空格/换行
     text = desc.get_text(separator='\n', strip=True)
     # 文件名
-    file_name = fix_name(result_item['title'])
+    file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
     file_name = f"{file_name}({result_item['year']}) - mp [{m_id}].rare"
     path = os.path.join(OUTPUT_DIR, file_name)

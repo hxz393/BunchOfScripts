@@ -21,7 +21,7 @@ import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
 
 
 CONFIG_PATH = 'config/scrapy_dlb.json'
@@ -172,23 +172,8 @@ def visit_dlb_url(result_item: dict):
 
     # 存回 result_item 或返回
     result_item["imdb"] = imdb_id
-    file_name = fix_name(result_item['title'])
+    file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
     file_name = f"{file_name} ({result_item['size']})[{imdb_id}].dlb"
     path = os.path.join(OUTPUT_DIR, file_name)
     write_list_to_file(path, [url])
-
-
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    name = name.replace("{@}", ".").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]

@@ -24,7 +24,7 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util.retry import Retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, read_file_to_list
+from my_module import normalize_release_title_for_filename, read_file_to_list, read_json_to_dict, sanitize_filename, write_list_to_file
 
 CONFIG_PATH = 'config/scrapy_onk.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -90,27 +90,12 @@ def write_to_disk(result_list: list) -> None:
 
     for i in result_list:
         name = i['title']
-        name = fix_name(name)
+        name = normalize_release_title_for_filename(name)
         name = sanitize_filename(name)
         file_name = f"{name}({i['label']})[{i['imdb_id']}].onk"
         path = os.path.join(OUTPUT_DIR, file_name)
         links = [i["url"], str(i["post_date"])]
         write_list_to_file(path, links)
-
-
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    name = name.replace("{@}", ".").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]
 
 
 def parse_forum_page(group_id, start_page, stop_time):

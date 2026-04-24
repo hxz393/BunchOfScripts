@@ -234,21 +234,6 @@ def extract_imdb_id(txt: str) -> str:
         return match.group(1)
     else:
         return ""
-
-
-def fix_name(name: str, max_length: int = 230) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*\|\s*', '，', name)
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]
-
-
 def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
     """转换 dhd 文件到 log 文件，并使用多线程执行"""
     # 获取指定目录下所有以 .dhd 为后缀的文件

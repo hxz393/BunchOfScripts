@@ -10,6 +10,7 @@
 
 import copy
 import importlib.util
+import re
 import sys
 import tempfile
 import types
@@ -24,6 +25,34 @@ from bs4 import BeautifulSoup
 requests.packages.urllib3.disable_warnings()
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_ttg.py"
+
+
+def fake_normalize_release_title_for_filename(
+        title: str,
+        max_length: int = 220,
+        replace_pipe: bool = True,
+        replace_placeholder_dot: bool = True,
+        extra_cleanup_patterns=None,
+) -> str:
+    """最小实现：匹配被测脚本所需的标题规范化行为。"""
+    if replace_pipe:
+        title = re.sub(r"\s*\|\s*", "，", title)
+    title = re.sub(r"\s*/\s*", "｜", title)
+    title = re.sub(r"\s*\\\s*", "｜", title)
+    title = re.sub(r"\s+", " ", title)
+
+    if extra_cleanup_patterns:
+        for pattern in extra_cleanup_patterns:
+            title = re.sub(pattern, "", title)
+
+    if replace_placeholder_dot:
+        title = title.replace("{@}", ".")
+
+    title = title.strip()
+    if len(title) <= max_length:
+        return title
+
+    return title[:max_length]
 
 
 def load_scrapy_ttg(config: dict | None = None):
@@ -47,6 +76,7 @@ def load_scrapy_ttg(config: dict | None = None):
 
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(module_config)
+    fake_my_module.normalize_release_title_for_filename = fake_normalize_release_title_for_filename
     fake_my_module.sanitize_filename = lambda name: name
 
     def fake_write_list_to_file(path: str, content: list[str]) -> bool:
@@ -371,8 +401,8 @@ class TestParseTtgResponse(unittest.TestCase):
         self.assertIn("解析第 1 行种子信息失败", logs.output[0])
 
 
-class TestFilterAndFixName(unittest.TestCase):
-    """验证 ID 过滤和标题修剪逻辑。"""
+class TestFilterAndTitleNormalization(unittest.TestCase):
+    """验证 ID 过滤和标题规范化逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_ttg({"newest_id": 100})
@@ -388,17 +418,17 @@ class TestFilterAndFixName(unittest.TestCase):
 
         self.assertEqual(result, [{"id": "101"}, {"id": "205"}])
 
-    def test_fix_name_replaces_path_separators_including_backslash(self):
+    def test_normalize_release_title_for_filename_replaces_path_separators(self):
         """应把斜杠和反斜杠都替换为全角竖线。"""
-        result = self.module.fix_name("Title / A \\ B")
+        result = self.module.normalize_release_title_for_filename("Title / A \\ B")
 
         self.assertEqual(result, "Title｜A｜B")
 
-    def test_fix_name_truncates_title_when_exceeding_max_length(self):
+    def test_normalize_release_title_for_filename_truncates_title_when_too_long(self):
         """标题超长时应按上限截断。"""
         long_name = "A" * 230
 
-        result = self.module.fix_name(long_name, max_length=220)
+        result = self.module.normalize_release_title_for_filename(long_name, max_length=220)
 
         self.assertEqual(result, "A" * 220)
 

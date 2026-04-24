@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util.retry import Retry
 
-from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, format_size, write_dict_to_json
+from my_module import format_size, normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_dict_to_json, write_list_to_file
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -82,26 +82,17 @@ def parse_mt_response(items_list):
         desc = item_dict['smallDescr']
         imdb = m.group(1) if (m := re.search(r'(tt\d+)', item_dict['imdb'])) else ""
         size = format_size(int(item_dict['size'])).replace(" ", "")
-        main_name = fix_name(f"{name}[{desc}]")
+        main_name = normalize_release_title_for_filename(
+            f"{name}[{desc}]",
+            replace_pipe=False,
+            replace_placeholder_dot=False,
+        )
         main_name = sanitize_filename(main_name)
 
         # 拼凑文件名
         file_name = f"{main_name}({size})[{imdb}].ptmt"
         path = os.path.join(OUTPUT_DIR, file_name)
         write_dict_to_json(path, item_dict)
-
-
-def fix_name(name: str, max_length: int = 220) -> str:
-    """修剪文件名"""
-    name = re.sub(r'\s*/\s*', '｜', name)
-    name = re.sub(r'\s*\\s*', '｜', name)
-    name = re.sub(r'\s+', ' ', name)
-    name = name.replace("\t", " ").strip()
-    # 长度不超限，直接返回
-    if len(name) <= max_length:
-        return name
-    else:
-        return name[:max_length]
 
 
 def write_to_disk(result_list: list) -> None:
@@ -111,7 +102,11 @@ def write_to_disk(result_list: list) -> None:
 
     for i in result_list:
         name = i['name']
-        name = fix_name(name)
+        name = normalize_release_title_for_filename(
+            name,
+            replace_pipe=False,
+            replace_placeholder_dot=False,
+        )
         name = sanitize_filename(name)
         file_name = f"{name}({i['size']})[{i['imdb']}].ttg"
         path = os.path.join(OUTPUT_DIR, file_name)

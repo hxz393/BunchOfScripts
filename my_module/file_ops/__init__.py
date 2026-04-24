@@ -10,6 +10,7 @@ from .get_resource_path import get_resource_path
 from .get_subdirectories import get_subdirectories
 from .get_target_size import get_target_size
 from .move_folder_with_rename import move_folder_with_rename
+from .normalize_release_title_for_filename import normalize_release_title_for_filename
 from .read_file_to_list import read_file_to_list
 from .read_json_to_dict import read_json_to_dict
 from .read_csv_to_dict import read_csv_to_dict
