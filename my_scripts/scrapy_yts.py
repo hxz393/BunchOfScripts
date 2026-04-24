@@ -272,11 +272,12 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
                     logger.error(f"没有找到 tt 编号：{file_name}")
                     continue
 
-                # 查询 IMDB
+                # 查询导演名，先走 IMDB
                 folder_name = search_imdb_local(imdb)
+                # IMDB 没有导演，尝试查询 TMDB 获取导演
                 if not folder_name:
-                    # IMDB 没有导演，尝试查询 TMDB 获取导演
                     folder_name = search_tmdb_director(imdb)
+                    # 也没有找到，置空空
                     if not folder_name:
                         folder_name = NO_DIRECTOR_NAME
 
