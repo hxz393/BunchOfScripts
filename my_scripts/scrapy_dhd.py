@@ -240,62 +240,64 @@ def extract_imdb_id(txt: str) -> str:
         return ""
 
 
+def process_dhd_file(file_path: str, directory: str) -> None:
+    """
+    单个文件的处理流程：
+    1. 读取文件中的链接
+    2. 根据链接获取种子下载页面，并提取下载地址
+    3. 下载种子文件，并转换为磁链
+    4. 回写磁链到 .log 文件，并删除临时种子文件
+    """
+    # 每个线程创建自己的 requests.Session
+    session = requests.Session()
+    logger.info(f"处理文件：{file_path}")
+
+    try:
+        # 从 dhd 文件读取链接，假设 read_file_to_list 返回一个列表
+        link = read_file_to_list(file_path)[0]
+    except Exception as e:
+        logger.error(f"读取文件 {file_path} 失败: {e}")
+        return
+
+    # 构造 torrent 文件保存路径
+    torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
+
+    # 获取种子下载页面并提取下载地址
+    response = get_dhd(session, link)
+    dl_url = extract_dl_url(response.text)
+    if not dl_url:
+        logger.warning(f"文件 {file_path}: 没有找到下载地址")
+        return
+
+    # 下载种子文件并转换为磁链
+    get_dhd_torrent(session, dl_url, torrent_path)
+    magnet = torrent_to_magnet(torrent_path)
+    if not magnet:
+        logger.warning(f"文件 {file_path}: 转换磁链失败")
+        os.remove(torrent_path)
+        return
+
+    # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
+    new_file_path = file_path.replace(".dhd", ".log")
+    os.rename(file_path, new_file_path)
+    write_list_to_file(new_file_path, [magnet])
+    os.remove(torrent_path)
+
+    logger.info(f"文件 {file_path}: 转换完成")
+    logger.info("-" * 255)
+
+
 def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
     """转换 dhd 文件到 log 文件，并使用多线程执行"""
     # 获取指定目录下所有以 .dhd 为后缀的文件
     file_list = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.dhd')]
-
-    def process_file(file_path: str):
-        """
-        单个文件的处理流程：
-        1. 读取文件中的链接
-        2. 根据链接获取种子下载页面，并提取下载地址
-        3. 下载种子文件，并转换为磁链
-        4. 回写磁链到 .log 文件，并删除临时种子文件
-        """
-        # 每个线程创建自己的 requests.Session
-        session = requests.Session()
-        logger.info(f"处理文件：{file_path}")
-
-        try:
-            # 从 dhd 文件读取链接，假设 read_file_to_list 返回一个列表
-            link = read_file_to_list(file_path)[0]
-        except Exception as e:
-            logger.error(f"读取文件 {file_path} 失败: {e}")
-            return
-
-        # 构造 torrent 文件保存路径
-        torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
-
-        # 获取种子下载页面并提取下载地址
-        response = get_dhd(session, link)
-        dl_url = extract_dl_url(response.text)
-        if not dl_url:
-            logger.warning(f"文件 {file_path}: 没有找到下载地址")
-            return
-
-        # 下载种子文件并转换为磁链
-        get_dhd_torrent(session, dl_url, torrent_path)
-        magnet = torrent_to_magnet(torrent_path)
-        if not magnet:
-            logger.warning(f"文件 {file_path}: 转换磁链失败")
-            os.remove(torrent_path)
-            return
-
-        # 回写磁链到 .log 文件，并删除原始 dhd 文件和临时 torrent 文件
-        new_file_path = file_path.replace(".dhd", ".log")
-        os.rename(file_path, new_file_path)
-        write_list_to_file(new_file_path, [magnet])
-        os.remove(torrent_path)
-        logger.info(f"文件 {file_path}: 转换完成")
-        logger.info("-" * 255)
 
     # 根据文件数量设置线程池大小，最大线程数可根据实际情况调整
     # max_workers = min(16, len(file_list)) if file_list else 1
     max_workers = min(32, len(file_list)) if file_list else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
-        futures = [executor.submit(process_file, file) for file in file_list]
+        futures = [executor.submit(process_dhd_file, file, directory) for file in file_list]
         # 可选：等待每个任务执行完毕，并捕获异常
         for future in concurrent.futures.as_completed(futures):
             try:
