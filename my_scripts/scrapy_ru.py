@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -19,6 +20,7 @@ from my_module import read_json_to_dict, sanitize_filename
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
+CONFIG_LOCK = threading.Lock()
 
 CONFIG_PATH = 'config/scrapy_ru.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -58,40 +60,56 @@ def update_json_config(file_path: str, key: str, new_value: str) -> None:
     :param new_value: 值
     :return: 无
     """
-    with open(file_path, 'r', encoding='utf-8') as f:
-        config = json.load(f)  # config 是个 dict
+    temp_file_path = f"{file_path}.tmp"
+    with CONFIG_LOCK:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)  # config 是个 dict
 
-    config["scrapy_process"][key] = new_value
+        config["scrapy_process"][key] = new_value
 
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        os.replace(temp_file_path, file_path)
 
 
 @retry(stop_max_attempt_number=10, wait_random_min=100, wait_random_max=1200)
-def scripy(url: str) -> None:
+def get_page(url: str) -> requests.Response:
+    """
+    请求单页内容，失败时自动重试。
+
+    :param url: 栏目地址
+    :return: 响应对象
+    """
+    r = requests.get(url=f"{url}&sort=2", headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
+    if r.status_code != 200:
+        raise RuntimeError(f"链接：{url} 无法访问，状态码：{r.status_code}")
+    return r
+
+
+def scripy(url: str, group_url: str | None = None) -> None:
     """
     抓取所有链接，并写入到文件。
 
     :param url: 栏目地址，例如："https://rutracker.org/forum/viewforum.php?f=106"
+    :param group_url: 原始栏目地址，用于翻页时持续读取和更新同一个配置项
     :return: 无
     """
+    base_url = group_url or url.split('&sort=2')[0]
+
     # 请求一页内容
-    r = requests.get(url=f"{url}&sort=2", headers=REQUEST_HEAD, timeout=10, verify=False, allow_redirects=True)
-    if r.status_code != 200:
-        logger.error(f"链接：{url} 无法访问")
-        return
+    r = get_page(url)
 
     # 找到所有种子行，以 class="hl-tr" 为标记
     tree = etree.HTML(r.text)
     row_elements = tree.xpath('//tr[@class="hl-tr"]')
     if not row_elements:
-        logger.error("未找到种子行")
-        return
+        raise RuntimeError(f"链接：{url} 未找到种子行")
 
     # 遍历每一行
-    stop = 0
-    stop_id = CONFIG['scrapy_process'].get(url.split('&sort=2')[0], 0)
-    topic_ids = []
+    stop = False
+    stop_id = CONFIG['scrapy_process'].get(base_url, 0)
+    new_max_id = None
     for row in row_elements:
         # 找标题及链接
         title_element = row.xpath('.//td[@class="vf-col-t-title tt"]//a[contains(@class, "torTopic bold tt-text")]')
@@ -124,12 +142,13 @@ def scripy(url: str) -> None:
 
         # 计算是否中断，小于最后记录则跳过写文件
         if int(topic_id) < int(stop_id):
-            stop = 1
+            stop = True
         else:
             # 写入到本地文本文件
-            with open(os.path.join(TORRENT_PATH, file_name), "w") as file:
-                file.writelines(file_content)
-            topic_ids.append(topic_id)
+            with open(os.path.join(TORRENT_PATH, file_name), "w", encoding='utf-8') as file:
+                file.write(file_content)
+            if new_max_id is None or int(topic_id) > int(new_max_id):
+                new_max_id = topic_id
 
     # 查找下一页链接
     next_link = tree.xpath('//a[@class="pg" and text()="След."]')
@@ -137,9 +156,8 @@ def scripy(url: str) -> None:
         # 如果能找到此链接，说明还有下一页
         href_value = f"{FORUM_URL}{next_link[0].get('href')}"
         logger.info(f"开始下一页链接: {href_value}")
-        scripy(href_value)
+        scripy(href_value, base_url)
 
     # 更新本地配置
-    if topic_ids:
-        new_max_id = max(topic_ids, key=lambda x: int(x))
-        update_json_config(CONFIG_PATH, url.split('&sort=2')[0], new_max_id)
+    if new_max_id is not None:
+        update_json_config(CONFIG_PATH, base_url, new_max_id)
