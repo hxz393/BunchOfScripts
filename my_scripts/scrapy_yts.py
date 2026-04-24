@@ -273,6 +273,22 @@ def resolve_director_name(movie_id: str) -> str:
     return NO_DIRECTOR_NAME
 
 
+def move_file_to_director_folder(file_path: Path, target_root: Path, folder_name: str) -> Path:
+    """
+    将文件移动到导演目录。
+
+    :param file_path: 源文件路径
+    :param target_root: 目标根目录
+    :param folder_name: 导演目录名
+    :return: 目标文件路径
+    """
+    folder_path = target_root / folder_name
+    folder_path.mkdir(parents=True, exist_ok=True)
+    target_file_path = folder_path / file_path.name
+    shutil.move(file_path, target_file_path)
+    return target_file_path
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -294,10 +310,7 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
                 folder_name = normalize_director_folder_name(folder_name)
                 logger.info(f"导演名：{folder_name}")
 
-                folder_path = Path(os.path.join(Path(root).parent, folder_name))
-                folder_path.mkdir(parents=True, exist_ok=True)
-                target_file_path = folder_path / file_path.name
-                shutil.move(file_path, target_file_path)
+                move_file_to_director_folder(file_path, Path(root).parent, folder_name)
                 logger.info("*" * 255)
 
 
