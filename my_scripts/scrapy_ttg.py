@@ -53,9 +53,10 @@ def scrapy_ttg() -> None:
             break
 
         # 写入到本地
-        page += 1
         max_ids.append(max(int(movie['id']) for movie in new_list))
         write_to_disk(new_list)
+        page += 1
+    # 全部完成，更新最新 id
     max_id = max(max_ids) if max_ids else NEWEST_ID
     update_json_config(CONFIG_PATH, "newest_id", max_id)
 
