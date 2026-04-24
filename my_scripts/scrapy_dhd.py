@@ -240,6 +240,24 @@ def extract_imdb_id(txt: str) -> str:
         return ""
 
 
+def get_dhd_download_url(session: requests.Session, file_path: str) -> str:
+    """读取 .dhd 中的帖子链接，并解析下载地址。"""
+    try:
+        # 从 dhd 文件读取链接，假设 read_file_to_list 返回一个列表
+        link = read_file_to_list(file_path)[0]
+    except Exception as e:
+        logger.error(f"读取文件 {file_path} 失败: {e}")
+        return ""
+
+    response = get_dhd(session, link)
+    dl_url = extract_dl_url(response.text)
+    if not dl_url:
+        logger.warning(f"文件 {file_path}: 没有找到下载地址")
+        return ""
+
+    return dl_url
+
+
 def process_dhd_file(file_path: str, directory: str) -> None:
     """
     单个文件的处理流程：
@@ -252,21 +270,11 @@ def process_dhd_file(file_path: str, directory: str) -> None:
     session = requests.Session()
     logger.info(f"处理文件：{file_path}")
 
-    try:
-        # 从 dhd 文件读取链接，假设 read_file_to_list 返回一个列表
-        link = read_file_to_list(file_path)[0]
-    except Exception as e:
-        logger.error(f"读取文件 {file_path} 失败: {e}")
-        return
-
     # 构造 torrent 文件保存路径
     torrent_path = os.path.join(directory, os.path.basename(file_path).replace(".dhd", ".torrent"))
 
-    # 获取种子下载页面并提取下载地址
-    response = get_dhd(session, link)
-    dl_url = extract_dl_url(response.text)
+    dl_url = get_dhd_download_url(session, file_path)
     if not dl_url:
-        logger.warning(f"文件 {file_path}: 没有找到下载地址")
         return
 
     # 下载种子文件并转换为磁链
