@@ -172,56 +172,51 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
 
 
 @retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
-def get_imdb_cookie(force=False, hl=True):
-    """模拟浏览器的方式获取 IMDB Cookie"""
-    global _last_cookie_time, _cached_cookie
+def get_imdb_cookie(force=False, hl=False):
+    """用浏览器访问 IMDB 刷新 Cookie"""
+    global _last_cookie_time, _cached_cookie, _last_cookie_time
     now = time.time()
 
-    # 如果缓存存在且未超过5分钟，直接返回缓存的cookie
     if force:
         _cached_cookie = None
     elif _cached_cookie is not None and (now - _last_cookie_time) < 300:
         return _cached_cookie
+
     logger.warning("更新 IMDB Cookie")
 
-    # 否则重新获取
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=hl,
             channel="chrome",
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-web-security',
-                '--disable-gpu',
-            ]
+            args=["--disable-blink-features=AutomationControlled"],
         )
         context = browser.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            viewport={"width": 1280, "height": 800},
+            # 不要再硬写 Chrome/120，直接用浏览器默认 UA 更稳
         )
-
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
-        """)
-
         page = context.new_page()
-        try:
-            page.goto("https://www.imdb.com/title/tt0759924/", wait_until="domcontentloaded")
-            page.wait_for_selector('#suggestion-search', timeout=15000)
-        except Exception as e:
-            logger.error(f"等待搜索框超时或失败: {e}")
-            browser.close()
-            raise e
-        cookies = context.cookies()
-        browser.close()
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+        page.goto("https://www.imdb.com/title/tt0759924/", wait_until="domcontentloaded", timeout=60000)
 
-    # 更新缓存
+        # cookie 准备往往早于搜索框渲染
+        page.wait_for_timeout(15000 if hl else 30000)
+
+        cookies = context.cookies()
+        cookie_names = {c["name"] for c in cookies}
+
+        if "session-id" not in cookie_names:
+            title = page.title()
+            html = page.content()
+            browser.close()
+
+            if "challenge.js" in html or "challenge-container" in html or "403 Forbidden" in title:
+                raise RuntimeError("IMDb 当前会拦截这个会话，headless 刷 cookie 不可靠")
+            raise RuntimeError(f"IMDb cookie 未就绪，当前只有: {sorted(cookie_names)}")
+
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        browser.close()
+
     _cached_cookie = cookie_str
-    _last_cookie_time = now
+    _last_cookie_time = time.time()
     return cookie_str
 
 

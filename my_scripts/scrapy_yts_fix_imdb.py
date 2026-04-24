@@ -15,6 +15,7 @@ from pathlib import Path
 import requests
 
 from my_module import read_json_to_dict
+from sort_movie_mysql import query_imdb_local_director
 from sort_movie_request import get_tmdb_movie_details
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,8 @@ def scrapy_yts_fix_imdb() -> None:
                     continue
 
                 # 查询 IMDB
-                folder_name = search_imdb(imdb)
+                folder_name = search_imdb_local(imdb)
+                # folder_name = search_imdb(imdb) # 线上模式
                 if not folder_name:
                     folder_name = '没有导演'
 
@@ -62,6 +64,7 @@ def scrapy_yts_fix_imdb() -> None:
                             break
 
                 folder_name = folder_name.strip()
+                folder_name = folder_name.replace("\"", "")
                 logger.info(f"导演名：{folder_name}")
 
                 folder_path = Path(os.path.join(Path(root).parent, folder_name))
@@ -69,6 +72,28 @@ def scrapy_yts_fix_imdb() -> None:
                 target_file_path = folder_path / file_path.name
                 shutil.move(file_path, target_file_path)
                 logger.info("*" * 255)
+
+
+def search_imdb_local(movie_id: str) -> str:
+    """
+    查询本地 IMDb 库，返回用于建目录的导演名。
+    查不到或查询失败时返回空字符串。
+
+    :param movie_id: imdb 编号，例如 tt1234567
+    :return: 导演名
+    """
+    logger.info(f"查询本地 IMDb：{movie_id}")
+    directors = query_imdb_local_director(movie_id)
+
+    if directors is None:
+        return ""
+
+    for director in directors:
+        director_name = (director.get("director_name") or "").strip()
+        if director_name:
+            return director_name
+
+    return ""
 
 
 def search_imdb(movie_id: str) -> str:

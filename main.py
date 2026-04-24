@@ -126,7 +126,7 @@ def main(chosen: int) -> None:
         case 602:
             logger.info(r"抓取 yts 链接，来源文档一行一个链接，需要自行去重")
             logger.info(r"自动将结果 json 文件保存到：B:\0.整理\BT\yts")
-            logger.info(r"有 CF 盾，需要手动更新 Cookie")
+            logger.info(r"有 CF 盾，需要登录后手动更新 Cookie")
             logger.info(r"链接来自 Feedly 阅读器，浏览器控制台提取链接脚本：")
             js = """
 const links = Array.from(document.querySelectorAll('a.EntryTitleLink')).map(article => article.href);
@@ -407,9 +407,10 @@ copy(links.join('\n'));
             from my_module import read_file_to_list
             from sort_movie_auto import sort_director_auto
             source_file = r'config/!00.txt'
+            dst_path = r'A:\0b.导演别名'
             temp_list = read_file_to_list(source_file)
             for i in temp_list:
-                sort_director_auto(i)
+                sort_director_auto(i, dst_path)
                 time.sleep(0.1)
                 logger.info("-" * 255)
                 time.sleep(0.1)
@@ -525,30 +526,62 @@ def temp(m_path):
 if __name__ == '__main__':
     # yts 临时失败链接储存到下面
     yts_urls = """
-ERROR: https://yts.bz/movies/los-aitas-2025
-ERROR: https://yts.bz/movies/vyprobuvalnyi-termin-2026
-ERROR: https://yts.bz/movies/murderlust-1985
-ERROR: https://yts.bz/movies/vacances-2022
-ERROR: https://yts.bz/movies/gore-2026
-ERROR: https://yts.bz/movies/glass-ceiling-1971
-ERROR: https://yts.bz/movies/a-beautiful-mind-2001
-ERROR: https://yts.bz/movies/fin-qui-tutto-bene-2025
-ERROR: https://yts.bz/movies/martin-luthur-king-jr-enemies-of-the-dream-2026
-ERROR: https://yts.bz/movies/a-chipmunk-christmas-1981
-ERROR: https://yts.bz/movies/drugi-dnevnik-pauline-p-2025
-ERROR: https://yts.bz/movies/die-schule-der-magischen-tiere-4-2025
-ERROR: https://yts.bz/movies/je-navais-que-le-neant-shoah-par-lanzmann-2025
-ERROR: https://yts.bz/movies/au-dela-du-voile-exploration-du-paranormal-2025
-ERROR: https://yts.bz/movies/en-tongs-au-pied-de-lhimalaya-2024
-ERROR: https://yts.bz/movies/lali-la-que-le-gana-al-tiempo-2025
-ERROR: https://yts.bz/movies/prin-ochii-lor-2025
-ERROR: https://yts.bz/movies/que-huevos-sofia-2025
-ERROR: https://yts.bz/movies/persona-2026
-ERROR: https://yts.bz/movies/qing-sheng-3-2025
-ERROR: https://yts.bz/movies/the-love-doctor-2026
-ERROR: https://yts.bz/movies/the-tiger-2-2025
-ERROR: https://yts.bz/movies/wake-up-dead-man-a-knives-out-mystery-2025
-ERROR: https://yts.bz/movies/zamach-na-papieza-2025
+https://yts.bz/movies/the-red-line-2026
+https://yts.bz/movies/the-verdict-2025
+https://yts.bz/movies/till-your-last-point-2025
+https://yts.bz/movies/53-sundays-2026
+https://yts.bz/movies/the-virgin-of-the-quarry-lake-2025
+https://yts.bz/movies/driving-mum-2022
+https://yts.bz/movies/wild-namibia-2014
+https://yts.bz/movies/masthishka-maranam-2026
+https://yts.bz/movies/storm-rider-legend-of-hammerhead-2026
+https://yts.bz/movies/nesting-2025
+https://yts.bz/movies/the-furies-2025
+https://yts.bz/movies/color-theories-by-julio-torres-2026
+https://yts.bz/movies/sarah-millican-late-bloomer-live-2025
+https://yts.bz/movies/it-takes-a-village-2026
+https://yts.bz/movies/where-the-river-flows-2025
+https://yts.bz/movies/god-beer-2025
+https://yts.bz/movies/every-dog-has-its-day-2025
+https://yts.bz/movies/beginnings-2025
+https://yts.bz/movies/feel-my-voice-2-2026
+https://yts.bz/movies/judas-gospel-2025
+https://yts.bz/movies/mrithyunjay-2026
+https://yts.bz/movies/run-to-you-2025
+https://yts.bz/movies/the-love-that-remains-2025
+https://yts.bz/movies/the-protos-experiment-2025
+https://yts.bz/movies/27-nights-2025
+https://yts.bz/movies/i-am-the-end-of-the-world-2025
+https://yts.bz/movies/out-of-love-2025
+https://yts.bz/movies/sheng-wang-purple-2026
+https://yts.bz/movies/peaky-blinders-the-immortal-man-2026
+https://yts.bz/movies/saraswathi-2026
+https://yts.bz/movies/adams-sake-2025
+https://yts.bz/movies/the-dinner-2025
+https://yts.bz/movies/the-kids-are-alright-2-2022
+https://yts.bz/movies/mudborn-2025
+https://yts.bz/movies/resurrection-2025
+https://yts.bz/movies/measure-in-love-2025
+https://yts.bz/movies/thrash-2026
+https://yts.bz/movies/firebreak-2026
+https://yts.bz/movies/unreachable-2025
+https://yts.bz/movies/a-pale-view-of-hills-2025
+https://yts.bz/movies/the-stranger-2025
+https://yts.bz/movies/ready-or-not-2-here-i-come-2026
+https://yts.bz/movies/undertone-2025
+https://yts.bz/movies/how-to-save-democracy-2026
+https://yts.bz/movies/good-luck-have-fun-dont-die-2025
+https://yts.bz/movies/sawt-hind-rajab-2025
+https://yts.bz/movies/pangku-2025
+https://yts.bz/movies/gore-2026
+https://yts.bz/movies/martin-luthur-king-jr-enemies-of-the-dream-2026
+https://yts.bz/movies/je-navais-que-le-neant-shoah-par-lanzmann-2025
+https://yts.bz/movies/en-tongs-au-pied-de-lhimalaya-2024
+https://yts.bz/movies/persona-2026
+https://yts.bz/movies/the-love-doctor-2026
+https://yts.bz/movies/the-tiger-2-2025
+https://yts.bz/movies/wake-up-dead-man-a-knives-out-mystery-2025
+https://yts.bz/movies/zamach-na-papieza-2025
     """
     logger.info(f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     try:
@@ -563,7 +596,7 @@ ERROR: https://yts.bz/movies/zamach-na-papieza-2025
         # 807 -> 清理数据库
         # 808 -> 归档导演
         # 809 -> 归档检查
-        main(806)
+        main(601)
         # temp(r"A:\1")
     except Exception:
         logger.exception('Unexpected error!')

@@ -20,7 +20,7 @@ from my_module import read_file_to_list, write_list_to_file, read_json_to_dict, 
 from scrapy_kpk import scrapy_kpk, scrapy_jeckett
 from sort_movie import sort_movie
 from sort_movie_director import sort_movie_director
-from sort_movie_mysql import insert_movie_wanted
+from sort_movie_mysql import insert_movie_wanted, query_imdb_local_director
 from sort_movie_ops import get_ids, safe_get, scan_ids, get_files_with_extensions, get_subdirs, parse_jason_file_name, delete_trash_files, check_local_torrent, move_all_files_to_root
 from sort_movie_request import get_imdb_movie_details, get_tmdb_search_response, get_tmdb_director_details, get_douban_response, get_douban_search_details, get_tmdb_movie_details
 from sort_ru import ru_search
@@ -36,11 +36,12 @@ IMDB_PERSON_URL = CONFIG['imdb_person_url']  # imdb 导演地址
 IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
 
 
-def sort_director_auto(path: str) -> None:
+def sort_director_auto(path: str, dst_path:str = 'A:\0b.导演别名') -> None:
     """
     自动整理导演目录，生成导演别名空文件
 
     :param path: 导演目录
+    :param dst_path: 目标目录
     :return: 无
     """
     # 查找 imdb 编号
@@ -66,7 +67,10 @@ def sort_director_auto(path: str) -> None:
     nm_id = director_ids['imdb']
     if not nm_id:
         for imdb_id in imdb_list:
-            r = get_imdb_director(imdb_id, director_main)
+            r = get_imdb_local_director(imdb_id, director_main)
+            # # 本地没搜到去线上再试试
+            # if not r:
+            #     r = get_imdb_director(imdb_id, director_main)
             if r:
                 director_info["aka"].append(director_main)
                 result_list.append(r)
@@ -107,7 +111,32 @@ def sort_director_auto(path: str) -> None:
     get_ids(target_file)
     done = sort_movie_director(read_file_to_list(target_file)[0], director_info)
     if done == 2:
-        shutil.move(path, os.path.join(r'A:\0b.导演别名', director_main))
+        shutil.move(path, os.path.join(dst_path, director_main))
+
+
+def get_imdb_local_director(movie_id: str, director_main: str) -> Optional[str]:
+    """
+    搜索本地 imdb 库，获取导演信息
+
+    :param movie_id: imdb 编号
+    :param director_main: 导演主要名字
+    :return: 搜索结果，成功则返回导演链接，失败返回 None
+    """
+    directors = query_imdb_local_director(movie_id)
+
+    if not directors:
+        logger.error(f"IMDb 本地库没有找到导演！{movie_id} {director_main}")
+        return None
+
+    for d in directors:
+        name = d.get("director_name")
+        nm_id = d.get("director_id")
+        if name and director_main.lower() in name.lower():
+            return f"https://www.imdb.com/name/{nm_id}"
+        else:
+            logger.warning(f"没有匹配到导演，查询到导演名字：{name}")
+
+    return None
 
 
 def get_imdb_director(movie_id: str, director_main: str) -> Optional[str]:

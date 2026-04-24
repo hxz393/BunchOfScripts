@@ -11,7 +11,7 @@ import logging
 import os.path
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import mysql.connector
 
@@ -26,6 +26,7 @@ MYSQL_HOST = CONFIG['mysql_host']  # mysql 主机地址
 MYSQL_USER = CONFIG['mysql_user']  # mysql 用户名
 MYSQL_PASS = CONFIG['mysql_pass']  # mysql 密码
 MYSQL_DB = CONFIG['mysql_db']  # mysql 数据库
+MYSQL_IMDB_DB = CONFIG['mysql_imdb_db']  # mysql 数据库
 
 MOVIES_UPDATE_SQL = """
             UPDATE movies
@@ -87,6 +88,16 @@ CHECK_QUERY_SQL = """
             ) AS combined
             LIMIT 1;
         """
+IMDB_QUERY_SQL = """
+    SELECT
+        d.director_nconst AS director_id,
+        n.primary_name AS director_name
+    FROM imdb_datasets.title_directors d
+    LEFT JOIN imdb_datasets.name_basics n
+        ON n.nconst = d.director_nconst
+    WHERE d.tconst = %s
+    ORDER BY d.director_order
+"""
 
 
 def insert_movie_wanted(wanted_list: list) -> None:
@@ -264,6 +275,21 @@ def create_conn() -> Any:
     return conn
 
 
+def create_conn_imdb() -> Any:
+    """
+    创建数据库连接，连本地 IMDB 库
+
+    :return: 返回数据库连接
+    """
+    conn = mysql.connector.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASS,
+        database=MYSQL_IMDB_DB
+    )
+    return conn
+
+
 def get_wanted_batch(conn: Any, imdb_ids: set) -> list[dict]:
     """
     用 imdb 编号去数据库查找记录
@@ -386,6 +412,32 @@ def check_movie_ids(ids: list) -> list:
     cursor.close()
     conn.close()
     return not_found
+
+
+def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
+    """
+    输入 tt 编号，返回导演列表，包含
+
+    :param movie_id: imdb 编号
+    :return: 搜索结果，成功则返回导演字典列表，形如 [{"director_id": "nmxxxxxxx", "director_name": "导演名"}, ...]
+    """
+    conn = None
+    cursor = None
+    try:
+        # 建立数据库连接
+        conn = create_conn_imdb()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(IMDB_QUERY_SQL, (movie_id,))
+        directors = cursor.fetchall()
+        return directors
+    except mysql.connector.Error as e:
+        logger.error(f"IMDb 本地库查询失败！{movie_id} {e}")
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
 def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
