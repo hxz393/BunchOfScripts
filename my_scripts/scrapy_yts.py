@@ -135,6 +135,29 @@ def yts_login(session: requests.Session) -> bool:
 
 
 @retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
+def parse_yts_movie_page(html: str, link: str) -> tuple[str | None, str]:
+    """
+    解析 YTS 电影详情页，提取电影 ID 和导演名。
+
+    :param html: 页面 HTML
+    :param link: 原始链接，用于日志
+    :return: (电影 ID, 导演名)
+    """
+    tree = etree.HTML(html)
+    movie_id = tree.xpath('//div[@id="movie-info"]/@data-movie-id')
+    if not movie_id:
+        logger.error(f"链接：{link} 没有找到电影 ID")
+        return None, ""
+
+    director_name = tree.xpath('//span[@itemprop="director"]/span[@itemprop="name"]/text()')
+    if not director_name:
+        logger.warning(f"链接：{link} 没有找到导演")
+        return movie_id[0], MISS_DIRECTOR_NAME
+
+    return movie_id[0], director_name[0]
+
+
+@retry(stop_max_attempt_number=2, wait_random_min=100, wait_random_max=1200)
 def fetch_data(session: requests.Session, link: str) -> Dict:
     """
     获取 json 数据
@@ -145,29 +168,19 @@ def fetch_data(session: requests.Session, link: str) -> Dict:
     """
     # 访问网页，获取电影 ID
     r2 = session.get(link, headers=HEADERS, verify=False)
-    tree = etree.HTML(r2.text)
-    movie_id = tree.xpath('//div[@id="movie-info"]/@data-movie-id')
+    movie_id, director_name = parse_yts_movie_page(r2.text, link)
     if not movie_id:
-        logger.error(f"链接：{link} 没有找到电影 ID")
         return {}
 
-    # 获取导演名
-    director_name = tree.xpath('//span[@itemprop="director"]/span[@itemprop="name"]/text()')
-    if not director_name:
-        logger.warning(f"链接：{link} 没有找到导演")
-        d_name = "_"
-    else:
-        d_name = director_name[0]
-
     # 向 API 发送请求，获取响应，返回最终数据
-    api_url = f"{API_PATH}{movie_id[0]}"
+    api_url = f"{API_PATH}{movie_id}"
     r1 = session.get(api_url, headers=HEADERS, verify=False)
     movie_detail = r1.json()
     # api 请求的数据有可能滞后，获取不到
     if not movie_detail['data']['movie']['id']:
         logger.error(f"链接：{link} 没有返回有效 JSON 数据")
         return {}
-    movie_detail['data']['movie']['director'] = d_name
+    movie_detail['data']['movie']['director'] = director_name
     return movie_detail
 
 
