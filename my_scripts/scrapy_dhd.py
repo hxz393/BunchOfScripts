@@ -348,18 +348,21 @@ def torrent_to_magnet(torrent_file_path: str) -> str:
             display_name = info[b'name'].decode('latin1')
     display_name_encoded = urllib.parse.quote(display_name) if display_name else ""
 
-    # 可选：提取 tracker 信息，优先使用 announce-list 中的第一个 tracker，如果没有则使用 announce 字段
-    tracker_url = ""
+    # 可选：提取 tracker 信息，优先使用 announce-list 中的全部 tracker，如果没有则使用 announce 字段
+    tracker_urls = []
     if b'announce-list' in torrent_dict:
-        # announce-list 通常是个嵌套列表，取第一个 tracker
-        try:
-            tracker_url = torrent_dict[b'announce-list'][0][0].decode('utf-8')
-        except Exception:
-            tracker_url = ""
+        # announce-list 通常是个嵌套列表，按顺序保留全部 tracker，并去重
+        for tracker_group in torrent_dict[b'announce-list']:
+            candidates = tracker_group if isinstance(tracker_group, (list, tuple)) else [tracker_group]
+            for tracker in candidates:
+                try:
+                    tracker_url = tracker.decode('utf-8')
+                except Exception:
+                    continue
+                if tracker_url and tracker_url not in tracker_urls:
+                    tracker_urls.append(tracker_url)
     elif b'announce' in torrent_dict:
-        tracker_url = torrent_dict[b'announce'].decode('utf-8')
-
-    tracker_url_encoded = urllib.parse.quote(tracker_url) if tracker_url else ""
+        tracker_urls.append(torrent_dict[b'announce'].decode('utf-8'))
 
     # 构造磁链，至少包含 xt 参数（info hash）
     magnet_link = f"magnet:?xt=urn:btih:{info_hash}"
@@ -369,7 +372,7 @@ def torrent_to_magnet(torrent_file_path: str) -> str:
         magnet_link += f"&dn={display_name_encoded}"
 
     # 如果有 tracker 则添加 tr 参数
-    if tracker_url_encoded:
-        magnet_link += f"&tr={tracker_url_encoded}"
+    for tracker_url in tracker_urls:
+        magnet_link += f"&tr={urllib.parse.quote(tracker_url)}"
 
     return magnet_link
