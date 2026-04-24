@@ -215,6 +215,17 @@ def get_best_quality(result: Dict) -> str:
     return best_quality
 
 
+def extract_imdb_id_from_filename(file_name: str) -> str | None:
+    """
+    从文件名中提取 IMDb 标识。
+
+    :param file_name: 文件名
+    :return: IMDb 标识，例如 tt1234567；不存在时返回 None
+    """
+    match = re.search(r'(tt\d+)', file_name)
+    return match.group(1) if match else None
+
+
 def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_NAME)) -> None:
     """
     去 IMDB 获取导演信息，并整理文件
@@ -227,8 +238,7 @@ def scrapy_yts_fix_imdb(miss_path: str = os.path.join(OUTPUT_DIR, MISS_DIRECTOR_
             if file_name.endswith('.json'):
                 logger.info(f"处理：{file_name}")
                 file_path = Path(os.path.join(root, file_name))
-                # imdb = file_name.split('{')[1].split('}')[0]
-                imdb = m.group(1) if (m := re.search(r'(tt\d+)', file_name)) else None
+                imdb = extract_imdb_id_from_filename(file_name)
                 if not imdb:
                     logger.error(f"没有找到 tt 编号：{file_name}")
                     continue
