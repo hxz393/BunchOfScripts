@@ -59,7 +59,7 @@ async def get_dhd_response(url: str, session: aiohttp.ClientSession, retries: in
 
 def parse_dhd_response(response_text: str) -> list:
     """
-    解析页面 HTML，返回结果列表。
+    解析列表页面 HTML，返回帖子结果列表。
     """
     soup = BeautifulSoup(response_text, 'html.parser')
     results = []
@@ -234,6 +234,8 @@ def extract_imdb_id(txt: str) -> str:
         return match.group(1)
     else:
         return ""
+
+
 def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
     """转换 dhd 文件到 log 文件，并使用多线程执行"""
     # 获取指定目录下所有以 .dhd 为后缀的文件
@@ -301,7 +303,7 @@ def dhd_to_log(directory: str = r"B:\0.整理\BT\dhd") -> None:
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
 def get_dhd(session: requests.Session, url: str) -> requests.Response:
     """请求流程"""
-    response = session.get(url, timeout=10, verify=False, headers=REQUEST_HEAD)
+    response = session.get(url, timeout=15, verify=False, headers=REQUEST_HEAD)
     response.encoding = 'gbk'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
@@ -312,7 +314,7 @@ def get_dhd(session: requests.Session, url: str) -> requests.Response:
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=5000)
 def get_dhd_torrent(session: requests.Session, url: str, torrent_path: str) -> None:
     """下载种子"""
-    response = session.get(url, timeout=10, verify=False, headers=REQUEST_HEAD)
+    response = session.get(url, timeout=25, verify=False, headers=REQUEST_HEAD)
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
 
@@ -330,10 +332,15 @@ def torrent_to_magnet(torrent_file_path: str) -> str:
         torrent_data = f.read()
 
     # 解析 bencoded 数据
-    torrent_dict = bencodepy.decode(torrent_data)
+    decoded_data = bencodepy.decode(torrent_data)
+    if not isinstance(decoded_data, dict):
+        raise ValueError("无效 torrent：顶层 bencode 结果不是字典")
+    torrent_dict = decoded_data
 
     # 提取 info 字典，它包含了实际内容信息
-    info = torrent_dict[b'info']
+    info = torrent_dict.get(b'info')
+    if not isinstance(info, dict):
+        raise ValueError("无效 torrent：缺少 info 字典")
 
     # 重新对 info 字典进行 bencode 编码，并计算 SHA1 哈希值作为 info hash
     info_bencoded = bencodepy.encode(info)
