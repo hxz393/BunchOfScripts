@@ -67,18 +67,16 @@ def get_rare_response(url: str) -> requests.Response:
     return response
 
 
-def parse_response(response: requests.Response) -> dict:
-    """解析流程"""
-    result_dict = {"file_name": "", "content": ""}
-    # print(response.text)
-    soup = BeautifulSoup(response.text, "html.parser")
-    # 主要内容
+def find_entry(soup):
+    """定位正文容器。"""
     entry = soup.select_one("div.entry-content")
     if not entry:
         entry = soup.select_one("div.entry")
-    if not entry:
-        return {}
+    return entry
 
+
+def extract_entry_lines(entry) -> list[str]:
+    """提取正文中的文本与附加链接。"""
     lines = []
     for p in entry.select("p"):
         # 将 <a> 替换为 “文本 (链接)”；若无文本（如包着图片），就仅保留链接
@@ -96,34 +94,42 @@ def parse_response(response: requests.Response) -> dict:
         line = p.get_text(separator=" ", strip=True)
         if line:
             lines.append(line)
-    # 处理 <pre> 标签
+
     for pre in entry.find_all("pre"):
         pre_text = pre.get_text(separator=" ", strip=True)
         if pre_text:
             lines.append(pre_text)
-    # 处理 <figure> 标签中的 <a> 链接
-    for fig_a in entry.select("figure a[href]"):
-        href = fig_a["href"]
-        lines.append(f"{href}")  # 单独添加 URL
-    # 处理 <h4> 标签中的 <a> 链接
-    for h4_a in entry.select("h4 a[href]"):
-        href = h4_a["href"]
-        lines.append(f"{href}")  # 单独添加 URL
-    content = "\n".join(lines)
-    result_dict['content'] = content
 
-    # 标题
+    for fig_a in entry.select("figure a[href]"):
+        lines.append(fig_a["href"])
+
+    for h4_a in entry.select("h4 a[href]"):
+        lines.append(h4_a["href"])
+
+    return lines
+
+
+def build_file_name(soup, content: str) -> str:
+    """根据页面标题和 IMDb 信息拼装文件名。"""
     title_tag = soup.title
     title = title_tag.string if title_tag else ""
-    # imdb 编号
     m = re.search(r'/title/(tt\d+)', content)
     imdb = m.group(1) if m else ""
-    # 拼凑文件名
     file_name = sanitize_filename(title) + "[" + imdb + "]"
-    file_name = f"{file_name}.rare"
-    result_dict['file_name'] = file_name
+    return f"{file_name}.rare"
 
-    return result_dict
+
+def parse_response(response: requests.Response) -> dict:
+    """解析流程"""
+    soup = BeautifulSoup(response.text, "html.parser")
+    entry = find_entry(soup)
+    if not entry:
+        return {}
+
+    lines = extract_entry_lines(entry)
+    content = "\n".join(lines)
+    file_name = build_file_name(soup, content)
+    return {"file_name": file_name, "content": content}
 
 
 def visit_rare_url(link: str):
