@@ -166,6 +166,68 @@ def is_mp_screenshot_detail_line(line: str) -> bool:
     return stripped.startswith("#") or is_mp_image_reference_line(stripped)
 
 
+def normalize_mp_size(size_text: str) -> str:
+    """统一大小字段中的空白。"""
+    return re.sub(r'\s+', ' ', size_text).strip()
+
+
+def extract_mp_size_candidate(line: str):
+    """从单行文本中提取可用于补全 Release 的大小。"""
+    stripped = line.strip()
+    lower = stripped.lower()
+    size_match = re.search(r'\b(\d+(?:\.\d+)?)\s*((?:M|G|T|P)i?B)\b', stripped, re.IGNORECASE)
+    if not size_match:
+        return None
+
+    size_text = normalize_mp_size(f"{size_match.group(1)} {size_match.group(2)}")
+    if lower.startswith("general"):
+        return "general", size_text
+    if lower.startswith("length"):
+        return "length", size_text
+    if re.match(r'^\s*size\b', stripped, re.IGNORECASE):
+        return "size", size_text
+    if lower.startswith("file size"):
+        return "file size", size_text
+    if re.match(r'^\s*rapidgator(?:\s*#\d+)?\s*~\s*\d+(?:\.\d+)?\s*(?:M|G|T|P)i?B\b', stripped, re.IGNORECASE):
+        return "rapidgator", size_text
+    return None
+
+
+def fill_mp_release_sizes(lines: list[str]) -> list[str]:
+    """为缺少大小的 Release 行补全大小。"""
+    release_lines = list(lines)
+    source_priority = {
+        "general": 0,
+        "length": 1,
+        "size": 2,
+        "file size": 3,
+        "rapidgator": 4,
+    }
+
+    for index, line in enumerate(release_lines):
+        if not line.startswith("Release:"):
+            continue
+        if re.search(r'~\s*\d+(?:\.\d+)?\s*(?:M|G|T|P)i?B\b', line, re.IGNORECASE):
+            continue
+
+        best_candidate = None
+        next_index = index + 1
+        while next_index < len(release_lines) and not release_lines[next_index].startswith("Release:"):
+            candidate = extract_mp_size_candidate(release_lines[next_index])
+            if candidate:
+                source_name, size_text = candidate
+                if best_candidate is None or source_priority[source_name] < source_priority[best_candidate[0]]:
+                    best_candidate = (source_name, size_text)
+                    if source_name == "general":
+                        break
+            next_index += 1
+
+        if best_candidate:
+            release_lines[index] = f"{line.rstrip()} ~ {best_candidate[1]}"
+
+    return release_lines
+
+
 def format_mp_text(text: str) -> str:
     """整理正文文本，增强可读性。"""
     lines = text.splitlines()
@@ -191,6 +253,7 @@ def format_mp_text(text: str) -> str:
             continue
         cleaned_lines.append(stripped)
 
+    cleaned_lines = fill_mp_release_sizes(cleaned_lines)
     formatted_lines = []
 
     for line in cleaned_lines:
