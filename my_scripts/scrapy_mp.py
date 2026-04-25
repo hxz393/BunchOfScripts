@@ -8,14 +8,21 @@
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import redis
 import requests
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from retrying import retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
+from scrapy_redis import (
+    deserialize_payload,
+    drain_queue,
+    get_redis_client,
+    push_items_to_queue,
+    serialize_payload,
+)
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -28,66 +35,266 @@ MP_MOVIE_URL = CONFIG['mp_movie_url']  # mp 电影列表地址
 MP_COOKIE = CONFIG['mp_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+THREAD_NUMBER = CONFIG.get('thread_number', 30)  # 线程数
+
+REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'mp_pending')  # 待处理队列
+REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'mp_processing')  # 处理中队列
+REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'mp_failed')  # 失败队列
+REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'mp_seen')  # 已入队帖子集合
+REDIS_SCAN_PAGE_KEY = CONFIG.get('redis_scan_page_key', 'mp_scan_page')  # 列表扫描断点页码
+REDIS_SCAN_COMPLETE_KEY = CONFIG.get('redis_scan_complete_key', 'mp_scan_complete')  # 列表扫描完成标记
 
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
 
-def scrapy_mp(start_page, end) -> None:
-    """
-    抓取发布信息写入到文件。
-    """
-    logger.info("抓取 mp 站点发布信息")
-    while True:
-        # 请求 mp 主页
-        logger.info(f"抓取第 {start_page} 页")
-        url = f"{MP_MOVIE_URL}{start_page}/"
-        response = get_mp_response(url)
-        result_list = parse_mp_response(response)
-        # print(result_list)
-        logger.info(f"共 {len(result_list)} 个结果")
-        process_all(result_list, max_workers=20)
-
-        # 检查帖子
-        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end)
-
-        if all_exist:
-            logger.info("没有新发布，完成")
-            break
-
-        # logger.info(f"结果：{result_list}")
-        logger.warning("-" * 255)
-        start_page += 1
+class MpCloudflareError(RuntimeError):
+    """MP 请求命中 Cloudflare 验证页，通常意味着 Cookie 已失效。"""
 
 
-def process_all(result_list, max_workers=5):
-    """多线程执行抓取任务"""
-    results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        future_to_item = {
-            executor.submit(visit_mp_url, item): item
-            for item in result_list
+def normalize_mp_end_urls(end) -> set[str]:
+    """将截止条件统一整理为 URL 集合。"""
+    if end is None:
+        return set()
+    if isinstance(end, str):
+        end_urls = {end}
+    else:
+        end_urls = {item for item in end if item}
+    return {item.strip() for item in end_urls if item.strip()}
+
+
+def serialize_mp_post(item: dict) -> str:
+    """将 MP 列表项序列化为 Redis 队列任务。"""
+    return serialize_payload(
+        {
+            "title": item["title"],
+            "link": item["link"],
+            "year": item["year"],
         }
-        # 按完成顺序收集结果或捕获异常
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            try:
-                ret = future.result()
-            except Exception as exc:
-                logger.error(f"[ERROR] {item} -> {exc!r}")
-            else:
-                results.append(ret)
-    return results
+    )
 
 
-@retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
-def get_mp_response(url: str) -> requests.Response:
-    """请求流程"""
-    response = requests.get(url, headers=REQUEST_HEAD)
+def get_mp_active_queue_links(redis_client: redis.Redis) -> set[str]:
+    """读取 Redis 活跃队列中的帖子 URL。"""
+    queue_links = set()
+    for key in (REDIS_PENDING_KEY, REDIS_PROCESSING_KEY):
+        for payload in redis_client.lrange(key, 0, -1):
+            info = deserialize_payload(payload)
+            link = info.get("link")
+            if link:
+                queue_links.add(link)
+    return queue_links
+
+
+def is_mp_cloudflare_challenge(response: requests.Response) -> bool:
+    """判断响应是否为 Cloudflare 验证页。"""
+    text = getattr(response, "text", "")
+    if not isinstance(text, str):
+        text = str(text)
+    text = text.lower()
+    markers = (
+        "<title>just a moment",
+        "challenges.cloudflare.com",
+        "cf_chl",
+        "challenge-platform",
+        "cf-browser-verification",
+        "<title>attention required!",
+    )
+    return any(marker in text for marker in markers)
+
+
+def get_mp_response_once(url: str) -> requests.Response:
+    """发起一次 MP 请求并统一设置编码。"""
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=20)
     response.encoding = 'utf-8'
+    return response
+
+
+def raise_for_mp_response(response: requests.Response, url: str) -> None:
+    """校验 MP 响应状态，并识别 Cookie 失效导致的 CF 验证页。"""
+    if is_mp_cloudflare_challenge(response):
+        raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
 
+
+def validate_mp_end_urls(end_urls: set[str]) -> None:
+    """运行前校验截止 URL 是否仍然可访问，避免因 404 导致无限翻页。"""
+    logger.info(f"校验阶段...")
+    missing_urls = []
+    for url in sorted(end_urls):
+        response = get_mp_response_once(url)
+        if is_mp_cloudflare_challenge(response):
+            raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
+        if response.status_code == 404:
+            missing_urls.append(url)
+            continue
+        if response.status_code != 200:
+            raise RuntimeError(f"验证 mp 截止 URL 失败，状态码 {response.status_code}：{url}")
+
+    if missing_urls:
+        raise ValueError(f"mp 截止 URL 已失效（404）：{', '.join(missing_urls)}")
+
+
+def get_mp_scan_start_page(redis_client: redis.Redis, start_page: int) -> int:
+    """读取 Redis 中保存的扫描页码，或初始化为 ``start_page``。"""
+    saved_page = redis_client.get(REDIS_SCAN_PAGE_KEY)
+    current_page = int(saved_page) if saved_page is not None else start_page
+    if saved_page is None:
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+    else:
+        logger.info(f"从第 {current_page} 页继续扫描")
+    return current_page
+
+
+def advance_mp_scan_page(redis_client: redis.Redis, current_page: int) -> int:
+    """推进到下一页，并写回 Redis 断点。"""
+    next_page = current_page + 1
+    redis_client.set(REDIS_SCAN_PAGE_KEY, str(next_page))
+    logger.warning("-" * 255)
+    return next_page
+
+
+def mark_mp_scan_complete(redis_client: redis.Redis, current_page: int) -> None:
+    """标记列表扫描完成。"""
+    redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
+    redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
+    logger.info("MP 列表扫描完成")
+
+
+def scrapy_mp(start_page, end) -> None:
+    """
+    先顺序翻页把新帖子写入 Redis，再并发抓取详情页。
+    """
+    logger.info("抓取 mp 站点发布信息")
+    redis_client = get_redis_client()
+    enqueue_mp_posts(start_page=start_page, end=end, redis_client=redis_client)
+    drain_mp_queue(redis_client=redis_client)
+    finalize_mp_run(redis_client=redis_client)
+
+
+def process_all(result_list, redis_client: redis.Redis | None = None) -> int:
+    """将单页列表结果写入 Redis 待处理队列。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    return push_items_to_queue(
+        redis_client,
+        result_list,
+        seen_key=REDIS_SEEN_KEY,
+        pending_key=REDIS_PENDING_KEY,
+        unique_value=lambda item: item["link"],
+        serializer=serialize_mp_post,
+    )
+
+
+def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | None = None) -> None:
+    """顺序翻页，收集新帖子并写入 Redis 待处理队列。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+    if redis_client.get(REDIS_SCAN_COMPLETE_KEY) == "1":
+        logger.info("MP 列表扫描已完成，跳过入队阶段")
+        return
+
+    end_urls = normalize_mp_end_urls(end)
+    if not end_urls:
+        raise ValueError("mp 截止 URL 不能为空")
+    validate_mp_end_urls(end_urls)
+
+    current_page = get_mp_scan_start_page(redis_client, start_page)
+    matched_end_urls = get_mp_active_queue_links(redis_client) & end_urls
+    while True:
+        logger.info(f"抓取第 {current_page} 页")
+        url = f"{MP_MOVIE_URL}{current_page}/"
+        response = get_mp_response(url)
+        result_list = parse_mp_response(response)
+        if not result_list:
+            raise RuntimeError("MP 列表页解析结果为空，网站结构可能已变更")
+
+        enqueued_count = process_all(result_list, redis_client=redis_client)
+        matched_end_urls.update(item["link"] for item in result_list if item["link"] in end_urls)
+        logger.info(
+            f"第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条，"
+            f"截止 URL 已命中 {len(matched_end_urls)}/{len(end_urls)} 条"
+        )
+
+        if matched_end_urls == end_urls:
+            mark_mp_scan_complete(redis_client, current_page)
+            break
+
+        current_page = advance_mp_scan_page(redis_client, current_page)
+
+
+def recover_mp_failed_queue(redis_client: redis.Redis) -> int:
+    """将失败队列中的任务恢复回待处理队列，便于更新 Cookie 后重试。"""
+    recovered_count = 0
+    while True:
+        payload = redis_client.rpoplpush(REDIS_FAILED_KEY, REDIS_PENDING_KEY)
+        if not payload:
+            break
+        recovered_count += 1
+
+    if recovered_count:
+        logger.warning(f"恢复 {recovered_count} 条失败的 MP 任务回待处理队列")
+
+    return recovered_count
+
+
+def drain_mp_queue(redis_client: redis.Redis | None = None) -> None:
+    """从 Redis 队列中取帖子，使用多线程访问详情页并写出 .rare 文件。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+    recover_mp_failed_queue(redis_client)
+
+    drain_queue(
+    redis_client,
+    pending_key=REDIS_PENDING_KEY,
+    processing_key=REDIS_PROCESSING_KEY,
+    failed_key=REDIS_FAILED_KEY,
+    max_workers=THREAD_NUMBER,
+        worker=visit_mp_url,
+        deserialize=deserialize_payload,
+        logger=logger,
+        queue_label="MP",
+        identify_item=lambda info: info["link"],
+        abort_on_exception=lambda exc: isinstance(exc, MpCloudflareError),
+    )
+
+
+def finalize_mp_run(redis_client: redis.Redis | None = None) -> None:
+    """在扫描和详情任务都结束后，清理本轮运行的扫描状态。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    if redis_client.get(REDIS_SCAN_COMPLETE_KEY) != "1":
+        logger.info("MP 列表扫描尚未完成，暂不清理扫描状态")
+        return
+
+    if (
+            redis_client.llen(REDIS_PENDING_KEY)
+            or redis_client.llen(REDIS_PROCESSING_KEY)
+            or redis_client.llen(REDIS_FAILED_KEY)
+    ):
+        logger.info("MP 队列仍有未完成任务，暂不清理扫描状态")
+        return
+
+    redis_client.delete(REDIS_SCAN_PAGE_KEY, REDIS_SCAN_COMPLETE_KEY)
+
+
+def should_retry_mp_request(exc: Exception) -> bool:
+    """Cloudflare 验证页属于致命状态，不做无意义重试。"""
+    return not isinstance(exc, MpCloudflareError)
+
+
+@retry(
+    stop_max_attempt_number=15,
+    wait_random_min=1000,
+    wait_random_max=10000,
+    retry_on_exception=should_retry_mp_request,
+)
+def get_mp_response(url: str) -> requests.Response:
+    """请求流程"""
+    response = get_mp_response_once(url)
+    raise_for_mp_response(response, url)
     return response
 
 

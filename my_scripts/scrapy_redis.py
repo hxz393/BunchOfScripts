@@ -115,6 +115,7 @@ def drain_queue(
         identify_item: Callable[[dict], str],
         progress_every: int | None = None,
         log_traceback: bool = False,
+        abort_on_exception: Callable[[Exception], bool] | None = None,
 ) -> dict[str, int]:
     """从 Redis 队列中取任务，使用线程池持续消费。"""
     recover_processing_queue(
@@ -134,12 +135,13 @@ def drain_queue(
     processed_count = 0
     success_count = 0
     failed_count = 0
+    fatal_exception: Exception | None = None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {}
 
         while True:
-            while len(future_to_task) < max_workers:
+            while fatal_exception is None and len(future_to_task) < max_workers:
                 payload = pop_next_payload(
                     redis_client,
                     pending_key=pending_key,
@@ -158,10 +160,19 @@ def drain_queue(
             for future in done:
                 payload, info = future_to_task.pop(future)
                 processed_count += 1
+                should_abort = False
                 try:
                     future.result()
                     success_count += 1
                 except Exception as exc:
+                    should_abort = abort_on_exception(exc) if abort_on_exception else False
+                    if should_abort or fatal_exception is not None:
+                        if fatal_exception is None:
+                            fatal_exception = exc
+                            logger.error(f"{queue_label} 检测到致命错误，停止继续处理：{identify_item(info)}，错误：{exc}")
+                        redis_client.rpush(pending_key, payload)
+                        continue
+
                     failed_count += 1
                     message = f"抓取出错：{identify_item(info)}，错误：{exc}"
                     if log_traceback:
@@ -178,6 +189,9 @@ def drain_queue(
                         f"{queue_label} 队列进度：已处理 {processed_count} 条，成功 {success_count} 条，"
                         f"失败 {failed_count} 条，剩余约 {remaining_count} 条"
                     )
+
+        if fatal_exception is not None:
+            raise fatal_exception
 
     logger.info(
         f"{queue_label} 队列处理完成：总计 {processed_count} 条，成功 {success_count} 条，失败 {failed_count} 条"

@@ -18,6 +18,7 @@ from unittest.mock import Mock, call, patch
 import requests
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_mp.py"
+REDIS_HELPER_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
 
 
 def load_scrapy_mp(config: dict | None = None):
@@ -29,12 +30,33 @@ def load_scrapy_mp(config: dict | None = None):
         "mp_cookie": "cookie=value",
         "request_head": {"User-Agent": "unit-test"},
         "output_dir": temp_dir.name,
+        "thread_number": 3,
+        "redis_pending_key": "mp_pending",
+        "redis_processing_key": "mp_processing",
+        "redis_failed_key": "mp_failed",
+        "redis_seen_key": "mp_seen",
+        "redis_scan_page_key": "mp_scan_page",
+        "redis_scan_complete_key": "mp_scan_complete",
+    }
+    helper_config = {
+        "redis_host": "127.0.0.1",
+        "redis_port": 6379,
+        "redis_db": 0,
     }
     if config:
         module_config.update(config)
+        for key in ("redis_host", "redis_port", "redis_db"):
+            if key in config:
+                helper_config[key] = config[key]
 
     fake_my_module = types.ModuleType("my_module")
-    fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(module_config)
+
+    def fake_read_json_to_dict(path: str):
+        if path == "config/scrapy_redis.json":
+            return copy.deepcopy(helper_config)
+        return copy.deepcopy(module_config)
+
+    fake_my_module.read_json_to_dict = fake_read_json_to_dict
     fake_my_module.normalize_release_title_for_filename = lambda title: title.replace("/", "｜")
     fake_my_module.sanitize_filename = lambda name: name.replace(":", "_")
 
@@ -49,15 +71,140 @@ def load_scrapy_mp(config: dict | None = None):
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
+    fake_redis = types.ModuleType("redis")
+
+    class DummyRedis:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_redis.Redis = DummyRedis
+
+    helper_spec = importlib.util.spec_from_file_location(
+        f"scrapy_redis_test_{uuid.uuid4().hex}",
+        REDIS_HELPER_PATH,
+    )
+    helper_module = importlib.util.module_from_spec(helper_spec)
+    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
+        helper_spec.loader.exec_module(helper_module)
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_mp_test_{uuid.uuid4().hex}",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"my_module": fake_my_module, "retrying": fake_retrying}):
+    with patch.dict(
+        sys.modules,
+        {
+            "my_module": fake_my_module,
+            "retrying": fake_retrying,
+            "redis": fake_redis,
+            "scrapy_redis": helper_module,
+        },
+    ):
         spec.loader.exec_module(module)
 
+    module._scrapy_redis = helper_module
     return module, temp_dir
+
+
+class FakeRedisPipeline:
+    """最小 Redis pipeline 实现。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.commands = []
+
+    def sadd(self, key: str, value: str):
+        self.commands.append(("sadd", key, value))
+        return self
+
+    def rpush(self, key: str, value: str):
+        self.commands.append(("rpush", key, value))
+        return self
+
+    def execute(self):
+        results = []
+        for command, key, value in self.commands:
+            results.append(getattr(self.client, command)(key, value))
+        self.commands.clear()
+        return results
+
+
+class FakeRedis:
+    """用于测试 MP Redis 队列流程的内存实现。"""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.sets = {}
+        self.lists = {}
+        self.values = {}
+
+    def pipeline(self):
+        return FakeRedisPipeline(self)
+
+    def sadd(self, key: str, value: str) -> int:
+        members = self.sets.setdefault(key, set())
+        if value in members:
+            return 0
+        members.add(value)
+        return 1
+
+    def rpush(self, key: str, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        items.append(value)
+        return len(items)
+
+    def rpoplpush(self, source: str, destination: str):
+        source_items = self.lists.setdefault(source, [])
+        if not source_items:
+            return None
+        value = source_items.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def lrem(self, key: str, count: int, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        removed = 0
+        new_items = []
+        for item in items:
+            if item == value and removed < count:
+                removed += 1
+                continue
+            new_items.append(item)
+        self.lists[key] = new_items
+        return removed
+
+    def llen(self, key: str) -> int:
+        return len(self.lists.get(key, []))
+
+    def lrange(self, key: str, start: int, end: int) -> list[str]:
+        items = self.lists.get(key, [])
+        if end == -1:
+            end = len(items) - 1
+        return items[start:end + 1]
+
+    def get(self, key: str):
+        return self.values.get(key)
+
+    def set(self, key: str, value: str):
+        self.values[key] = value
+        return True
+
+    def delete(self, *keys: str) -> int:
+        deleted = 0
+        for key in keys:
+            if key in self.values:
+                del self.values[key]
+                deleted += 1
+            if key in self.lists:
+                del self.lists[key]
+                deleted += 1
+            if key in self.sets:
+                del self.sets[key]
+                deleted += 1
+        return deleted
 
 
 def build_archive_article(title: str = "Movie Title", link: str = "https://example.com/post", span_text: str = "Jul. 20, 1990") -> str:
@@ -126,7 +273,7 @@ class TestGetMpResponse(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/post", headers=self.module.REQUEST_HEAD)
+        mock_get.assert_called_once_with("https://example.com/post", headers=self.module.REQUEST_HEAD, timeout=20)
 
     def test_get_mp_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
@@ -140,6 +287,17 @@ class TestGetMpResponse(unittest.TestCase):
         """底层请求异常时应直接抛出，交给重试装饰器处理。"""
         with patch.object(self.module.requests, "get", side_effect=requests.Timeout("timed out")):
             with self.assertRaisesRegex(requests.Timeout, "timed out"):
+                self.module.get_mp_response("https://example.com/post")
+
+    def test_get_mp_response_raises_cookie_error_on_cloudflare_challenge_page(self):
+        """命中 Cloudflare 验证页时应直接报 Cookie/验证失效。"""
+        response = Mock(
+            status_code=403,
+            text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>https://challenges.cloudflare.com</body></html>',
+        )
+
+        with patch.object(self.module.requests, "get", return_value=response):
+            with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.get_mp_response("https://example.com/post")
 
 
@@ -209,9 +367,34 @@ class TestParseMpResponse(unittest.TestCase):
             ],
         )
 
+    def test_parse_mp_response_delegates_each_article_to_helper(self):
+        """整页解析应逐条委托给 ``parse_mp_article``。"""
+        response = Mock(
+            text=build_archive_page(
+                build_archive_article(title="Movie A", link="https://example.com/a", span_text="1990"),
+                build_archive_article(title="Movie B", link="https://example.com/b", span_text="1991"),
+            )
+        )
 
-class TestProcessAll(unittest.TestCase):
-    """验证批量多线程编排逻辑。"""
+        with patch.object(
+            self.module,
+            "parse_mp_article",
+            side_effect=[
+                {"title": "Movie A", "link": "https://example.com/a", "year": "1990"},
+                None,
+            ],
+        ) as mock_parse_article:
+            result = self.module.parse_mp_response(response)
+
+        self.assertEqual(
+            result,
+            [{"title": "Movie A", "link": "https://example.com/a", "year": "1990"}],
+        )
+        self.assertEqual(mock_parse_article.call_count, 2)
+
+
+class TestParseMpArticle(unittest.TestCase):
+    """验证单个列表页条目解析逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_mp()
@@ -219,39 +402,405 @@ class TestProcessAll(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_process_all_collects_successful_results(self):
-        """应收集所有成功任务的返回值。"""
-
-        def fake_visit(item: dict):
-            return f"done:{item['link']}"
-
-        with patch.object(self.module, "visit_mp_url", side_effect=fake_visit):
-            result = self.module.process_all(
-                [{"link": "u1"}, {"link": "u2"}],
-                max_workers=2,
+    def test_parse_mp_article_extracts_title_link_and_year(self):
+        """应从单条 ``article`` 里提取标题、链接和年份。"""
+        response = Mock(
+            text=build_archive_page(
+                build_archive_article(
+                    title="Movie Title",
+                    link="https://example.com/post-1",
+                    span_text="Jul. 20, 1990",
+                )
             )
+        )
+        article = self.module.BeautifulSoup(response.text, "html.parser").find("article")
 
-        self.assertCountEqual(result, ["done:u1", "done:u2"])
+        result = self.module.parse_mp_article(article)
 
-    def test_process_all_logs_errors_without_raising(self):
-        """单个任务失败时，应记录错误且继续处理后续任务。"""
+        self.assertEqual(
+            result,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post-1",
+                "year": "1990",
+            },
+        )
 
-        def fake_visit(item: dict):
-            if item["link"] == "bad":
-                raise RuntimeError("boom")
-            return f"done:{item['link']}"
+    def test_parse_mp_article_returns_none_when_h3_anchor_is_missing(self):
+        """条目缺少标题链接时应返回 ``None``。"""
+        article = self.module.BeautifulSoup(
+            '<article class="item movies"><div class="data"><span>1990</span></div></article>',
+            "html.parser",
+        ).find("article")
 
-        with patch.object(self.module, "visit_mp_url", side_effect=fake_visit), self.assertLogs(
-            self.module.logger.name,
-            level="ERROR",
-        ) as logs:
-            result = self.module.process_all(
-                [{"link": "good"}, {"link": "bad"}],
-                max_workers=1,
-            )
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            result = self.module.parse_mp_article(article)
 
-        self.assertEqual(result, ["done:good"])
-        self.assertIn("[ERROR] {'link': 'bad'} -> RuntimeError('boom')", logs.output[0])
+        self.assertIsNone(result)
+        self.assertIn("mp 列表条目缺少 h3 标题节点，已跳过", logs.output[0])
+
+    def test_parse_mp_article_logs_warning_when_year_is_missing(self):
+        """条目缺少年份时应记录 warning，但仍返回标题和链接。"""
+        article = self.module.BeautifulSoup(
+            build_archive_article(
+                title="Movie Title",
+                link="https://example.com/post-1",
+                span_text="Unknown date",
+            ),
+            "html.parser",
+        ).find("article")
+
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            result = self.module.parse_mp_article(article)
+
+        self.assertEqual(
+            result,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post-1",
+                "year": "",
+            },
+        )
+        self.assertIn("mp 列表条目缺少年份：Movie Title", logs.output[0])
+
+
+class TestProcessAll(unittest.TestCase):
+    """验证单页结果入队逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_process_all_pushes_new_items_to_pending_queue(self):
+        """应把单页新帖子写入 seen 集合和 pending 队列。"""
+        result = self.module.process_all(
+            [
+                {"title": "Movie A", "link": "https://example.com/a", "year": "1990"},
+                {"title": "Movie B", "link": "https://example.com/b", "year": "1991"},
+            ],
+            redis_client=self.redis_client,
+        )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            self.redis_client.sets[self.module.REDIS_SEEN_KEY],
+            {"https://example.com/a", "https://example.com/b"},
+        )
+        payloads = [
+            self.module._scrapy_redis.deserialize_payload(payload)
+            for payload in self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        ]
+        self.assertEqual(
+            payloads,
+            [
+                {"link": "https://example.com/a", "title": "Movie A", "year": "1990"},
+                {"link": "https://example.com/b", "title": "Movie B", "year": "1991"},
+            ],
+        )
+
+    def test_process_all_deduplicates_items_by_link(self):
+        """相同链接的帖子应只入队一次。"""
+        result = self.module.process_all(
+            [
+                {"title": "Movie A", "link": "https://example.com/a", "year": "1990"},
+                {"title": "Movie A Again", "link": "https://example.com/a", "year": "1990"},
+            ],
+            redis_client=self.redis_client,
+        )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 1)
+
+
+class TestMpQueueHelpers(unittest.TestCase):
+    """验证 MP 入队阶段使用的辅助函数。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_normalize_mp_end_urls_supports_string_and_iterable_inputs(self):
+        """截止条件应统一整理成去空白、去空值的 URL 集合。"""
+        self.assertEqual(
+            self.module.normalize_mp_end_urls(" https://example.com/a "),
+            {"https://example.com/a"},
+        )
+        self.assertEqual(
+            self.module.normalize_mp_end_urls(["https://example.com/a", "", " https://example.com/b "]),
+            {"https://example.com/a", "https://example.com/b"},
+        )
+
+    def test_get_mp_active_queue_links_reads_pending_and_processing_queue_urls(self):
+        """应从 Redis 活跃队列里提取全部已入队 URL。"""
+        redis_client = FakeRedis()
+        redis_client.rpush(
+            self.module.REDIS_PENDING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/pending", "title": "Pending", "year": "2026"}
+            ),
+        )
+        redis_client.rpush(
+            self.module.REDIS_PROCESSING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/processing", "title": "Processing", "year": "2026"}
+            ),
+        )
+
+        self.assertEqual(
+            self.module.get_mp_active_queue_links(redis_client),
+            {"https://example.com/pending", "https://example.com/processing"},
+        )
+
+    def test_validate_mp_end_urls_raises_when_any_url_returns_404(self):
+        """截止 URL 若已 404，应在运行前直接报错。"""
+        responses = [
+            Mock(status_code=200),
+            Mock(status_code=404),
+        ]
+
+        with patch.object(self.module.requests, "get", side_effect=responses):
+            with self.assertRaisesRegex(ValueError, "404"):
+                self.module.validate_mp_end_urls(
+                    {"https://example.com/end-a", "https://example.com/end-b"}
+                )
+
+    def test_validate_mp_end_urls_raises_cookie_error_on_cloudflare_challenge(self):
+        """截止 URL 校验阶段若命中 CF 验证页，也应直接终止。"""
+        response = Mock(
+            status_code=403,
+            text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
+        )
+
+        with patch.object(self.module.requests, "get", return_value=response):
+            with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
+                self.module.validate_mp_end_urls({"https://example.com/end-a"})
+
+    def test_get_mp_scan_start_page_uses_saved_value_when_present(self):
+        """存在扫描断点时，应直接从 Redis 续跑。"""
+        redis_client = FakeRedis()
+        redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "7")
+
+        current_page = self.module.get_mp_scan_start_page(redis_client, 2)
+
+        self.assertEqual(current_page, 7)
+
+    def test_recover_mp_failed_queue_moves_failed_tasks_back_to_pending(self):
+        """失败队列中的任务应在重跑前恢复到 pending。"""
+        redis_client = FakeRedis()
+        redis_client.rpush(
+            self.module.REDIS_FAILED_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/failed", "title": "Failed", "year": "2026"}
+            ),
+        )
+
+        recovered_count = self.module.recover_mp_failed_queue(redis_client)
+
+        self.assertEqual(recovered_count, 1)
+        self.assertEqual(self.module.get_mp_active_queue_links(redis_client), {"https://example.com/failed"})
+
+
+class TestFormatMpText(unittest.TestCase):
+    """验证正文格式化逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_format_mp_text_inserts_two_blank_lines_before_each_release_line(self):
+        """每个 ``Release:`` 行前都应插入两空行，便于阅读。"""
+        text = "\n".join(
+            [
+                "Other versions available:",
+                "Release: 180 2026 1080p NF WEB-DL",
+                "General: mkv | 3.63 GB",
+                "Rapidgator #1",
+                "Release: 180 2026 720p NF WEB-DL",
+            ]
+        )
+
+        result = self.module.format_mp_text(text)
+
+        self.assertEqual(
+            result,
+            "\n".join(
+                [
+                    "Other versions available:",
+                    "",
+                    "",
+                    "Release: 180 2026 1080p NF WEB-DL ~ 3.63 GB",
+                    "General: mkv | 3.63 GB",
+                    "Rapidgator #1",
+                    "",
+                    "",
+                    "Release: 180 2026 720p NF WEB-DL",
+                ]
+            ),
+        )
+
+    def test_format_mp_text_removes_screenshot_lines_and_keeps_download_links(self):
+        """应只清洗截图段里的图片行，并保留后续下载链接。"""
+        text = "\n".join(
+            [
+                "Screenshots:",
+                "#1 (https://img2.pixhost.to/images/7318/sample.png)",
+                "https://image.tmdb.org/t/p/original/in-section.jpg",
+                "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+                "SCREENSHOTS (https://i.postimg.cc/ZnpckZLj/sample.jpg)",
+                "Rapidgator",
+                "file.rar (https://rapidgator.net/file/next.rar)",
+            ]
+        )
+
+        result = self.module.format_mp_text(text)
+
+        self.assertEqual(
+            result,
+            "\n".join(
+                [
+                    "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+                    "Rapidgator",
+                    "file.rar (https://rapidgator.net/file/next.rar)",
+                ]
+            ),
+        )
+
+    def test_format_mp_text_removes_tmdb_image_url_outside_screenshot_section(self):
+        """截图段之外的 TMDb 图片地址也应删除。"""
+        text = "\n".join(
+            [
+                "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+                "https://image.tmdb.org/t/p/original/standalone.jpg",
+            ]
+        )
+
+        result = self.module.format_mp_text(text)
+
+        self.assertEqual(
+            result,
+            "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+        )
+
+    def test_format_mp_text_keeps_non_tmdb_image_url_outside_screenshot_section(self):
+        """非 TMDb 的游离图片地址仍先保留，避免规则继续扩大。"""
+        text = "\n".join(
+            [
+                "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+                "https://example.com/poster.jpg",
+            ]
+        )
+
+        result = self.module.format_mp_text(text)
+
+        self.assertEqual(
+            result,
+            "\n".join(
+                [
+                    "Rapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+                    "https://example.com/poster.jpg",
+                ]
+            ),
+        )
+
+
+class TestExtractMpSizeCandidate(unittest.TestCase):
+    """验证单行大小提取逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_extract_mp_size_candidate_supports_general_length_size_and_file_size(self):
+        """应支持旧样本中最常见的几类大小来源行。"""
+        self.assertEqual(
+            self.module.extract_mp_size_candidate("General: mp4 | 1285 Kbps | 754 MB | 01:21:55"),
+            ("general", "754 MB"),
+        )
+        self.assertEqual(
+            self.module.extract_mp_size_candidate("Length           : 1.31 GiB for 01:48:36"),
+            ("length", "1.31 GiB"),
+        )
+        self.assertEqual(
+            self.module.extract_mp_size_candidate("Size: 1179357777 bytes (1.10 GiB), duration: 01:30:52"),
+            ("size", "1.10 GiB"),
+        )
+        self.assertEqual(
+            self.module.extract_mp_size_candidate("File size           : 949 MiB"),
+            ("file size", "949 MiB"),
+        )
+
+    def test_extract_mp_size_candidate_uses_rapidgator_as_last_resort(self):
+        """带大小的 Rapidgator 行应作为兜底候选返回。"""
+        self.assertEqual(
+            self.module.extract_mp_size_candidate(
+                "Rapidgator #1 ~ 5 GB (https://rapidgator.net/file/sample.part1.rar)"
+            ),
+            ("rapidgator", "5 GB"),
+        )
+
+
+class TestFillMpReleaseSizes(unittest.TestCase):
+    """验证 Release 行大小补全逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_fill_mp_release_sizes_fills_from_general_line(self):
+        """当前新样本里缺大小的 Release 行应优先从 ``General`` 行补齐。"""
+        lines = [
+            "Release: Bjornoya 2014 NORWEGIAN 720p BluRay H264 AAC-VXT",
+            "General: mp4 | 1 GB | 01:22:44",
+            "Rapidgator",
+        ]
+
+        result = self.module.fill_mp_release_sizes(lines)
+
+        self.assertEqual(
+            result[0],
+            "Release: Bjornoya 2014 NORWEGIAN 720p BluRay H264 AAC-VXT ~ 1 GB",
+        )
+
+    def test_fill_mp_release_sizes_fills_from_length_when_general_is_missing(self):
+        """没有 ``General`` 时应回退到 ``Length`` 行。"""
+        lines = [
+            "Release: Bound 1996 720p BRRip H264 AAC-RARBG",
+            "Length           : 1.31 GiB for 01:48:36",
+            "Rapidgator",
+        ]
+
+        result = self.module.fill_mp_release_sizes(lines)
+
+        self.assertEqual(
+            result[0],
+            "Release: Bound 1996 720p BRRip H264 AAC-RARBG ~ 1.31 GiB",
+        )
+
+    def test_fill_mp_release_sizes_uses_rapidgator_only_as_fallback(self):
+        """当技术信息里没有大小时，才回退到带大小的 ``Rapidgator`` 行。"""
+        lines = [
+            "Release: Buddhas Palm 1982 1080p BluRay x264-SHAOLiN",
+            "General: mkv | 175 B | 00:00:56",
+            "Rapidgator #1 ~ 5 GB (https://rapidgator.net/file/sample.part1.rar)",
+        ]
+
+        result = self.module.fill_mp_release_sizes(lines)
+
+        self.assertEqual(
+            result[0],
+            "Release: Buddhas Palm 1982 1080p BluRay x264-SHAOLiN ~ 5 GB",
+        )
 
 
 class TestParseMpDetail(unittest.TestCase):
@@ -296,7 +845,7 @@ class TestParseMpDetail(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "file_name": "Safe Title(1990) - mp [tt1234567].rare",
+                "file_name": "Safe Title(1990) - mpvd [tt1234567].rare",
                 "content": "Download (https://example.com/download)\nhttps://example.com/plain",
             },
         )
@@ -324,7 +873,7 @@ class TestParseMpDetail(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "file_name": "Movie Title(1990) - mp [tmdb98765].rare",
+                "file_name": "Movie Title(1990) - mpvd [tmdb98765].rare",
                 "content": "Plain text",
             },
         )
@@ -358,6 +907,36 @@ class TestParseMpDetail(unittest.TestCase):
         )
 
         self.assertEqual(result, "")
+
+    def test_parse_mp_detail_formats_release_sections_for_readability(self):
+        """正文里的 ``Release:`` 段落前应补两空行。"""
+        response = Mock(
+            text=build_detail_page(
+                id_links=["https://www.imdb.com/title/tt1234567/"],
+                description_html=(
+                    "<p>Other versions available:</p>"
+                    "<p>Release: 180 2026 1080p NF WEB-DL</p>"
+                    "<p>General: mkv | 3.63 GB</p>"
+                    "<p>Screenshots:</p>"
+                    '<p><a href="https://img2.pixhost.to/images/7318/sample.png">#1</a></p>'
+                    '<p><a href="https://rapidgator.net/file/sample.rar">Rapidgator #1 ~ 3.63 GB</a></p>'
+                ),
+            )
+        )
+
+        result = self.module.parse_mp_detail(
+            response,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post",
+                "year": "1990",
+            },
+        )
+
+        self.assertEqual(
+            result["content"],
+            "Other versions available:\n\n\nRelease: 180 2026 1080p NF WEB-DL ~ 3.63 GB\nGeneral: mkv | 3.63 GB\nRapidgator #1 ~ 3.63 GB (https://rapidgator.net/file/sample.rar)",
+        )
 
 
 class TestVisitMpUrl(unittest.TestCase):
@@ -421,33 +1000,46 @@ class TestVisitMpUrl(unittest.TestCase):
         mock_write.assert_not_called()
 
 
-class TestScrapyMpMain(unittest.TestCase):
-    """验证主抓取流程的编排逻辑。"""
+class TestMpRedisFlow(unittest.TestCase):
+    """验证 MP 的 Redis 入队和消费流程。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_mp()
+        self.redis_client = FakeRedis()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_scrapy_mp_stops_when_all_end_files_exist(self):
-        """停止条件文件全部出现后，应结束翻页。"""
-        sentinel_files = ["end-1.rare", "end-2.rare"]
-        process_calls = []
-
-        def fake_process(_result_list, max_workers: int):
-            process_calls.append(max_workers)
-            if len(process_calls) == 2:
-                for file_name in sentinel_files:
-                    Path(self.module.OUTPUT_DIR, file_name).write_text("done", encoding="utf-8")
-
-        with patch.object(self.module, "get_mp_response", side_effect=[Mock(), Mock()]) as mock_get, patch.object(
+    def test_enqueue_mp_posts_scans_until_all_end_urls_are_matched_across_pages(self):
+        """应跨页累计命中全部截止 URL 后再停止翻页。"""
+        with patch.object(self.module, "validate_mp_end_urls") as mock_validate, patch.object(
+            self.module,
+            "get_mp_response",
+            side_effect=[Mock(), Mock()],
+        ) as mock_get, patch.object(
             self.module,
             "parse_mp_response",
-            side_effect=[[{"link": "u1"}], [{"link": "u2"}]],
-        ), patch.object(self.module, "process_all", side_effect=fake_process) as mock_process:
-            self.module.scrapy_mp(start_page=2, end=sentinel_files)
+            side_effect=[
+                [
+                    {"title": "Movie 1", "link": "https://example.com/new-1", "year": "2026"},
+                    {"title": "Movie 2", "link": "https://example.com/end-a", "year": "2026"},
+                ],
+                [
+                    {"title": "Movie 3", "link": "https://example.com/new-3", "year": "2026"},
+                    {"title": "Movie old", "link": "https://example.com/end-b", "year": "2025"},
+                    {"title": "Movie older", "link": "https://example.com/older", "year": "2025"},
+                ],
+            ],
+        ):
+            self.module.enqueue_mp_posts(
+                start_page=2,
+                end=["https://example.com/end-a", "https://example.com/end-b"],
+                redis_client=self.redis_client,
+            )
 
+        mock_validate.assert_called_once_with(
+            {"https://example.com/end-a", "https://example.com/end-b"}
+        )
         self.assertEqual(
             mock_get.call_args_list,
             [
@@ -455,29 +1047,238 @@ class TestScrapyMpMain(unittest.TestCase):
                 call("https://example.com/movies/page/3/"),
             ],
         )
-        self.assertEqual(mock_process.call_args_list, [call([{"link": "u1"}], max_workers=20), call([{"link": "u2"}], max_workers=20)])
+        payloads = [
+            self.module._scrapy_redis.deserialize_payload(payload)
+            for payload in self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        ]
+        self.assertEqual(
+            payloads,
+            [
+                {"link": "https://example.com/new-1", "title": "Movie 1", "year": "2026"},
+                {"link": "https://example.com/end-a", "title": "Movie 2", "year": "2026"},
+                {"link": "https://example.com/new-3", "title": "Movie 3", "year": "2026"},
+                {"link": "https://example.com/end-b", "title": "Movie old", "year": "2025"},
+                {"link": "https://example.com/older", "title": "Movie older", "year": "2025"},
+            ],
+        )
 
-    def test_scrapy_mp_stops_when_explicit_single_end_file_exists(self):
-        """显式传入单文件列表且文件已存在时，应在第一页后直接停止。"""
-        sentinel_file = Path(self.module.OUTPUT_DIR) / "face-to-face-2"
-        sentinel_file.write_text("done", encoding="utf-8")
+    def test_enqueue_mp_posts_counts_end_urls_already_in_active_queue(self):
+        """活跃队列里已有的截止 URL 也应参与累计命中判断。"""
+        self.redis_client.rpush(
+            self.module.REDIS_PENDING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/end-a", "title": "Queued", "year": "2026"}
+            ),
+        )
 
-        with patch.object(
-            self.module,
-            "get_mp_response",
-            side_effect=[Mock(), RuntimeError("should not request second page")],
+        with patch.object(self.module, "validate_mp_end_urls") as mock_validate, patch.object(
+            self.module, "get_mp_response", return_value=Mock()
         ) as mock_get, patch.object(
             self.module,
             "parse_mp_response",
-            return_value=[],
-        ), patch.object(
-            self.module,
-            "process_all",
-        ) as mock_process:
-            self.module.scrapy_mp(start_page=0, end=["face-to-face-2"])
+            return_value=[
+                {"title": "Movie 1", "link": "https://example.com/new-1", "year": "2026"},
+                {"title": "Movie 2", "link": "https://example.com/end-b", "year": "2026"},
+            ],
+        ):
+            self.module.enqueue_mp_posts(
+                start_page=2,
+                end=["https://example.com/end-a", "https://example.com/end-b"],
+                redis_client=self.redis_client,
+            )
 
-        mock_get.assert_called_once_with("https://example.com/movies/page/0/")
-        mock_process.assert_called_once_with([], max_workers=20)
+        mock_validate.assert_called_once_with(
+            {"https://example.com/end-a", "https://example.com/end-b"}
+        )
+        mock_get.assert_called_once_with("https://example.com/movies/page/2/")
+
+    def test_enqueue_mp_posts_resumes_from_saved_scan_page(self):
+        """中断后重跑时，应从 Redis 保存的页码继续扫描。"""
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "5")
+
+        with patch.object(self.module, "validate_mp_end_urls") as mock_validate, patch.object(
+            self.module,
+            "get_mp_response",
+            return_value=Mock(),
+        ) as mock_get, patch.object(
+            self.module,
+            "parse_mp_response",
+            return_value=[
+                {"title": "Movie 1", "link": "https://example.com/end-a", "year": "2026"},
+                {"title": "Movie 2", "link": "https://example.com/end-b", "year": "2026"},
+            ],
+        ):
+            self.module.enqueue_mp_posts(
+                start_page=2,
+                end=["https://example.com/end-a", "https://example.com/end-b"],
+                redis_client=self.redis_client,
+            )
+
+        mock_validate.assert_called_once()
+        mock_get.assert_called_once_with("https://example.com/movies/page/5/")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+
+    def test_enqueue_mp_posts_returns_immediately_when_scan_is_already_complete(self):
+        """扫描已完成且准备续跑详情时，应跳过入队阶段。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+
+        with patch.object(self.module, "validate_mp_end_urls") as mock_validate, patch.object(
+            self.module,
+            "get_mp_response",
+        ) as mock_get:
+            self.module.enqueue_mp_posts(
+                start_page=2,
+                end=["https://example.com/end-a", "https://example.com/end-b"],
+                redis_client=self.redis_client,
+            )
+
+        mock_validate.assert_not_called()
+        mock_get.assert_not_called()
+
+    def test_enqueue_mp_posts_raises_when_end_urls_are_missing(self):
+        """没有截止 URL 时应直接报错，避免无限翻页。"""
+        with self.assertRaisesRegex(ValueError, "截止 URL"):
+            self.module.enqueue_mp_posts(start_page=2, end=[], redis_client=self.redis_client)
+
+    def test_drain_mp_queue_processes_pending_items_and_records_failures(self):
+        """应消费 pending 队列，并把失败任务移入 failed 队列。"""
+        payloads = [
+            self.module._scrapy_redis.serialize_payload({"link": "https://example.com/good", "title": "Good", "year": "2026"}),
+            self.module._scrapy_redis.serialize_payload({"link": "https://example.com/bad", "title": "Bad", "year": "2026"}),
+        ]
+        for payload in payloads:
+            self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload)
+
+        def fake_visit(item: dict):
+            if item["link"] == "https://example.com/bad":
+                raise RuntimeError("boom")
+
+        with patch.object(self.module, "visit_mp_url", side_effect=fake_visit):
+            self.module.drain_mp_queue(redis_client=self.redis_client)
+
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 1)
+        failed_payload = self.module._scrapy_redis.deserialize_payload(
+            self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)[0]
+        )
+        self.assertEqual(failed_payload["link"], "https://example.com/bad")
+
+    def test_drain_mp_queue_recovers_failed_items_before_processing(self):
+        """重跑时应先把 failed 队列恢复回 pending 再处理。"""
+        self.redis_client.rpush(
+            self.module.REDIS_FAILED_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+            ),
+        )
+
+        with patch.object(self.module, "visit_mp_url") as mock_visit:
+            self.module.drain_mp_queue(redis_client=self.redis_client)
+
+        mock_visit.assert_called_once_with(
+            {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+        )
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 0)
+
+    def test_drain_mp_queue_aborts_and_requeues_when_cookie_expires(self):
+        """详情阶段若命中 Cloudflare 验证页，应终止本轮并把任务放回 pending。"""
+        self.redis_client.rpush(
+            self.module.REDIS_PENDING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+            ),
+        )
+
+        with patch.object(
+            self.module,
+            "visit_mp_url",
+            side_effect=self.module.MpCloudflareError("mp Cookie 已失效或触发 Cloudflare 验证"),
+        ):
+            with self.assertRaises(self.module.MpCloudflareError):
+                self.module.drain_mp_queue(redis_client=self.redis_client)
+
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 1)
+
+    def test_drain_mp_queue_logs_when_queue_is_empty(self):
+        """pending 队列为空时应直接记录提示。"""
+        with self.assertLogs(self.module.logger.name, level="INFO") as logs:
+            self.module.drain_mp_queue(redis_client=self.redis_client)
+
+        self.assertIn("MP 队列为空，没有待处理任务", logs.output[0])
+
+
+class TestFinalizeMpRun(unittest.TestCase):
+    """验证 MP 扫描状态清理逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_finalize_mp_run_clears_scan_state_after_all_work_finishes(self):
+        """扫描完成且所有队列清空后，应删除扫描状态。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "9")
+
+        self.module.finalize_mp_run(redis_client=self.redis_client)
+
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY))
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY))
+
+    def test_finalize_mp_run_keeps_scan_state_when_failed_tasks_remain(self):
+        """仍有失败任务时，不应清掉扫描状态，便于修 Cookie 后续跑。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "9")
+        self.redis_client.rpush(
+            self.module.REDIS_FAILED_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+            ),
+        )
+
+        self.module.finalize_mp_run(redis_client=self.redis_client)
+
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "9")
+
+
+class TestScrapyMpMain(unittest.TestCase):
+    """验证主抓取流程的编排逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_scrapy_mp_calls_enqueue_and_drain_with_shared_redis_client(self):
+        """主入口应复用同一个 Redis 客户端串起三阶段。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client) as mock_get_redis, patch.object(
+            self.module,
+            "enqueue_mp_posts",
+        ) as mock_enqueue, patch.object(
+            self.module,
+            "drain_mp_queue",
+        ) as mock_drain, patch.object(
+            self.module,
+            "finalize_mp_run",
+        ) as mock_finalize:
+            self.module.scrapy_mp(start_page=2, end=["https://example.com/old"])
+
+        mock_get_redis.assert_called_once_with()
+        mock_enqueue.assert_called_once_with(
+            start_page=2,
+            end=["https://example.com/old"],
+            redis_client=self.redis_client,
+        )
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
 
 
 if __name__ == "__main__":
