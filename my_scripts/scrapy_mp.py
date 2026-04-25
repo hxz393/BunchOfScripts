@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 from retrying import retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
@@ -154,9 +155,6 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
             break
     # 提取内容
     desc = soup.find('div', itemprop='description', class_='wp-content')
-    if not desc:
-        return ""
-
     # 将 <a> 标签替换为 "文本 (URL)"
     for a in desc.find_all('a', href=True):
         text = a.get_text(strip=True)
@@ -165,7 +163,7 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
         a.replace_with(replacement)
 
     # 获取纯文本，保持标签间适当空格/换行
-    text = desc.get_text(separator='\n', strip=True)
+    text = "\n".join(desc.stripped_strings)
     # 文件名
     file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
