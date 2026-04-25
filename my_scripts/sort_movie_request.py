@@ -334,7 +334,8 @@ def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
         h4 = block.find('h4')
         if not h4:
             break
-        if 'Režie' or 'Directed' in h4.get_text():
+        h4_text = h4.get_text()
+        if 'Režie' in h4_text or 'Directed' in h4_text:
             a = block.find('a', href=True)
             director = a.get_text(strip=True) if a else ""
             break
