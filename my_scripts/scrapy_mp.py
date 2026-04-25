@@ -132,6 +132,78 @@ def parse_mp_response(response: requests.Response) -> list:
     return results
 
 
+def is_mp_image_reference_line(line: str) -> bool:
+    """判断一行是否为图片引用地址。"""
+    stripped = line.strip()
+    if not stripped:
+        return False
+
+    return bool(
+        re.fullmatch(r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp)(?:\?\S*)?', stripped, re.IGNORECASE)
+        or re.search(r'\(https?://[^\s)]+\.(?:jpg|jpeg|png|webp|gif|bmp)(?:\?\S*)?\)$', stripped, re.IGNORECASE)
+    )
+
+
+def is_mp_tmdb_image_line(line: str) -> bool:
+    """判断一行是否为 TMDb 图片地址。"""
+    return bool(
+        re.fullmatch(
+            r'https?://image\.tmdb\.org/\S+\.(?:jpg|jpeg|png|webp|gif|bmp)(?:\?\S*)?',
+            line.strip(),
+            re.IGNORECASE,
+        )
+    )
+
+
+def is_mp_screenshot_heading(line: str) -> bool:
+    """判断一行是否为截图段标题。"""
+    return bool(re.match(r'(?i)^screenshots?\b', line.strip()))
+
+
+def is_mp_screenshot_detail_line(line: str) -> bool:
+    """判断一行是否为截图段内部的图片引用。"""
+    stripped = line.strip()
+    return stripped.startswith("#") or is_mp_image_reference_line(stripped)
+
+
+def format_mp_text(text: str) -> str:
+    """整理正文文本，增强可读性。"""
+    lines = text.splitlines()
+    cleaned_lines = []
+    in_screenshot_section = False
+
+    for line in lines:
+        stripped = line.strip()
+        if is_mp_tmdb_image_line(stripped):
+            continue
+        if in_screenshot_section:
+            if not stripped:
+                continue
+            if is_mp_screenshot_detail_line(stripped):
+                continue
+            in_screenshot_section = False
+
+        if not stripped:
+            cleaned_lines.append("")
+            continue
+        if is_mp_screenshot_heading(stripped):
+            in_screenshot_section = True
+            continue
+        cleaned_lines.append(stripped)
+
+    formatted_lines = []
+
+    for line in cleaned_lines:
+        if line.startswith("Release:"):
+            while formatted_lines and formatted_lines[-1] == "":
+                formatted_lines.pop()
+            if formatted_lines:
+                formatted_lines.extend(["", ""])
+        formatted_lines.append(line)
+
+    return "\n".join(formatted_lines)
+
+
 def parse_mp_detail(response: requests.Response, result_item: dict):
     """解析详情页，返回输出文件名和正文内容。"""
     soup = BeautifulSoup(response.text, "html.parser")
@@ -155,6 +227,9 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
             break
     # 提取内容
     desc = soup.find('div', itemprop='description', class_='wp-content')
+    if not isinstance(desc, Tag):
+        return ""
+
     # 将 <a> 标签替换为 "文本 (URL)"
     for a in desc.find_all('a', href=True):
         text = a.get_text(strip=True)
@@ -164,10 +239,11 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
 
     # 获取纯文本，保持标签间适当空格/换行
     text = "\n".join(desc.stripped_strings)
+    text = format_mp_text(text)
     # 文件名
     file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
-    file_name = f"{file_name}({result_item['year']}) - mp [{m_id}].rare"
+    file_name = f"{file_name}({result_item['year']}) - mpvd [{m_id}].rare"
     return {"file_name": file_name, "content": text}
 
 
