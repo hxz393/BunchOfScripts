@@ -5,28 +5,20 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-import base64
-import ctypes
-import json
 import logging
 import os
 import re
-import sqlite3
-import tempfile
-from ctypes import wintypes
 
 import redis
 import requests
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from retrying import retry
 
 from my_module import (
     normalize_release_title_for_filename,
     read_json_to_dict,
     sanitize_filename,
-    update_json_config,
     write_list_to_file,
 )
 from scrapy_redis import (
@@ -47,12 +39,6 @@ MP_COOKIE = CONFIG['mp_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG.get('thread_number', 35)  # 线程数
-DEFAULT_MP_BROWSER_PROFILE_DIR = CONFIG.get('mp_browser_profile_dir') or os.path.join(
-    os.environ.get("LOCALAPPDATA", ""),
-    "Google",
-    "Chrome",
-    "User Data",
-)
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'mp_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'mp_processing')  # 处理中队列
@@ -64,206 +50,6 @@ REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
 class MpCloudflareError(RuntimeError):
     """MP 请求命中 Cloudflare 验证页，通常意味着 Cookie 已失效。"""
-
-
-class DataBlob(ctypes.Structure):
-    """Windows DPAPI 需要的原始数据结构。"""
-
-    _fields_ = [
-        ("cbData", wintypes.DWORD),
-        ("pbData", ctypes.POINTER(ctypes.c_byte)),
-    ]
-
-
-def dpapi_decrypt(cipher_text: bytes) -> bytes:
-    """用 Windows DPAPI 解密浏览器本地密钥或旧式 Cookie。"""
-    if not cipher_text:
-        return b""
-
-    buffer = ctypes.create_string_buffer(cipher_text, len(cipher_text))
-    in_blob = DataBlob(
-        cbData=len(cipher_text),
-        pbData=ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
-    )
-    out_blob = DataBlob()
-    crypt_unprotect_data = ctypes.windll.crypt32.CryptUnprotectData
-    local_free = ctypes.windll.kernel32.LocalFree
-
-    if not crypt_unprotect_data(
-            ctypes.byref(in_blob),
-            None,
-            None,
-            None,
-            None,
-            0,
-            ctypes.byref(out_blob),
-    ):
-        raise ctypes.WinError()
-
-    try:
-        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
-    finally:
-        local_free(out_blob.pbData)
-
-
-def load_mp_browser_local_state(local_state_path: str) -> dict:
-    """读取 Chrome 的 ``Local State``。"""
-    with open(local_state_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def get_mp_chrome_master_key(local_state_path: str) -> bytes:
-    """从 Chrome ``Local State`` 中解出 Cookie 主密钥。"""
-    local_state = load_mp_browser_local_state(local_state_path)
-    encrypted_key_b64 = local_state["os_crypt"]["encrypted_key"]
-    encrypted_key = base64.b64decode(encrypted_key_b64)
-    if encrypted_key.startswith(b"DPAPI"):
-        encrypted_key = encrypted_key[5:]
-    return dpapi_decrypt(encrypted_key)
-
-
-def get_mp_cookie_profile_names(local_state_path: str) -> list[str]:
-    """按最近使用优先顺序给出候选 Chrome profile 名称。"""
-    try:
-        local_state = load_mp_browser_local_state(local_state_path)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return ["Default"]
-
-    profile_state = local_state.get("profile", {})
-    names = []
-    last_used = profile_state.get("last_used")
-    if last_used:
-        names.append(last_used)
-    names.extend(profile_state.get("last_active_profiles", []))
-    names.extend(profile_state.get("profiles_order", []))
-    names.extend(profile_state.get("info_cache", {}).keys())
-    names.append("Default")
-
-    seen = set()
-    result = []
-    for name in names:
-        if name and name not in seen:
-            seen.add(name)
-            result.append(name)
-    return result
-
-
-def get_mp_browser_cookie_source() -> tuple[str, str] | None:
-    """定位当前 MP 浏览器 Cookie 库和对应的 ``Local State``。"""
-    local_state_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, "Local State")
-    if os.path.exists(local_state_path):
-        for profile_name in get_mp_cookie_profile_names(local_state_path):
-            cookies_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, profile_name, "Network", "Cookies")
-            if os.path.exists(cookies_path):
-                return cookies_path, local_state_path
-
-    cookies_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, "Network", "Cookies")
-    local_state_path = os.path.join(os.path.dirname(DEFAULT_MP_BROWSER_PROFILE_DIR), "Local State")
-    if os.path.exists(cookies_path) and os.path.exists(local_state_path):
-        return cookies_path, local_state_path
-
-    return None
-
-
-def copy_mp_cookie_database(cookies_path: str) -> tuple[tempfile.TemporaryDirectory, str]:
-    """复制 Cookie SQLite 数据库及其 sidecar，便于稳定读取。"""
-    temp_dir = tempfile.TemporaryDirectory()
-    copied_db_path = os.path.join(temp_dir.name, "Cookies")
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        src = f"{cookies_path}{suffix}"
-        if not os.path.exists(src):
-            continue
-        with open(src, 'rb') as src_file, open(f"{copied_db_path}{suffix}", 'wb') as dst_file:
-            dst_file.write(src_file.read())
-    return temp_dir, copied_db_path
-
-
-def decrypt_mp_browser_cookie_value(value: str, encrypted_value: bytes, master_key: bytes) -> str:
-    """解密单个 Chrome Cookie 值。"""
-    if value:
-        return value
-    if not encrypted_value:
-        return ""
-    if encrypted_value.startswith((b"v10", b"v11")):
-        nonce = encrypted_value[3:15]
-        cipher_text = encrypted_value[15:]
-        return AESGCM(master_key).decrypt(nonce, cipher_text, None).decode('utf-8')
-    if encrypted_value.startswith(b"v20"):
-        raise RuntimeError("当前 Chrome Cookie 使用 v20 App-Bound Encryption，暂不支持自动提取")
-    return dpapi_decrypt(encrypted_value).decode('utf-8')
-
-
-def get_mp_browser_cookie_entries() -> list[dict]:
-    """从 Chrome profile 提取 ``movieparadise.org`` 的 Cookie 条目。"""
-    source = get_mp_browser_cookie_source()
-    if not source:
-        logger.warning("未找到 MP 浏览器 Cookie 库，跳过启动同步")
-        return []
-
-    cookies_path, local_state_path = source
-    try:
-        master_key = get_mp_chrome_master_key(local_state_path)
-    except Exception as exc:
-        logger.warning(f"读取 MP 浏览器主密钥失败，跳过启动同步：{exc}")
-        return []
-
-    temp_dir, copied_db_path = copy_mp_cookie_database(cookies_path)
-    try:
-        conn = sqlite3.connect(copied_db_path)
-        try:
-            rows = conn.execute(
-                """
-                SELECT name, value, encrypted_value, host_key
-                FROM cookies
-                WHERE host_key LIKE ?
-                ORDER BY host_key, name
-                """,
-                ("%movieparadise.org%",),
-            ).fetchall()
-        finally:
-            conn.close()
-    except Exception as exc:
-        logger.warning(f"读取 MP 浏览器 Cookie 数据库失败，跳过启动同步：{exc}")
-        return []
-    finally:
-        temp_dir.cleanup()
-
-    cookies = []
-    for name, value, encrypted_value, host_key in rows:
-        try:
-            cookie_value = decrypt_mp_browser_cookie_value(value, encrypted_value, master_key)
-        except Exception as exc:
-            logger.warning(f"解密 MP 浏览器 Cookie 失败，已跳过 {name}：{exc}")
-            continue
-        if cookie_value:
-            cookies.append({"name": name, "value": cookie_value, "domain": host_key})
-    return cookies
-
-
-def sync_mp_cookie_from_browser() -> str | None:
-    """启动时从浏览器提取 MP Cookie，并同步到配置。"""
-    global MP_COOKIE
-    cookies = get_mp_browser_cookie_entries()
-    if not cookies:
-        return None
-    if "cf_clearance" not in {cookie["name"] for cookie in cookies}:
-        logger.warning("浏览器中的 MP Cookie 尚未包含 cf_clearance，保留现有配置")
-        return None
-
-    cookie_str = "; ".join(
-        f"{cookie['name']}={cookie['value']}"
-        for cookie in cookies
-        if "movieparadise.org" in cookie.get("domain", "")
-    )
-    if not cookie_str:
-        logger.warning("浏览器中未找到可用的 MP Cookie，保留现有配置")
-        return None
-
-    MP_COOKIE = cookie_str
-    REQUEST_HEAD["Cookie"] = cookie_str
-    update_json_config(CONFIG_PATH, "mp_cookie", cookie_str)
-    logger.info(f"已从浏览器同步 MP Cookie，共 {len(cookies)} 项")
-    return cookie_str
 
 
 def normalize_mp_end_urls(end) -> set[str]:
@@ -354,7 +140,6 @@ def scrapy_mp(start_page, end) -> None:
     先顺序翻页把新帖子写入 Redis，再并发抓取详情页。
     """
     logger.info("抓取 mp 站点发布信息")
-    sync_mp_cookie_from_browser()
     redis_client = get_redis_client()
     try:
         recover_mp_processing_when_pending_is_empty(redis_client)
@@ -704,8 +489,7 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
     # 提取编号
     cf = soup.find('div', class_='custom_fields2')
     if not cf:
-        logger.error("没有找到 IMDB 段落")
-        return
+        raise ValueError(f"MP 详情页缺少 custom_fields2：{result_item['link']}")
 
     m_id = ""
     for a in cf.find_all('a', href=True):
@@ -722,7 +506,7 @@ def parse_mp_detail(response: requests.Response, result_item: dict):
     # 提取内容
     desc = soup.find('div', itemprop='description', class_='wp-content')
     if not isinstance(desc, Tag):
-        return ""
+        raise ValueError(f"MP 详情页缺少 description：{result_item['link']}")
 
     # 将 <a> 标签替换为 "文本 (URL)"
     for a in desc.find_all('a', href=True):
@@ -748,7 +532,7 @@ def visit_mp_url(result_item: dict):
     response = get_mp_response(url)
     result_dict = parse_mp_detail(response, result_item)
     if not isinstance(result_dict, dict):
-        return result_dict
+        raise TypeError(f"MP 详情解析结果类型无效：{url}")
 
     path = os.path.join(OUTPUT_DIR, result_dict['file_name'])
     write_list_to_file(path, [url, result_dict['content']])

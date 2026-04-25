@@ -58,7 +58,6 @@ def load_scrapy_mp(config: dict | None = None):
     fake_my_module.read_json_to_dict = fake_read_json_to_dict
     fake_my_module.normalize_release_title_for_filename = lambda title: title.replace("/", "｜")
     fake_my_module.sanitize_filename = lambda name: name.replace(":", "_")
-    fake_my_module.update_json_config = lambda _path, _key, _value: None
 
     def fake_write_list_to_file(path: str, content: list[str]) -> bool:
         target_path = Path(path)
@@ -72,20 +71,6 @@ def load_scrapy_mp(config: dict | None = None):
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
     fake_redis = types.ModuleType("redis")
-    fake_cryptography = types.ModuleType("cryptography")
-    fake_hazmat = types.ModuleType("cryptography.hazmat")
-    fake_primitives = types.ModuleType("cryptography.hazmat.primitives")
-    fake_ciphers = types.ModuleType("cryptography.hazmat.primitives.ciphers")
-    fake_aead = types.ModuleType("cryptography.hazmat.primitives.ciphers.aead")
-
-    class FakeAESGCM:
-        def __init__(self, _key):
-            self.key = _key
-
-        def decrypt(self, _nonce, cipher_text, _associated_data):
-            return cipher_text[:-16] if len(cipher_text) >= 16 else cipher_text
-
-    fake_aead.AESGCM = FakeAESGCM
 
     class DummyRedis:
         def __init__(self, *args, **kwargs):
@@ -104,11 +89,6 @@ def load_scrapy_mp(config: dict | None = None):
         {
             "my_module": fake_my_module,
             "redis": fake_redis,
-            "cryptography": fake_cryptography,
-            "cryptography.hazmat": fake_hazmat,
-            "cryptography.hazmat.primitives": fake_primitives,
-            "cryptography.hazmat.primitives.ciphers": fake_ciphers,
-            "cryptography.hazmat.primitives.ciphers.aead": fake_aead,
         },
     ):
         helper_spec.loader.exec_module(helper_module)
@@ -125,11 +105,6 @@ def load_scrapy_mp(config: dict | None = None):
             "retrying": fake_retrying,
             "redis": fake_redis,
             "scrapy_redis": helper_module,
-            "cryptography": fake_cryptography,
-            "cryptography.hazmat": fake_hazmat,
-            "cryptography.hazmat.primitives": fake_primitives,
-            "cryptography.hazmat.primitives.ciphers": fake_ciphers,
-            "cryptography.hazmat.primitives.ciphers.aead": fake_aead,
         },
     ):
         spec.loader.exec_module(module)
@@ -283,27 +258,6 @@ class TestModuleLoad(unittest.TestCase):
     def test_load_scrapy_mp_injects_cookie_into_request_head(self):
         """模块加载时应把配置里的 cookie 注入请求头。"""
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
-
-    def test_default_mp_browser_profile_dir_prefers_explicit_config(self):
-        """显式配置浏览器目录时，应直接固化为模块常量。"""
-        module, temp_dir = load_scrapy_mp(
-            {
-                "mp_browser_profile_dir": r"G:\Temp\User\custom_mp_profile",
-            }
-        )
-        self.addCleanup(temp_dir.cleanup)
-
-        self.assertEqual(module.DEFAULT_MP_BROWSER_PROFILE_DIR, r"G:\Temp\User\custom_mp_profile")
-
-    def test_default_mp_browser_profile_dir_uses_system_user_data_by_default(self):
-        """未显式配置时，应固定使用系统 Chrome 用户目录。"""
-        expected_dir = self.module.os.path.join(
-            self.module.os.environ.get("LOCALAPPDATA", ""),
-            "Google",
-            "Chrome",
-            "User Data",
-        )
-        self.assertEqual(self.module.DEFAULT_MP_BROWSER_PROFILE_DIR, expected_dir)
 
     def test_request_mp_page_error_prefers_explicit_verification_url(self):
         """命中 CF 时，错误提示应优先使用配置里的验证页。"""
@@ -611,64 +565,6 @@ class TestMpQueueHelpers(unittest.TestCase):
             with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.validate_mp_end_urls({"https://example.com/end-a"})
 
-class TestMpBrowserCookieSync(unittest.TestCase):
-    """验证启动阶段从浏览器同步 Cookie。"""
-
-    def setUp(self):
-        self.module, self.temp_dir = load_scrapy_mp()
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def test_sync_mp_cookie_from_browser_updates_runtime_and_config(self):
-        """浏览器中存在可用 Cookie 时，应自动回写配置。"""
-        cookies = [
-            {"name": "cf_clearance", "value": "abc", "domain": ".movieparadise.org"},
-            {"name": "session", "value": "xyz", "domain": ".movieparadise.org"},
-        ]
-
-        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=cookies), patch.object(
-            self.module,
-            "update_json_config",
-        ) as mock_update_config:
-            cookie_str = self.module.sync_mp_cookie_from_browser()
-
-        self.assertEqual(cookie_str, "cf_clearance=abc; session=xyz")
-        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cf_clearance=abc; session=xyz")
-        mock_update_config.assert_called_once_with(
-            self.module.CONFIG_PATH,
-            "mp_cookie",
-            "cf_clearance=abc; session=xyz",
-        )
-
-    def test_sync_mp_cookie_from_browser_keeps_existing_cookie_when_browser_empty(self):
-        """浏览器里没有 MP Cookie 时，不应覆盖当前配置。"""
-        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=[]), patch.object(
-            self.module,
-            "update_json_config",
-        ) as mock_update_config:
-            cookie_str = self.module.sync_mp_cookie_from_browser()
-
-        self.assertIsNone(cookie_str)
-        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
-        mock_update_config.assert_not_called()
-
-    def test_sync_mp_cookie_from_browser_requires_cf_clearance(self):
-        """没有 ``cf_clearance`` 时，不应覆盖现有配置。"""
-        cookies = [
-            {"name": "starstruck", "value": "abc", "domain": ".movieparadise.org"},
-        ]
-
-        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=cookies), patch.object(
-            self.module,
-            "update_json_config",
-        ) as mock_update_config:
-            cookie_str = self.module.sync_mp_cookie_from_browser()
-
-        self.assertIsNone(cookie_str)
-        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
-        mock_update_config.assert_not_called()
-
 class TestFormatMpText(unittest.TestCase):
     """验证正文格式化逻辑。"""
 
@@ -942,35 +838,33 @@ class TestParseMpDetail(unittest.TestCase):
             },
         )
 
-    def test_parse_mp_detail_returns_none_when_custom_fields_are_missing(self):
-        """缺少编号区块时应返回 ``None``。"""
+    def test_parse_mp_detail_raises_when_custom_fields_are_missing(self):
+        """缺少编号区块时应抛异常，避免任务被静默吞掉。"""
         response = Mock(text='<html><body><div itemprop="description" class="wp-content"><p>Body</p></div></body></html>')
 
-        result = self.module.parse_mp_detail(
-            response,
-            {
-                "title": "Movie Title",
-                "link": "https://example.com/post",
-                "year": "1990",
-            },
-        )
+        with self.assertRaisesRegex(ValueError, "custom_fields2"):
+            self.module.parse_mp_detail(
+                response,
+                {
+                    "title": "Movie Title",
+                    "link": "https://example.com/post",
+                    "year": "1990",
+                },
+            )
 
-        self.assertIsNone(result)
-
-    def test_parse_mp_detail_returns_empty_string_when_description_is_missing(self):
-        """缺少正文区块时应返回空字符串。"""
+    def test_parse_mp_detail_raises_when_description_is_missing(self):
+        """缺少正文区块时应抛异常，留待下次重跑。"""
         response = Mock(text=build_detail_page(id_links=["https://www.imdb.com/title/tt1234567/"], description_html=None))
 
-        result = self.module.parse_mp_detail(
-            response,
-            {
-                "title": "Movie Title",
-                "link": "https://example.com/post",
-                "year": "1990",
-            },
-        )
-
-        self.assertEqual(result, "")
+        with self.assertRaisesRegex(ValueError, "description"):
+            self.module.parse_mp_detail(
+                response,
+                {
+                    "title": "Movie Title",
+                    "link": "https://example.com/post",
+                    "year": "1990",
+                },
+            )
 
     def test_parse_mp_detail_formats_release_sections_for_readability(self):
         """正文里的 ``Release:`` 段落前应补两空行。"""
@@ -1040,8 +934,8 @@ class TestVisitMpUrl(unittest.TestCase):
             ["https://example.com/post", "line 1\nline 2"],
         )
 
-    def test_visit_mp_url_returns_parse_result_when_detail_is_not_dict(self):
-        """解析失败时应直接透传返回值，并跳过写盘。"""
+    def test_visit_mp_url_raises_when_detail_result_is_not_dict(self):
+        """解析返回非法类型时应抛异常，避免任务被当成成功。"""
         response = Mock()
         result_item = {
             "title": "Movie Title",
@@ -1057,9 +951,9 @@ class TestVisitMpUrl(unittest.TestCase):
             self.module,
             "write_list_to_file",
         ) as mock_write:
-            result = self.module.visit_mp_url(result_item)
+            with self.assertRaisesRegex(TypeError, "无效"):
+                self.module.visit_mp_url(result_item)
 
-        self.assertEqual(result, "")
         mock_parse.assert_called_once_with(response, result_item)
         mock_write.assert_not_called()
 
@@ -1372,7 +1266,7 @@ class TestScrapyMpMain(unittest.TestCase):
 
     def test_scrapy_mp_calls_enqueue_and_drain_with_shared_redis_client(self):
         """主入口应复用同一个 Redis 客户端串起三阶段。"""
-        with patch.object(self.module, "sync_mp_cookie_from_browser") as mock_sync_cookie, patch.object(
+        with patch.object(
             self.module,
             "get_redis_client",
             return_value=self.redis_client,
@@ -1388,7 +1282,6 @@ class TestScrapyMpMain(unittest.TestCase):
         ) as mock_finalize:
             self.module.scrapy_mp(start_page=2, end=["https://example.com/old"])
 
-        mock_sync_cookie.assert_called_once_with()
         mock_get_redis.assert_called_once_with()
         mock_enqueue.assert_called_once_with(
             start_page=2,
@@ -1400,7 +1293,7 @@ class TestScrapyMpMain(unittest.TestCase):
 
     def test_scrapy_mp_still_finalizes_when_drain_raises(self):
         """详情阶段抛错时，主入口仍应执行收尾逻辑。"""
-        with patch.object(self.module, "sync_mp_cookie_from_browser"), patch.object(
+        with patch.object(
             self.module,
             "get_redis_client",
             return_value=self.redis_client,
@@ -1436,7 +1329,7 @@ class TestScrapyMpMain(unittest.TestCase):
         )
         self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, processing_payload)
 
-        with patch.object(self.module, "sync_mp_cookie_from_browser"), patch.object(
+        with patch.object(
             self.module,
             "get_redis_client",
             return_value=self.redis_client,
