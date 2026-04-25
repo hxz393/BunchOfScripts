@@ -644,6 +644,22 @@ class TestSkDetailHelpers(unittest.TestCase):
             },
         )
 
+    def test_get_normalized_csfd_data_uses_empty_defaults_when_details_return_none(self):
+        """详情解析直接返回 ``None`` 时，应回退到空字段和 CSFD fallback ID。"""
+        with patch.object(self.module, "get_csfd_response", return_value=Mock(text="csfd page")), patch.object(
+            self.module, "get_csfd_movie_details", return_value=None
+        ):
+            result = self.module.get_normalized_csfd_data("https://www.csfd.cz/film/777888")
+
+        self.assertEqual(
+            result,
+            {
+                "origin": "",
+                "director": "",
+                "id": "csfd777888",
+            },
+        )
+
     def test_build_sk_output_filename_applies_normalization_and_suffix(self):
         """输出文件名应包含清理后的主体、大小、ID 和 ``.sk`` 后缀。"""
         result_item = {
@@ -872,6 +888,29 @@ class TestSkRedisHelpers(unittest.TestCase):
 
         mock_update.assert_not_called()
 
+    def test_finalize_sk_run_skips_update_when_scan_is_incomplete(self):
+        """列表扫描未完成时，不应提前回写 end_data。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "0")
+        self.redis_client.set(self.module.REDIS_NEXT_END_DATA_KEY, "24/04/2026")
+
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_sk_run(redis_client=self.redis_client)
+
+        mock_update.assert_not_called()
+        self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "24/04/2026")
+
+    def test_finalize_sk_run_skips_update_when_next_end_data_is_missing(self):
+        """缺少新的截止日期时，不应回写配置或清理本轮状态。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "5")
+
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_sk_run(redis_client=self.redis_client)
+
+        mock_update.assert_not_called()
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "5")
+
 
 class TestFetchSkPage(unittest.TestCase):
     """验证单页抓取流程。"""
@@ -952,6 +991,15 @@ class TestEnqueueSkPosts(unittest.TestCase):
         self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "24/03/2026")
         self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
 
+    def test_enqueue_sk_posts_returns_immediately_when_scan_is_already_complete(self):
+        """Redis 中已标记扫描完成时，不应继续请求列表页。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+
+        with patch.object(self.module, "fetch_sk_page") as mock_fetch:
+            self.module.enqueue_sk_posts(start_page=0, redis_client=self.redis_client)
+
+        mock_fetch.assert_not_called()
+
 
 class TestDrainSkQueue(unittest.TestCase):
     """验证 SK 队列消费逻辑。"""
@@ -1027,6 +1075,38 @@ class TestScrapySkMain(unittest.TestCase):
         mock_enqueue.assert_called_once_with(start_page=2, redis_client=self.redis_client)
         mock_drain.assert_called_once_with(redis_client=self.redis_client)
         mock_finalize.assert_called_once_with(redis_client=self.redis_client)
+
+    def test_scrapy_sk_stops_when_enqueue_sk_posts_raises(self):
+        """入队阶段报错时，不应继续消费队列或执行收尾。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client), patch.object(
+            self.module, "enqueue_sk_posts", side_effect=RuntimeError("enqueue boom")
+        ) as mock_enqueue, patch.object(
+            self.module, "drain_sk_queue"
+        ) as mock_drain, patch.object(
+            self.module, "finalize_sk_run"
+        ) as mock_finalize:
+            with self.assertRaisesRegex(RuntimeError, "enqueue boom"):
+                self.module.scrapy_sk(start_page=1)
+
+        mock_enqueue.assert_called_once_with(start_page=1, redis_client=self.redis_client)
+        mock_drain.assert_not_called()
+        mock_finalize.assert_not_called()
+
+    def test_scrapy_sk_does_not_finalize_when_drain_sk_queue_raises(self):
+        """消费阶段报错时，应向上抛出且不执行收尾。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client), patch.object(
+            self.module, "enqueue_sk_posts"
+        ) as mock_enqueue, patch.object(
+            self.module, "drain_sk_queue", side_effect=RuntimeError("drain boom")
+        ) as mock_drain, patch.object(
+            self.module, "finalize_sk_run"
+        ) as mock_finalize:
+            with self.assertRaisesRegex(RuntimeError, "drain boom"):
+                self.module.scrapy_sk(start_page=3)
+
+        mock_enqueue.assert_called_once_with(start_page=3, redis_client=self.redis_client)
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_not_called()
 
 
 class TestScrapySkDateHelpers(unittest.TestCase):
