@@ -8,11 +8,11 @@
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
 from sort_movie_request import get_csfd_response, get_csfd_movie_details
@@ -87,7 +87,7 @@ def process_all(result_list, max_workers=5):
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
 def get_sk_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, headers=REQUEST_HEAD)
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=20, verify=False)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
@@ -95,85 +95,130 @@ def get_sk_response(url: str) -> requests.Response:
     return response
 
 
+def extract_sk_row_links(td) -> dict | None:
+    """从 SK 列表项中提取分组、详情页链接和标题。"""
+    group = None
+    url = None
+    title = None
+
+    for a in td.find_all('a', href=True):
+        href = a['href']
+        if href.startswith("torrents_v2.php?category"):
+            group = a.get_text(strip=True)
+        elif href.startswith("details.php?name"):
+            url = SK_URL + "torrent/" + href
+            title = a.get_text(strip=True)
+
+    if not (group and url and title):
+        return None
+
+    return {
+        "group": group,
+        "url": url,
+        "title": title,
+    }
+
+
+def parse_sk_row(td) -> dict | None:
+    """解析单个 SK 列表项。"""
+    links = extract_sk_row_links(td)
+    if not links:
+        logger.info("跳过：缺少链接字段")
+        return None
+
+    size_date = extract_sk_row_size_date(td)
+    if not size_date:
+        logger.info(f"跳过：缺少大小日期字段 - {links['title']} - {links['url']}")
+        return None
+
+    return {
+        **links,
+        **size_date,
+    }
+
+
 def parse_sk_response(response: requests.Response) -> list:
     """解析流程"""
     soup = BeautifulSoup(response.text, "html.parser")
-
-    # 找到每一行
     rows = soup.select("table.lista table.lista td.lista")
+    if not rows:
+        raise RuntimeError("未找到 SK 列表项，网站结构可能已变更")
 
-    # rows 就是一个 list，里面每个元素都是一个 <td class="lista"> Tag
     results = []
     for td in rows:
-        group = None
-        url = None
-        title = None
-
-        # 1) 遍历所有 <a>，按 href 判断是“组别”还是“详情”
-        for a in td.find_all('a', href=True):
-            h = a['href']
-            if h.startswith("torrents_v2.php?category"):
-                group = a.get_text(strip=True)
-            elif h.startswith("details.php?name"):
-                url = SK_URL + "torrent/" + h
-                title = a.get_text(strip=True)
-
-        # 如果任一关键字段没找到就跳过
-        if not (group and url and title):
-            logger.info(f"跳过：{title} - {url}")
-            continue
-
-        # 2) 抓出“Velkost ... | Pridany ...”这段纯文本
-        size = date = None
-        for s in td.stripped_strings:
-            if s.startswith("Velkost"):
-                # "Velkost 2.4 GB | Pridany 27/07/2025"
-                part_size, part_date = [p.strip() for p in s.split("|", 1)]
-                size = part_size.replace("Velkost ", "")
-                date = part_date.replace("Pridany ", "")
-                break
-
-        if not (size and date):
-            logger.info(f"跳过：{title} - {url}")
-            continue
-
-        results.append({
-            "group": group,
-            "url": url,
-            "title": title,
-            "size": size,
-            "date": date
-        })
+        result = parse_sk_row(td)
+        if result:
+            results.append(result)
 
     return results
-def visit_sk_url(result_item: dict):
-    """访问详情页"""
-    url = result_item["url"]
-    logger.info(f"访问 {url}")
-    response = get_sk_response(url)
-    soup = BeautifulSoup(response.text, 'lxml')
 
-    # 选出 <img>，然后取它的父节点 <a>，获取 CSFD 链接
+
+def extract_sk_row_size_date(td) -> dict | None:
+    """从 SK 列表项中提取大小和日期。"""
+    for text in td.stripped_strings:
+        if "Velkost" not in text or "Pridany" not in text:
+            continue
+
+        match = re.search(r"Velkost\s+(.*?)\s*\|\s*Pridany\s+(.*)", text)
+        if not match:
+            continue
+
+        size = match.group(1).strip()
+        date = match.group(2).strip()
+        if size and date:
+            return {
+                "size": size,
+                "date": date,
+            }
+
+    return None
+
+
+def extract_csfd_url_from_sk_detail(detail_html: str) -> str | None:
+    """从 SK 详情页 HTML 中提取 CSFD 链接。"""
+    soup = BeautifulSoup(detail_html, 'lxml')
     img = soup.select_one('a[itemprop="sameAs"] > img[src="/torrent/images/csfd.png"]')
-    csfd_url = None
-    if img:
-        csfd_url = img.parent['href']
+    if not img or not img.parent:
+        return None
+    return img.parent.get('href')
 
-    if not csfd_url:
-        return
 
+def get_normalized_csfd_data(csfd_url: str) -> dict:
+    """请求并整理 CSFD 数据，保证返回稳定字段。"""
     response = get_csfd_response(csfd_url)
-    csfd_data = get_csfd_movie_details(response)
+    csfd_data = get_csfd_movie_details(response) or {}
+    csfd_id = csfd_data.get("id")
+    if not csfd_id:
+        csfd_id = "csfd" + csfd_url.rstrip("/").split("/")[-1]
 
-    if not csfd_data["id"]:
-        csfd_data["id"] = "csfd" + csfd_url.split("/")[-1]
+    return {
+        "origin": csfd_data.get("origin", ""),
+        "director": csfd_data.get("director", ""),
+        "id": csfd_id,
+    }
+
+
+def build_sk_output_filename(result_item: dict, csfd_data: dict) -> str:
+    """根据抓取结果和 CSFD 信息生成输出文件名。"""
     file_name = result_item['title'] + "#" + csfd_data['origin'] + "#" + "{" + csfd_data['director'] + "}"
     file_name = normalize_release_title_for_filename(
         file_name,
         extra_cleanup_patterns=(r'\s*=\s*CSFD\s*\d+%',),
     )
     file_name = sanitize_filename(file_name) + "(" + result_item['size'] + ")" + "[" + csfd_data["id"] + "]"
-    file_name = f"{file_name}.sk"
-    print(file_name)
+    return f"{file_name}.sk"
+
+
+def visit_sk_url(result_item: dict):
+    """访问详情页"""
+    url = result_item["url"]
+    logger.info(f"访问 {url}")
+    response = get_sk_response(url)
+    csfd_url = extract_csfd_url_from_sk_detail(response.text)
+    if not csfd_url:
+        return
+
+    csfd_data = get_normalized_csfd_data(csfd_url)
+    file_name = build_sk_output_filename(result_item, csfd_data)
     path = os.path.join(OUTPUT_DIR, file_name)
     write_list_to_file(path, [url])
