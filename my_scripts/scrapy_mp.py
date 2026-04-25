@@ -8,6 +8,8 @@
 import logging
 import os
 import re
+import threading
+import time
 
 import redis
 import requests
@@ -15,7 +17,13 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from retrying import retry
 
-from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import (
+    normalize_release_title_for_filename,
+    read_json_to_dict,
+    sanitize_filename,
+    update_json_config,
+    write_list_to_file,
+)
 from scrapy_redis import (
     deserialize_payload,
     drain_queue,
@@ -36,6 +44,10 @@ MP_COOKIE = CONFIG['mp_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG.get('thread_number', 30)  # 线程数
+MP_BROWSER_PROFILE_DIR = CONFIG.get(
+    'mp_browser_profile_dir',
+    os.path.join(os.path.expanduser("~"), ".bunch_of_scripts", "mp_browser_profile"),
+)
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'mp_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'mp_processing')  # 处理中队列
@@ -46,9 +58,22 @@ REDIS_SCAN_COMPLETE_KEY = CONFIG.get('redis_scan_complete_key', 'mp_scan_complet
 
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
+_mp_cookie_refresh_lock = threading.Lock()
+_mp_cookie_last_refresh_time = 0.0
+_mp_cookie_refresh_ttl = 30
+
 
 class MpCloudflareError(RuntimeError):
     """MP 请求命中 Cloudflare 验证页，通常意味着 Cookie 已失效。"""
+
+
+def get_mp_playwright():
+    """懒加载 Playwright，避免模块导入阶段就强依赖。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:  # pragma: no cover - 取决于运行环境
+        raise RuntimeError("未安装 playwright，无法自动刷新 mp Cookie") from exc
+    return sync_playwright
 
 
 def normalize_mp_end_urls(end) -> set[str]:
@@ -102,10 +127,128 @@ def is_mp_cloudflare_challenge(response: requests.Response) -> bool:
     return any(marker in text for marker in markers)
 
 
+def is_mp_cloudflare_html(text: str) -> bool:
+    """按页面 HTML 判断是否仍停留在 Cloudflare 验证页。"""
+    html = text.lower()
+    markers = (
+        "<title>just a moment",
+        "challenges.cloudflare.com",
+        "cf_chl",
+        "challenge-platform",
+        "cf-browser-verification",
+        "<title>attention required!",
+    )
+    return any(marker in html for marker in markers)
+
+
 def get_mp_response_once(url: str) -> requests.Response:
     """发起一次 MP 请求并统一设置编码。"""
     response = requests.get(url, headers=REQUEST_HEAD, timeout=20)
     response.encoding = 'utf-8'
+    return response
+
+
+def set_mp_cookie(cookie_str: str, *, persist: bool = False) -> str:
+    """更新内存中的 MP Cookie，并按需回写配置文件。"""
+    global MP_COOKIE, _mp_cookie_last_refresh_time
+    MP_COOKIE = cookie_str
+    REQUEST_HEAD["Cookie"] = cookie_str
+    _mp_cookie_last_refresh_time = time.time()
+    if persist:
+        update_json_config(CONFIG_PATH, "mp_cookie", cookie_str)
+    return cookie_str
+
+
+def build_mp_cookie_string(cookies: list[dict]) -> str:
+    """将指定域名的 Cookie 列表整理为请求头字符串。"""
+    filtered = [
+        cookie for cookie in cookies
+        if "movieparadise.org" in cookie.get("domain", "")
+    ]
+    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in filtered)
+
+
+def validate_mp_cookie_candidate(url: str, cookie_str: str) -> requests.Response:
+    """用候选 Cookie 反向验证当前 URL 是否已可正常访问。"""
+    headers = dict(REQUEST_HEAD)
+    headers["Cookie"] = cookie_str
+    response = requests.get(url, headers=headers, timeout=20)
+    response.encoding = 'utf-8'
+    return response
+
+
+def refresh_mp_cookie_interactively(
+        url: str,
+        *,
+        previous_cookie: str | None = None,
+        timeout_seconds: int = 300,
+        playwright_factory=None,
+) -> str:
+    """打开浏览器等待人工过 Cloudflare，成功后自动刷新 MP Cookie。"""
+    current_cookie = REQUEST_HEAD.get("Cookie", "")
+    if previous_cookie is None:
+        previous_cookie = current_cookie
+
+    with _mp_cookie_refresh_lock:
+        latest_cookie = REQUEST_HEAD.get("Cookie", "")
+        if latest_cookie and latest_cookie != previous_cookie:
+            logger.info("检测到 MP Cookie 已被其他线程刷新，继续使用最新 Cookie")
+            return latest_cookie
+        if latest_cookie and (time.time() - _mp_cookie_last_refresh_time) < _mp_cookie_refresh_ttl:
+            logger.info("最近刚刷新过 MP Cookie，继续复用")
+            return latest_cookie
+
+        if playwright_factory is None:
+            playwright_factory = get_mp_playwright()
+
+        logger.warning(f"检测到 MP Cloudflare 验证，正在打开浏览器，请手动完成验证：{url}")
+        with playwright_factory() as p:
+            os.makedirs(MP_BROWSER_PROFILE_DIR, exist_ok=True)
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=MP_BROWSER_PROFILE_DIR,
+                headless=False,
+                channel="chrome",
+                viewport={"width": 1280, "height": 800},
+                ignore_default_args=["--enable-automation"],
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(MP_URL, wait_until="domcontentloaded", timeout=60000)
+                logger.warning("浏览器已打开。请在首页中手动通过 Cloudflare 验证，脚本会在成功后自动继续。")
+
+                deadline = time.time() + timeout_seconds
+                while time.time() < deadline:
+                    page.wait_for_timeout(3000)
+                    cookies = context.cookies()
+                    cookie_names = {cookie["name"] for cookie in cookies if "movieparadise.org" in cookie.get("domain", "")}
+                    if "cf_clearance" in cookie_names:
+                        cookie_str = build_mp_cookie_string(cookies)
+                        if cookie_str:
+                            validation_response = validate_mp_cookie_candidate(url, cookie_str)
+                            if not is_mp_cloudflare_challenge(validation_response) and validation_response.status_code in (200, 404):
+                                set_mp_cookie(cookie_str, persist=True)
+                                logger.warning("MP Cookie 已自动更新，继续执行当前任务")
+                                return cookie_str
+
+                raise MpCloudflareError("MP Cloudflare 验证超时，请重试并在浏览器中完成验证")
+            finally:
+                context.close()
+
+
+def request_mp_page(url: str, *, allow_not_found: bool = False) -> requests.Response:
+    """请求 MP 页面，必要时自动刷新 Cookie 后重试一次。"""
+    response = get_mp_response_once(url)
+    if is_mp_cloudflare_challenge(response):
+        previous_cookie = REQUEST_HEAD.get("Cookie", "")
+        refresh_mp_cookie_interactively(url, previous_cookie=previous_cookie)
+        response = get_mp_response_once(url)
+
+    if is_mp_cloudflare_challenge(response):
+        raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
+
+    if response.status_code == 404 and allow_not_found:
+        return response
     return response
 
 
@@ -122,9 +265,7 @@ def validate_mp_end_urls(end_urls: set[str]) -> None:
     logger.info(f"校验阶段...")
     missing_urls = []
     for url in sorted(end_urls):
-        response = get_mp_response_once(url)
-        if is_mp_cloudflare_challenge(response):
-            raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
+        response = request_mp_page(url, allow_not_found=True)
         if response.status_code == 404:
             missing_urls.append(url)
             continue
@@ -293,7 +434,7 @@ def should_retry_mp_request(exc: Exception) -> bool:
 )
 def get_mp_response(url: str) -> requests.Response:
     """请求流程"""
-    response = get_mp_response_once(url)
+    response = request_mp_page(url)
     raise_for_mp_response(response, url)
     return response
 

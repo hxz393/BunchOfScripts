@@ -59,6 +59,7 @@ def load_scrapy_mp(config: dict | None = None):
     fake_my_module.read_json_to_dict = fake_read_json_to_dict
     fake_my_module.normalize_release_title_for_filename = lambda title: title.replace("/", "｜")
     fake_my_module.sanitize_filename = lambda name: name.replace(":", "_")
+    fake_my_module.update_json_config = lambda _path, _key, _value: None
 
     def fake_write_list_to_file(path: str, content: list[str]) -> bool:
         target_path = Path(path)
@@ -296,9 +297,32 @@ class TestGetMpResponse(unittest.TestCase):
             text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>https://challenges.cloudflare.com</body></html>',
         )
 
-        with patch.object(self.module.requests, "get", return_value=response):
+        with patch.object(
+            self.module,
+            "refresh_mp_cookie_interactively",
+            side_effect=self.module.MpCloudflareError("mp Cookie 已失效或触发 Cloudflare 验证"),
+        ), patch.object(self.module.requests, "get", return_value=response):
             with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.get_mp_response("https://example.com/post")
+
+    def test_get_mp_response_refreshes_cookie_and_retries_after_cloudflare(self):
+        """首次命中 CF 时应尝试刷新 Cookie，并在成功后自动重试。"""
+        cf_response = Mock(
+            status_code=403,
+            text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
+        )
+        ok_response = Mock(status_code=200, text="<html>ok</html>")
+
+        with patch.object(
+            self.module,
+            "refresh_mp_cookie_interactively",
+            side_effect=lambda url, previous_cookie=None: self.module.set_mp_cookie("new-cookie"),
+        ) as mock_refresh, patch.object(self.module.requests, "get", side_effect=[cf_response, ok_response]):
+            result = self.module.get_mp_response("https://example.com/post")
+
+        self.assertIs(result, ok_response)
+        mock_refresh.assert_called_once_with("https://example.com/post", previous_cookie="cookie=value")
+        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "new-cookie")
 
 
 class TestParseMpResponse(unittest.TestCase):
@@ -576,7 +600,11 @@ class TestMpQueueHelpers(unittest.TestCase):
             text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
         )
 
-        with patch.object(self.module.requests, "get", return_value=response):
+        with patch.object(
+            self.module,
+            "refresh_mp_cookie_interactively",
+            side_effect=self.module.MpCloudflareError("mp Cookie 已失效或触发 Cloudflare 验证"),
+        ), patch.object(self.module.requests, "get", return_value=response):
             with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.validate_mp_end_urls({"https://example.com/end-a"})
 
@@ -603,6 +631,89 @@ class TestMpQueueHelpers(unittest.TestCase):
 
         self.assertEqual(recovered_count, 1)
         self.assertEqual(self.module.get_mp_active_queue_links(redis_client), {"https://example.com/failed"})
+
+
+class TestMpCookieRefresh(unittest.TestCase):
+    """验证 MP 浏览器刷新 Cookie 逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_refresh_mp_cookie_interactively_updates_runtime_cookie_and_config(self):
+        """人工过 CF 成功后，应自动提取 Cookie 并回写配置。"""
+
+        class FakePage:
+            def goto(self, _url, wait_until=None, timeout=None):
+                return None
+
+            def wait_for_timeout(self, _timeout_ms):
+                return None
+
+        class FakeContext:
+            def __init__(self):
+                self.page = FakePage()
+                self.cookies_list = [
+                    [],
+                    [
+                        {"name": "cf_clearance", "value": "abc", "domain": ".movieparadise.org"},
+                        {"name": "session", "value": "xyz", "domain": ".movieparadise.org"},
+                    ],
+                ]
+                self.index = 0
+                self.pages = [self.page]
+
+            def cookies(self):
+                cookies = self.cookies_list[self.index]
+                if self.index < len(self.cookies_list) - 1:
+                    self.index += 1
+                return cookies
+
+            def new_page(self):
+                return self.page
+
+            def close(self):
+                return None
+
+        class FakePlaywrightManager:
+            def __init__(self):
+                self.context = FakeContext()
+                self.playwright = types.SimpleNamespace(
+                    chromium=types.SimpleNamespace(
+                        launch_persistent_context=lambda **kwargs: self.context
+                    )
+                )
+
+            def __enter__(self):
+                return self.playwright
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        fake_manager = FakePlaywrightManager()
+
+        with patch.object(self.module, "update_json_config") as mock_update_config, patch.object(
+            self.module,
+            "validate_mp_cookie_candidate",
+            return_value=Mock(status_code=200, text="<html>ok</html>"),
+        ) as mock_validate_cookie:
+            cookie_str = self.module.refresh_mp_cookie_interactively(
+                "https://example.com/post",
+                previous_cookie="cookie=value",
+                timeout_seconds=5,
+                playwright_factory=lambda: fake_manager,
+            )
+
+        self.assertEqual(cookie_str, "cf_clearance=abc; session=xyz")
+        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cf_clearance=abc; session=xyz")
+        mock_validate_cookie.assert_called_once_with("https://example.com/post", "cf_clearance=abc; session=xyz")
+        mock_update_config.assert_called_once_with(
+            self.module.CONFIG_PATH,
+            "mp_cookie",
+            "cf_clearance=abc; session=xyz",
+        )
 
 
 class TestFormatMpText(unittest.TestCase):
