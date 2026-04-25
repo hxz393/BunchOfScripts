@@ -89,6 +89,64 @@ def fetch_sk_page(page_no: int) -> list[dict]:
     return result_list
 
 
+def get_scan_start_page(redis_client: redis.Redis, start_page: int) -> int:
+    """读取 Redis 中保存的扫描页码，或初始化为 ``start_page``。"""
+    saved_page = cast(str | None, redis_client.get(REDIS_SCAN_PAGE_KEY))
+    current_page = int(saved_page) if saved_page is not None else start_page
+    if saved_page is None:
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+    else:
+        logger.info(f"从第 {current_page} 页继续扫描")
+    return current_page
+
+
+def advance_scan_page(redis_client: redis.Redis, current_page: int) -> int:
+    """推进到下一页，并写回 Redis 断点。"""
+    next_page = current_page + 1
+    redis_client.set(REDIS_SCAN_PAGE_KEY, str(next_page))
+    logger.info("-" * 255)
+    return next_page
+
+
+def ensure_next_end_data(redis_client: redis.Redis, result_list: list[dict]) -> None:
+    """首次拿到有效帖子时，记录下一轮截止日期。"""
+    if redis_client.get(REDIS_NEXT_END_DATA_KEY) is None:
+        redis_client.set(REDIS_NEXT_END_DATA_KEY, get_previous_day(result_list[0]["date"]))
+
+
+def serialize_sk_post(item: dict) -> str:
+    """将 SK 列表项序列化为 Redis 队列任务。"""
+    return serialize_payload(
+        {
+            "group": item["group"],
+            "url": item["url"],
+            "title": item["title"],
+            "size": item["size"],
+            "date": item["date"],
+        }
+    )
+
+
+def enqueue_sk_page_results(redis_client: redis.Redis, result_list: list[dict]) -> int:
+    """将单页有效帖子写入 Redis 待处理队列。"""
+    ensure_next_end_data(redis_client, result_list)
+    return push_items_to_queue(
+        redis_client,
+        result_list,
+        seen_key=REDIS_SEEN_KEY,
+        pending_key=REDIS_PENDING_KEY,
+        unique_value=lambda item: item["url"],
+        serializer=serialize_sk_post,
+    )
+
+
+def mark_scan_complete(redis_client: redis.Redis, current_page: int) -> None:
+    """标记列表扫描完成，并保存下一页断点。"""
+    redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
+    redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
+    logger.info("SK 列表扫描完成")
+
+
 def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_client: redis.Redis | None = None) -> None:
     """顺序翻页，收集帖子并写入 Redis 待处理队列。"""
     if end_data is None:
@@ -100,12 +158,7 @@ def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_cli
         logger.info("SK 列表扫描已完成，跳过入队阶段")
         return
 
-    saved_page = cast(str | None, redis_client.get(REDIS_SCAN_PAGE_KEY))
-    current_page = int(saved_page) if saved_page is not None else start_page
-    if saved_page is None:
-        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
-    else:
-        logger.info(f"从第 {current_page} 页继续扫描")
+    current_page = get_scan_start_page(redis_client, start_page)
 
     empty_page_count = 0
     while True:
@@ -115,43 +168,18 @@ def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_cli
             if empty_page_count >= MAX_EMPTY_PAGES:
                 raise RuntimeError(f"SK 连续 {empty_page_count} 页无有效帖子，已停止扫描")
 
-            current_page += 1
-            redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
-            logger.info("-" * 255)
+            current_page = advance_scan_page(redis_client, current_page)
             continue
 
         empty_page_count = 0
-        if redis_client.get(REDIS_NEXT_END_DATA_KEY) is None:
-            redis_client.set(REDIS_NEXT_END_DATA_KEY, get_previous_day(result_list[0]["date"]))
-
-        enqueued_count = push_items_to_queue(
-            redis_client,
-            result_list,
-            seen_key=REDIS_SEEN_KEY,
-            pending_key=REDIS_PENDING_KEY,
-            unique_value=lambda item: item["url"],
-            serializer=lambda item: serialize_payload(
-                {
-                    "group": item["group"],
-                    "url": item["url"],
-                    "title": item["title"],
-                    "size": item["size"],
-                    "date": item["date"],
-                }
-            ),
-        )
+        enqueued_count = enqueue_sk_page_results(redis_client, result_list)
         logger.info(f"第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条")
 
-        should_stop = end_data in (result_item['date'] for result_item in result_list)
-        if should_stop:
-            redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
-            redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
-            logger.info("SK 列表扫描完成")
+        if any(result_item["date"] == end_data for result_item in result_list):
+            mark_scan_complete(redis_client, current_page)
             break
 
-        current_page += 1
-        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
-        logger.info("-" * 255)
+        current_page = advance_scan_page(redis_client, current_page)
 
 
 def drain_sk_queue(redis_client: redis.Redis | None = None) -> None:
@@ -319,10 +347,10 @@ def is_sk_filtered_empty_page(html: str) -> bool:
     if soup.select_one('a[href^="details.php?name"]'):
         return False
 
-    page_text = soup.get_text(" ", strip=True)
+    page_text = " ".join(soup.stripped_strings)
     return (
-        "Nenasli ste co ste hladali" in page_text
-        and "Napiste nam to na nastenku" in page_text
+            "Nenasli ste co ste hladali" in page_text
+            and "Napiste nam to na nastenku" in page_text
     )
 
 
