@@ -31,19 +31,11 @@ OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
 
-def normalize_end_targets(end) -> list[str]:
-    """将结束标记统一转换为文件名列表。"""
-    if isinstance(end, str):
-        return [end]
-    return list(end)
-
-
-def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
+def scrapy_mp(start_page, end) -> None:
     """
     抓取发布信息写入到文件。
     """
     logger.info("抓取 mp 站点发布信息")
-    end_targets = normalize_end_targets(end)
     while True:
         # 请求 mp 主页
         logger.info(f"抓取第 {start_page} 页")
@@ -55,7 +47,7 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
         process_all(result_list, max_workers=20)
 
         # 检查帖子
-        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end_targets)
+        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end)
 
         if all_exist:
             logger.info("没有新发布，完成")
@@ -139,11 +131,8 @@ def parse_mp_response(response: requests.Response) -> list:
     return results
 
 
-def visit_mp_url(result_item: dict):
-    """访问详情页"""
-    url = result_item["link"]
-    logger.info(f"访问 {url}")
-    response = get_mp_response(url)
+def parse_mp_detail(response: requests.Response, result_item: dict):
+    """解析详情页，返回输出文件名和正文内容。"""
     soup = BeautifulSoup(response.text, "html.parser")
     # 提取编号
     cf = soup.find('div', class_='custom_fields2')
@@ -181,5 +170,17 @@ def visit_mp_url(result_item: dict):
     file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
     file_name = f"{file_name}({result_item['year']}) - mp [{m_id}].rare"
-    path = os.path.join(OUTPUT_DIR, file_name)
-    write_list_to_file(path, [url,text])
+    return {"file_name": file_name, "content": text}
+
+
+def visit_mp_url(result_item: dict):
+    """访问详情页"""
+    url = result_item["link"]
+    logger.info(f"访问 {url}")
+    response = get_mp_response(url)
+    result_dict = parse_mp_detail(response, result_item)
+    if not isinstance(result_dict, dict):
+        return result_dict
+
+    path = os.path.join(OUTPUT_DIR, result_dict['file_name'])
+    write_list_to_file(path, [url, result_dict['content']])

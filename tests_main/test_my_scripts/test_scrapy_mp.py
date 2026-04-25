@@ -108,24 +108,6 @@ class TestModuleLoad(unittest.TestCase):
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
 
 
-class TestNormalizeEndTargets(unittest.TestCase):
-    """验证停止条件文件名归一化逻辑。"""
-
-    def setUp(self):
-        self.module, self.temp_dir = load_scrapy_mp()
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def test_normalize_end_targets_wraps_single_string(self):
-        """单个文件名字符串应被视为一个目标，而不是字符列表。"""
-        self.assertEqual(self.module.normalize_end_targets("face-to-face-2"), ["face-to-face-2"])
-
-    def test_normalize_end_targets_preserves_iterables(self):
-        """文件名列表应保持原有顺序。"""
-        self.assertEqual(self.module.normalize_end_targets(["a.rare", "b.rare"]), ["a.rare", "b.rare"])
-
-
 class TestGetMpResponse(unittest.TestCase):
     """验证单次请求逻辑。"""
 
@@ -272,8 +254,8 @@ class TestProcessAll(unittest.TestCase):
         self.assertIn("[ERROR] {'link': 'bad'} -> RuntimeError('boom')", logs.output[0])
 
 
-class TestVisitMpUrl(unittest.TestCase):
-    """验证详情页访问和写盘逻辑。"""
+class TestParseMpDetail(unittest.TestCase):
+    """验证详情页解析逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_mp()
@@ -281,8 +263,8 @@ class TestVisitMpUrl(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_visit_mp_url_extracts_imdb_id_and_writes_file(self):
-        """详情页存在 IMDb 和正文时，应完成文本替换与写盘。"""
+    def test_parse_mp_detail_extracts_imdb_id_and_builds_output_payload(self):
+        """详情页存在 IMDb 和正文时，应完成文本替换并返回输出载荷。"""
         response = Mock(
             text=build_detail_page(
                 id_links=["https://www.imdb.com/title/tt1234567/"],
@@ -301,32 +283,27 @@ class TestVisitMpUrl(unittest.TestCase):
             self.module,
             "sanitize_filename",
             return_value="Safe Title",
-        ) as mock_sanitize, patch.object(
-            self.module,
-            "write_list_to_file",
-            return_value=True,
-        ) as mock_write:
-            result = self.module.visit_mp_url(
+        ) as mock_sanitize:
+            result = self.module.parse_mp_detail(
+                response,
                 {
                     "title": "Movie / Title",
                     "link": "https://example.com/post",
                     "year": "1990",
-                }
+                },
             )
 
-        self.assertIsNone(result)
-        mock_get.assert_called_once_with("https://example.com/post")
+        self.assertEqual(
+            result,
+            {
+                "file_name": "Safe Title(1990) - mp [tt1234567].rare",
+                "content": "Download (https://example.com/download)\nhttps://example.com/plain",
+            },
+        )
         mock_normalize.assert_called_once_with("Movie / Title")
         mock_sanitize.assert_called_once_with("Movie｜Title")
-        mock_write.assert_called_once_with(
-            str(Path(self.module.OUTPUT_DIR) / "Safe Title(1990) - mp [tt1234567].rare"),
-            [
-                "https://example.com/post",
-                "Download (https://example.com/download)\nhttps://example.com/plain",
-            ],
-        )
 
-    def test_visit_mp_url_falls_back_to_tmdb_id_when_imdb_is_missing(self):
+    def test_parse_mp_detail_falls_back_to_tmdb_id_when_imdb_is_missing(self):
         """没有 IMDb 时应使用 TMDb 编号作为文件后缀。"""
         response = Mock(
             text=build_detail_page(
@@ -335,60 +312,112 @@ class TestVisitMpUrl(unittest.TestCase):
             )
         )
 
-        with patch.object(self.module, "get_mp_response", return_value=response), patch.object(
+        result = self.module.parse_mp_detail(
+            response,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post",
+                "year": "1990",
+            },
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "file_name": "Movie Title(1990) - mp [tmdb98765].rare",
+                "content": "Plain text",
+            },
+        )
+
+    def test_parse_mp_detail_returns_none_when_custom_fields_are_missing(self):
+        """缺少编号区块时应返回 ``None``。"""
+        response = Mock(text='<html><body><div itemprop="description" class="wp-content"><p>Body</p></div></body></html>')
+
+        result = self.module.parse_mp_detail(
+            response,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post",
+                "year": "1990",
+            },
+        )
+
+        self.assertIsNone(result)
+
+    def test_parse_mp_detail_returns_empty_string_when_description_is_missing(self):
+        """缺少正文区块时应返回空字符串。"""
+        response = Mock(text=build_detail_page(id_links=["https://www.imdb.com/title/tt1234567/"], description_html=None))
+
+        result = self.module.parse_mp_detail(
+            response,
+            {
+                "title": "Movie Title",
+                "link": "https://example.com/post",
+                "year": "1990",
+            },
+        )
+
+        self.assertEqual(result, "")
+
+
+class TestVisitMpUrl(unittest.TestCase):
+    """验证详情页访问和写盘逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_mp()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_visit_mp_url_requests_page_parses_and_writes_file(self):
+        """访问详情页后应委托解析，并把结果写入输出目录。"""
+        response = Mock()
+        result_item = {
+            "title": "Movie Title",
+            "link": "https://example.com/post",
+            "year": "1990",
+        }
+
+        with patch.object(self.module, "get_mp_response", return_value=response) as mock_get, patch.object(
+            self.module,
+            "parse_mp_detail",
+            return_value={"file_name": "sample.rare", "content": "line 1\nline 2"},
+        ) as mock_parse, patch.object(
             self.module,
             "write_list_to_file",
             return_value=True,
         ) as mock_write:
-            self.module.visit_mp_url(
-                {
-                    "title": "Movie Title",
-                    "link": "https://example.com/post",
-                    "year": "1990",
-                }
-            )
-
-        mock_write.assert_called_once_with(
-            str(Path(self.module.OUTPUT_DIR) / "Movie Title(1990) - mp [tmdb98765].rare"),
-            ["https://example.com/post", "Plain text"],
-        )
-
-    def test_visit_mp_url_returns_early_when_custom_fields_are_missing(self):
-        """缺少编号区块时不应继续写盘。"""
-        response = Mock(text='<html><body><div itemprop="description" class="wp-content"><p>Body</p></div></body></html>')
-
-        with patch.object(self.module, "get_mp_response", return_value=response), patch.object(
-            self.module,
-            "write_list_to_file",
-        ) as mock_write:
-            result = self.module.visit_mp_url(
-                {
-                    "title": "Movie Title",
-                    "link": "https://example.com/post",
-                    "year": "1990",
-                }
-            )
+            result = self.module.visit_mp_url(result_item)
 
         self.assertIsNone(result)
-        mock_write.assert_not_called()
+        mock_get.assert_called_once_with("https://example.com/post")
+        mock_parse.assert_called_once_with(response, result_item)
+        mock_write.assert_called_once_with(
+            str(Path(self.module.OUTPUT_DIR) / "sample.rare"),
+            ["https://example.com/post", "line 1\nline 2"],
+        )
 
-    def test_visit_mp_url_returns_empty_string_when_description_is_missing(self):
-        """缺少正文区块时应返回空字符串并跳过写盘。"""
-        response = Mock(text=build_detail_page(id_links=["https://www.imdb.com/title/tt1234567/"], description_html=None))
+    def test_visit_mp_url_returns_parse_result_when_detail_is_not_dict(self):
+        """解析失败时应直接透传返回值，并跳过写盘。"""
+        response = Mock()
+        result_item = {
+            "title": "Movie Title",
+            "link": "https://example.com/post",
+            "year": "1990",
+        }
 
         with patch.object(self.module, "get_mp_response", return_value=response), patch.object(
             self.module,
+            "parse_mp_detail",
+            return_value="",
+        ) as mock_parse, patch.object(
+            self.module,
             "write_list_to_file",
         ) as mock_write:
-            result = self.module.visit_mp_url(
-                {
-                    "title": "Movie Title",
-                    "link": "https://example.com/post",
-                    "year": "1990",
-                }
-            )
+            result = self.module.visit_mp_url(result_item)
 
         self.assertEqual(result, "")
+        mock_parse.assert_called_once_with(response, result_item)
         mock_write.assert_not_called()
 
 
@@ -428,8 +457,8 @@ class TestScrapyMpMain(unittest.TestCase):
         )
         self.assertEqual(mock_process.call_args_list, [call([{"link": "u1"}], max_workers=20), call([{"link": "u2"}], max_workers=20)])
 
-    def test_scrapy_mp_treats_string_end_as_single_filename(self):
-        """单个结束文件名已存在时，应在第一页后直接停止。"""
+    def test_scrapy_mp_stops_when_explicit_single_end_file_exists(self):
+        """显式传入单文件列表且文件已存在时，应在第一页后直接停止。"""
         sentinel_file = Path(self.module.OUTPUT_DIR) / "face-to-face-2"
         sentinel_file.write_text("done", encoding="utf-8")
 
@@ -445,7 +474,7 @@ class TestScrapyMpMain(unittest.TestCase):
             self.module,
             "process_all",
         ) as mock_process:
-            self.module.scrapy_mp(end="face-to-face-2")
+            self.module.scrapy_mp(start_page=0, end=["face-to-face-2"])
 
         mock_get.assert_called_once_with("https://example.com/movies/page/0/")
         mock_process.assert_called_once_with([], max_workers=20)
