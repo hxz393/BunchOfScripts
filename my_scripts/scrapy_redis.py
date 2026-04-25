@@ -106,7 +106,7 @@ def drain_queue(
         *,
         pending_key: str,
         processing_key: str,
-        failed_key: str,
+        failed_key: str | None = None,
         max_workers: int,
         worker: Callable[[dict], None],
         deserialize: Callable[[str], dict] = deserialize_payload,
@@ -116,15 +116,21 @@ def drain_queue(
         progress_every: int | None = None,
         log_traceback: bool = False,
         abort_on_exception: Callable[[Exception], bool] | None = None,
+        recover_processing_on_start: bool = True,
+        keep_failed_in_processing: bool = False,
 ) -> dict[str, int]:
     """从 Redis 队列中取任务，使用线程池持续消费。"""
-    recover_processing_queue(
-        redis_client,
-        processing_key=processing_key,
-        pending_key=pending_key,
-        logger=logger,
-        queue_label=queue_label,
-    )
+    if failed_key is None and not keep_failed_in_processing:
+        raise ValueError("failed_key 不能为空，除非显式保留失败任务在 processing 中")
+
+    if recover_processing_on_start:
+        recover_processing_queue(
+            redis_client,
+            processing_key=processing_key,
+            pending_key=pending_key,
+            logger=logger,
+            queue_label=queue_label,
+        )
 
     initial_pending_count = redis_client.llen(pending_key)
     if initial_pending_count == 0:
@@ -161,6 +167,7 @@ def drain_queue(
                 payload, info = future_to_task.pop(future)
                 processed_count += 1
                 should_abort = False
+                remove_from_processing = True
                 try:
                     future.result()
                     success_count += 1
@@ -179,9 +186,13 @@ def drain_queue(
                         logger.exception(message)
                     else:
                         logger.error(message)
-                    redis_client.rpush(failed_key, payload)
+                    if keep_failed_in_processing:
+                        remove_from_processing = False
+                    else:
+                        redis_client.rpush(failed_key, payload)
                 finally:
-                    redis_client.lrem(processing_key, 1, payload)
+                    if remove_from_processing:
+                        redis_client.lrem(processing_key, 1, payload)
 
                 if progress_every and processed_count % progress_every == 0:
                     remaining_count = redis_client.llen(pending_key) + len(future_to_task)

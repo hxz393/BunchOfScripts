@@ -33,7 +33,6 @@ def load_scrapy_mp(config: dict | None = None):
         "thread_number": 3,
         "redis_pending_key": "mp_pending",
         "redis_processing_key": "mp_processing",
-        "redis_failed_key": "mp_failed",
         "redis_seen_key": "mp_seen",
         "redis_scan_page_key": "mp_scan_page",
         "redis_scan_complete_key": "mp_scan_complete",
@@ -73,6 +72,20 @@ def load_scrapy_mp(config: dict | None = None):
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
     fake_redis = types.ModuleType("redis")
+    fake_cryptography = types.ModuleType("cryptography")
+    fake_hazmat = types.ModuleType("cryptography.hazmat")
+    fake_primitives = types.ModuleType("cryptography.hazmat.primitives")
+    fake_ciphers = types.ModuleType("cryptography.hazmat.primitives.ciphers")
+    fake_aead = types.ModuleType("cryptography.hazmat.primitives.ciphers.aead")
+
+    class FakeAESGCM:
+        def __init__(self, _key):
+            self.key = _key
+
+        def decrypt(self, _nonce, cipher_text, _associated_data):
+            return cipher_text[:-16] if len(cipher_text) >= 16 else cipher_text
+
+    fake_aead.AESGCM = FakeAESGCM
 
     class DummyRedis:
         def __init__(self, *args, **kwargs):
@@ -86,7 +99,18 @@ def load_scrapy_mp(config: dict | None = None):
         REDIS_HELPER_PATH,
     )
     helper_module = importlib.util.module_from_spec(helper_spec)
-    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
+    with patch.dict(
+        sys.modules,
+        {
+            "my_module": fake_my_module,
+            "redis": fake_redis,
+            "cryptography": fake_cryptography,
+            "cryptography.hazmat": fake_hazmat,
+            "cryptography.hazmat.primitives": fake_primitives,
+            "cryptography.hazmat.primitives.ciphers": fake_ciphers,
+            "cryptography.hazmat.primitives.ciphers.aead": fake_aead,
+        },
+    ):
         helper_spec.loader.exec_module(helper_module)
 
     spec = importlib.util.spec_from_file_location(
@@ -101,6 +125,11 @@ def load_scrapy_mp(config: dict | None = None):
             "retrying": fake_retrying,
             "redis": fake_redis,
             "scrapy_redis": helper_module,
+            "cryptography": fake_cryptography,
+            "cryptography.hazmat": fake_hazmat,
+            "cryptography.hazmat.primitives": fake_primitives,
+            "cryptography.hazmat.primitives.ciphers": fake_ciphers,
+            "cryptography.hazmat.primitives.ciphers.aead": fake_aead,
         },
     ):
         spec.loader.exec_module(module)
@@ -255,6 +284,44 @@ class TestModuleLoad(unittest.TestCase):
         """模块加载时应把配置里的 cookie 注入请求头。"""
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
 
+    def test_default_mp_browser_profile_dir_prefers_explicit_config(self):
+        """显式配置浏览器目录时，应直接固化为模块常量。"""
+        module, temp_dir = load_scrapy_mp(
+            {
+                "mp_browser_profile_dir": r"G:\Temp\User\custom_mp_profile",
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        self.assertEqual(module.DEFAULT_MP_BROWSER_PROFILE_DIR, r"G:\Temp\User\custom_mp_profile")
+
+    def test_default_mp_browser_profile_dir_uses_system_user_data_by_default(self):
+        """未显式配置时，应固定使用系统 Chrome 用户目录。"""
+        expected_dir = self.module.os.path.join(
+            self.module.os.environ.get("LOCALAPPDATA", ""),
+            "Google",
+            "Chrome",
+            "User Data",
+        )
+        self.assertEqual(self.module.DEFAULT_MP_BROWSER_PROFILE_DIR, expected_dir)
+
+    def test_request_mp_page_error_prefers_explicit_verification_url(self):
+        """命中 CF 时，错误提示应优先使用配置里的验证页。"""
+        module, temp_dir = load_scrapy_mp(
+            {
+                "mp_verification_url": "https://movieparadise.org/movies/the-ikon-of-elijah/",
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        response = Mock(
+            status_code=403,
+            text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
+        )
+        with patch.object(module.requests, "get", return_value=response):
+            with self.assertRaisesRegex(module.MpCloudflareError, "the-ikon-of-elijah"):
+                module.request_mp_page("https://example.com/post")
+
 
 class TestGetMpResponse(unittest.TestCase):
     """验证单次请求逻辑。"""
@@ -268,13 +335,15 @@ class TestGetMpResponse(unittest.TestCase):
     def test_get_mp_response_returns_response_and_sets_utf8_encoding(self):
         """请求成功时应返回响应对象，并统一设置 UTF-8 编码。"""
         response = Mock(status_code=200)
+        expected_headers = dict(self.module.REQUEST_HEAD)
+        expected_headers["Cookie"] = "cookie=value"
 
         with patch.object(self.module.requests, "get", return_value=response) as mock_get:
             result = self.module.get_mp_response("https://example.com/post")
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/post", headers=self.module.REQUEST_HEAD, timeout=20)
+        mock_get.assert_called_once_with("https://example.com/post", headers=expected_headers, timeout=20)
 
     def test_get_mp_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
@@ -296,33 +365,24 @@ class TestGetMpResponse(unittest.TestCase):
             status_code=403,
             text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>https://challenges.cloudflare.com</body></html>',
         )
+        expected_headers = dict(self.module.REQUEST_HEAD)
+        expected_headers["Cookie"] = "cookie=value"
 
-        with patch.object(
-            self.module,
-            "refresh_mp_cookie_interactively",
-            side_effect=self.module.MpCloudflareError("mp Cookie 已失效或触发 Cloudflare 验证"),
-        ), patch.object(self.module.requests, "get", return_value=response):
+        with patch.object(self.module.requests, "get", return_value=response) as mock_get:
             with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.get_mp_response("https://example.com/post")
+        mock_get.assert_called_once_with("https://example.com/post", headers=expected_headers, timeout=20)
 
-    def test_get_mp_response_refreshes_cookie_and_retries_after_cloudflare(self):
-        """首次命中 CF 时应尝试刷新 Cookie，并在成功后自动重试。"""
+    def test_get_mp_response_stops_immediately_on_cloudflare(self):
+        """命中 CF 时不应再尝试自动刷新 Cookie。"""
         cf_response = Mock(
             status_code=403,
             text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
         )
-        ok_response = Mock(status_code=200, text="<html>ok</html>")
 
-        with patch.object(
-            self.module,
-            "refresh_mp_cookie_interactively",
-            side_effect=lambda url, previous_cookie=None: self.module.set_mp_cookie("new-cookie"),
-        ) as mock_refresh, patch.object(self.module.requests, "get", side_effect=[cf_response, ok_response]):
-            result = self.module.get_mp_response("https://example.com/post")
-
-        self.assertIs(result, ok_response)
-        mock_refresh.assert_called_once_with("https://example.com/post", previous_cookie="cookie=value")
-        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "new-cookie")
+        with patch.object(self.module.requests, "get", return_value=cf_response):
+            with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
+                self.module.get_mp_response("https://example.com/post")
 
 
 class TestParseMpResponse(unittest.TestCase):
@@ -463,8 +523,8 @@ class TestParseMpArticle(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("mp 列表条目缺少 h3 标题节点，已跳过", logs.output[0])
 
-    def test_parse_mp_article_logs_warning_when_year_is_missing(self):
-        """条目缺少年份时应记录 warning，但仍返回标题和链接。"""
+    def test_parse_mp_article_keeps_empty_year_without_warning(self):
+        """条目缺少年份时仍保留标题和链接，年份留空。"""
         article = self.module.BeautifulSoup(
             build_archive_article(
                 title="Movie Title",
@@ -474,8 +534,7 @@ class TestParseMpArticle(unittest.TestCase):
             "html.parser",
         ).find("article")
 
-        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
-            result = self.module.parse_mp_article(article)
+        result = self.module.parse_mp_article(article)
 
         self.assertEqual(
             result,
@@ -485,58 +544,6 @@ class TestParseMpArticle(unittest.TestCase):
                 "year": "",
             },
         )
-        self.assertIn("mp 列表条目缺少年份：Movie Title", logs.output[0])
-
-
-class TestProcessAll(unittest.TestCase):
-    """验证单页结果入队逻辑。"""
-
-    def setUp(self):
-        self.module, self.temp_dir = load_scrapy_mp()
-        self.redis_client = FakeRedis()
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def test_process_all_pushes_new_items_to_pending_queue(self):
-        """应把单页新帖子写入 seen 集合和 pending 队列。"""
-        result = self.module.process_all(
-            [
-                {"title": "Movie A", "link": "https://example.com/a", "year": "1990"},
-                {"title": "Movie B", "link": "https://example.com/b", "year": "1991"},
-            ],
-            redis_client=self.redis_client,
-        )
-
-        self.assertEqual(result, 2)
-        self.assertEqual(
-            self.redis_client.sets[self.module.REDIS_SEEN_KEY],
-            {"https://example.com/a", "https://example.com/b"},
-        )
-        payloads = [
-            self.module._scrapy_redis.deserialize_payload(payload)
-            for payload in self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
-        ]
-        self.assertEqual(
-            payloads,
-            [
-                {"link": "https://example.com/a", "title": "Movie A", "year": "1990"},
-                {"link": "https://example.com/b", "title": "Movie B", "year": "1991"},
-            ],
-        )
-
-    def test_process_all_deduplicates_items_by_link(self):
-        """相同链接的帖子应只入队一次。"""
-        result = self.module.process_all(
-            [
-                {"title": "Movie A", "link": "https://example.com/a", "year": "1990"},
-                {"title": "Movie A Again", "link": "https://example.com/a", "year": "1990"},
-            ],
-            redis_client=self.redis_client,
-        )
-
-        self.assertEqual(result, 1)
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 1)
 
 
 class TestMpQueueHelpers(unittest.TestCase):
@@ -559,8 +566,8 @@ class TestMpQueueHelpers(unittest.TestCase):
             {"https://example.com/a", "https://example.com/b"},
         )
 
-    def test_get_mp_active_queue_links_reads_pending_and_processing_queue_urls(self):
-        """应从 Redis 活跃队列里提取全部已入队 URL。"""
+    def test_get_mp_queued_links_reads_pending_and_processing_urls(self):
+        """应从 Redis 当前两条队列里提取全部已入队 URL。"""
         redis_client = FakeRedis()
         redis_client.rpush(
             self.module.REDIS_PENDING_KEY,
@@ -576,7 +583,7 @@ class TestMpQueueHelpers(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.module.get_mp_active_queue_links(redis_client),
+            self.module.get_mp_queued_links(redis_client),
             {"https://example.com/pending", "https://example.com/processing"},
         )
 
@@ -600,41 +607,12 @@ class TestMpQueueHelpers(unittest.TestCase):
             text='<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf_chl</body></html>',
         )
 
-        with patch.object(
-            self.module,
-            "refresh_mp_cookie_interactively",
-            side_effect=self.module.MpCloudflareError("mp Cookie 已失效或触发 Cloudflare 验证"),
-        ), patch.object(self.module.requests, "get", return_value=response):
+        with patch.object(self.module.requests, "get", return_value=response):
             with self.assertRaisesRegex(self.module.MpCloudflareError, "Cloudflare"):
                 self.module.validate_mp_end_urls({"https://example.com/end-a"})
 
-    def test_get_mp_scan_start_page_uses_saved_value_when_present(self):
-        """存在扫描断点时，应直接从 Redis 续跑。"""
-        redis_client = FakeRedis()
-        redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "7")
-
-        current_page = self.module.get_mp_scan_start_page(redis_client, 2)
-
-        self.assertEqual(current_page, 7)
-
-    def test_recover_mp_failed_queue_moves_failed_tasks_back_to_pending(self):
-        """失败队列中的任务应在重跑前恢复到 pending。"""
-        redis_client = FakeRedis()
-        redis_client.rpush(
-            self.module.REDIS_FAILED_KEY,
-            self.module._scrapy_redis.serialize_payload(
-                {"link": "https://example.com/failed", "title": "Failed", "year": "2026"}
-            ),
-        )
-
-        recovered_count = self.module.recover_mp_failed_queue(redis_client)
-
-        self.assertEqual(recovered_count, 1)
-        self.assertEqual(self.module.get_mp_active_queue_links(redis_client), {"https://example.com/failed"})
-
-
-class TestMpCookieRefresh(unittest.TestCase):
-    """验证 MP 浏览器刷新 Cookie 逻辑。"""
+class TestMpBrowserCookieSync(unittest.TestCase):
+    """验证启动阶段从浏览器同步 Cookie。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_mp()
@@ -642,79 +620,54 @@ class TestMpCookieRefresh(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_refresh_mp_cookie_interactively_updates_runtime_cookie_and_config(self):
-        """人工过 CF 成功后，应自动提取 Cookie 并回写配置。"""
+    def test_sync_mp_cookie_from_browser_updates_runtime_and_config(self):
+        """浏览器中存在可用 Cookie 时，应自动回写配置。"""
+        cookies = [
+            {"name": "cf_clearance", "value": "abc", "domain": ".movieparadise.org"},
+            {"name": "session", "value": "xyz", "domain": ".movieparadise.org"},
+        ]
 
-        class FakePage:
-            def goto(self, _url, wait_until=None, timeout=None):
-                return None
-
-            def wait_for_timeout(self, _timeout_ms):
-                return None
-
-        class FakeContext:
-            def __init__(self):
-                self.page = FakePage()
-                self.cookies_list = [
-                    [],
-                    [
-                        {"name": "cf_clearance", "value": "abc", "domain": ".movieparadise.org"},
-                        {"name": "session", "value": "xyz", "domain": ".movieparadise.org"},
-                    ],
-                ]
-                self.index = 0
-                self.pages = [self.page]
-
-            def cookies(self):
-                cookies = self.cookies_list[self.index]
-                if self.index < len(self.cookies_list) - 1:
-                    self.index += 1
-                return cookies
-
-            def new_page(self):
-                return self.page
-
-            def close(self):
-                return None
-
-        class FakePlaywrightManager:
-            def __init__(self):
-                self.context = FakeContext()
-                self.playwright = types.SimpleNamespace(
-                    chromium=types.SimpleNamespace(
-                        launch_persistent_context=lambda **kwargs: self.context
-                    )
-                )
-
-            def __enter__(self):
-                return self.playwright
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        fake_manager = FakePlaywrightManager()
-
-        with patch.object(self.module, "update_json_config") as mock_update_config, patch.object(
+        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=cookies), patch.object(
             self.module,
-            "validate_mp_cookie_candidate",
-            return_value=Mock(status_code=200, text="<html>ok</html>"),
-        ) as mock_validate_cookie:
-            cookie_str = self.module.refresh_mp_cookie_interactively(
-                "https://example.com/post",
-                previous_cookie="cookie=value",
-                timeout_seconds=5,
-                playwright_factory=lambda: fake_manager,
-            )
+            "update_json_config",
+        ) as mock_update_config:
+            cookie_str = self.module.sync_mp_cookie_from_browser()
 
         self.assertEqual(cookie_str, "cf_clearance=abc; session=xyz")
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cf_clearance=abc; session=xyz")
-        mock_validate_cookie.assert_called_once_with("https://example.com/post", "cf_clearance=abc; session=xyz")
         mock_update_config.assert_called_once_with(
             self.module.CONFIG_PATH,
             "mp_cookie",
             "cf_clearance=abc; session=xyz",
         )
 
+    def test_sync_mp_cookie_from_browser_keeps_existing_cookie_when_browser_empty(self):
+        """浏览器里没有 MP Cookie 时，不应覆盖当前配置。"""
+        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=[]), patch.object(
+            self.module,
+            "update_json_config",
+        ) as mock_update_config:
+            cookie_str = self.module.sync_mp_cookie_from_browser()
+
+        self.assertIsNone(cookie_str)
+        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
+        mock_update_config.assert_not_called()
+
+    def test_sync_mp_cookie_from_browser_requires_cf_clearance(self):
+        """没有 ``cf_clearance`` 时，不应覆盖现有配置。"""
+        cookies = [
+            {"name": "starstruck", "value": "abc", "domain": ".movieparadise.org"},
+        ]
+
+        with patch.object(self.module, "get_mp_browser_cookie_entries", return_value=cookies), patch.object(
+            self.module,
+            "update_json_config",
+        ) as mock_update_config:
+            cookie_str = self.module.sync_mp_cookie_from_browser()
+
+        self.assertIsNone(cookie_str)
+        self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
+        mock_update_config.assert_not_called()
 
 class TestFormatMpText(unittest.TestCase):
     """验证正文格式化逻辑。"""
@@ -1203,6 +1156,45 @@ class TestMpRedisFlow(unittest.TestCase):
         )
         mock_get.assert_called_once_with("https://example.com/movies/page/2/")
 
+    def test_enqueue_mp_posts_skips_links_already_present_in_current_queue(self):
+        """当前未完成轮次里已排队的帖子，不应再次入队。"""
+        self.redis_client.rpush(
+            self.module.REDIS_PENDING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/existing", "title": "Existing", "year": "2026"}
+            ),
+        )
+
+        with patch.object(self.module, "validate_mp_end_urls"), patch.object(
+            self.module,
+            "get_mp_response",
+            return_value=Mock(),
+        ), patch.object(
+            self.module,
+            "parse_mp_response",
+            return_value=[
+                {"title": "Existing Again", "link": "https://example.com/existing", "year": "2026"},
+                {"title": "Brand New", "link": "https://example.com/new", "year": "2026"},
+            ],
+        ):
+            self.module.enqueue_mp_posts(
+                start_page=2,
+                end=["https://example.com/new"],
+                redis_client=self.redis_client,
+            )
+
+        payloads = [
+            self.module._scrapy_redis.deserialize_payload(payload)
+            for payload in self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        ]
+        self.assertEqual(
+            payloads,
+            [
+                {"link": "https://example.com/existing", "title": "Existing", "year": "2026"},
+                {"link": "https://example.com/new", "title": "Brand New", "year": "2026"},
+            ],
+        )
+
     def test_enqueue_mp_posts_resumes_from_saved_scan_page(self):
         """中断后重跑时，应从 Redis 保存的页码继续扫描。"""
         self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "5")
@@ -1251,8 +1243,8 @@ class TestMpRedisFlow(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "截止 URL"):
             self.module.enqueue_mp_posts(start_page=2, end=[], redis_client=self.redis_client)
 
-    def test_drain_mp_queue_processes_pending_items_and_records_failures(self):
-        """应消费 pending 队列，并把失败任务移入 failed 队列。"""
+    def test_drain_mp_queue_keeps_failed_items_in_processing_for_next_run(self):
+        """普通失败任务应保留在 processing，留待下次重跑恢复。"""
         payloads = [
             self.module._scrapy_redis.serialize_payload({"link": "https://example.com/good", "title": "Good", "year": "2026"}),
             self.module._scrapy_redis.serialize_payload({"link": "https://example.com/bad", "title": "Bad", "year": "2026"}),
@@ -1268,29 +1260,20 @@ class TestMpRedisFlow(unittest.TestCase):
             self.module.drain_mp_queue(redis_client=self.redis_client)
 
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 1)
         failed_payload = self.module._scrapy_redis.deserialize_payload(
-            self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)[0]
+            self.redis_client.lrange(self.module.REDIS_PROCESSING_KEY, 0, -1)[0]
         )
         self.assertEqual(failed_payload["link"], "https://example.com/bad")
 
-    def test_drain_mp_queue_recovers_failed_items_before_processing(self):
-        """重跑时应先把 failed 队列恢复回 pending 再处理。"""
-        self.redis_client.rpush(
-            self.module.REDIS_FAILED_KEY,
-            self.module._scrapy_redis.serialize_payload(
-                {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
-            ),
-        )
-
-        with patch.object(self.module, "visit_mp_url") as mock_visit:
+    def test_drain_mp_queue_disables_processing_recovery_on_start(self):
+        """MP 详情阶段启动时，不应自动回收 processing 残留。"""
+        with patch.object(self.module, "drain_queue") as mock_drain_queue:
             self.module.drain_mp_queue(redis_client=self.redis_client)
 
-        mock_visit.assert_called_once_with(
-            {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
-        )
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 0)
+        mock_drain_queue.assert_called_once()
+        self.assertFalse(mock_drain_queue.call_args.kwargs["recover_processing_on_start"])
+        self.assertTrue(mock_drain_queue.call_args.kwargs["keep_failed_in_processing"])
 
     def test_drain_mp_queue_aborts_and_requeues_when_cookie_expires(self):
         """详情阶段若命中 Cloudflare 验证页，应终止本轮并把任务放回 pending。"""
@@ -1309,7 +1292,6 @@ class TestMpRedisFlow(unittest.TestCase):
             with self.assertRaises(self.module.MpCloudflareError):
                 self.module.drain_mp_queue(redis_client=self.redis_client)
 
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 0)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 1)
 
@@ -1341,21 +1323,41 @@ class TestFinalizeMpRun(unittest.TestCase):
         self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY))
         self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY))
 
-    def test_finalize_mp_run_keeps_scan_state_when_failed_tasks_remain(self):
-        """仍有失败任务时，不应清掉扫描状态，便于修 Cookie 后续跑。"""
+    def test_finalize_mp_run_keeps_processing_residue_for_next_restart(self):
+        """收尾时若只剩 processing 残留，应仅警告并保留扫描状态。"""
         self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
         self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "9")
-        self.redis_client.rpush(
-            self.module.REDIS_FAILED_KEY,
-            self.module._scrapy_redis.serialize_payload(
-                {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
-            ),
+        processing_payload = self.module._scrapy_redis.serialize_payload(
+            {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
         )
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, processing_payload)
 
-        self.module.finalize_mp_run(redis_client=self.redis_client)
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            self.module.finalize_mp_run(redis_client=self.redis_client)
 
         self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
         self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "9")
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
+        self.assertIn("已保留处理中队列，请直接重跑", logs.output[0])
+
+    def test_recover_mp_processing_when_pending_is_empty_moves_processing_back(self):
+        """启动时若 pending 为空且 processing 有残留，应回退到 pending。"""
+        processing_payload = self.module._scrapy_redis.serialize_payload(
+            {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+        )
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, processing_payload)
+
+        with self.assertLogs(self.module.logger.name, level="WARNING") as logs:
+            recovered_count = self.module.recover_mp_processing_when_pending_is_empty(self.redis_client)
+
+        self.assertEqual(recovered_count, 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(
+            self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1),
+            [processing_payload],
+        )
+        self.assertIn("已回退到待处理队列并继续运行", logs.output[0])
 
 
 class TestScrapyMpMain(unittest.TestCase):
@@ -1370,7 +1372,11 @@ class TestScrapyMpMain(unittest.TestCase):
 
     def test_scrapy_mp_calls_enqueue_and_drain_with_shared_redis_client(self):
         """主入口应复用同一个 Redis 客户端串起三阶段。"""
-        with patch.object(self.module, "get_redis_client", return_value=self.redis_client) as mock_get_redis, patch.object(
+        with patch.object(self.module, "sync_mp_cookie_from_browser") as mock_sync_cookie, patch.object(
+            self.module,
+            "get_redis_client",
+            return_value=self.redis_client,
+        ) as mock_get_redis, patch.object(
             self.module,
             "enqueue_mp_posts",
         ) as mock_enqueue, patch.object(
@@ -1382,7 +1388,75 @@ class TestScrapyMpMain(unittest.TestCase):
         ) as mock_finalize:
             self.module.scrapy_mp(start_page=2, end=["https://example.com/old"])
 
+        mock_sync_cookie.assert_called_once_with()
         mock_get_redis.assert_called_once_with()
+        mock_enqueue.assert_called_once_with(
+            start_page=2,
+            end=["https://example.com/old"],
+            redis_client=self.redis_client,
+        )
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
+
+    def test_scrapy_mp_still_finalizes_when_drain_raises(self):
+        """详情阶段抛错时，主入口仍应执行收尾逻辑。"""
+        with patch.object(self.module, "sync_mp_cookie_from_browser"), patch.object(
+            self.module,
+            "get_redis_client",
+            return_value=self.redis_client,
+        ), patch.object(
+            self.module,
+            "recover_mp_processing_when_pending_is_empty",
+        ), patch.object(
+            self.module,
+            "enqueue_mp_posts",
+        ) as mock_enqueue, patch.object(
+            self.module,
+            "drain_mp_queue",
+            side_effect=RuntimeError("boom"),
+        ) as mock_drain, patch.object(
+            self.module,
+            "finalize_mp_run",
+        ) as mock_finalize:
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                self.module.scrapy_mp(start_page=2, end=["https://example.com/old"])
+
+        mock_enqueue.assert_called_once_with(
+            start_page=2,
+            end=["https://example.com/old"],
+            redis_client=self.redis_client,
+        )
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
+
+    def test_scrapy_mp_recovers_processing_before_run_when_pending_is_empty(self):
+        """启动时若 pending 为空但 processing 有残留，应先回退再继续主流程。"""
+        processing_payload = self.module._scrapy_redis.serialize_payload(
+            {"link": "https://example.com/retry", "title": "Retry", "year": "2026"}
+        )
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, processing_payload)
+
+        with patch.object(self.module, "sync_mp_cookie_from_browser"), patch.object(
+            self.module,
+            "get_redis_client",
+            return_value=self.redis_client,
+        ), patch.object(
+            self.module,
+            "enqueue_mp_posts",
+        ) as mock_enqueue, patch.object(
+            self.module,
+            "drain_mp_queue",
+        ) as mock_drain, patch.object(
+            self.module,
+            "finalize_mp_run",
+        ) as mock_finalize:
+            self.module.scrapy_mp(start_page=2, end=["https://example.com/old"])
+
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(
+            self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1),
+            [processing_payload],
+        )
         mock_enqueue.assert_called_once_with(
             start_page=2,
             end=["https://example.com/old"],

@@ -5,16 +5,21 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
+import base64
+import ctypes
+import json
 import logging
 import os
 import re
-import threading
-import time
+import sqlite3
+import tempfile
+from ctypes import wintypes
 
 import redis
 import requests
 from bs4 import BeautifulSoup
 from bs4.element import Tag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from retrying import retry
 
 from my_module import (
@@ -28,52 +33,237 @@ from scrapy_redis import (
     deserialize_payload,
     drain_queue,
     get_redis_client,
-    push_items_to_queue,
     serialize_payload,
 )
 
 logger = logging.getLogger(__name__)
-requests.packages.urllib3.disable_warnings()
 
 CONFIG_PATH = 'config/scrapy_mp.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 
-MP_URL = CONFIG['mp_url']  # mp 地址
 MP_MOVIE_URL = CONFIG['mp_movie_url']  # mp 电影列表地址
+MP_VERIFICATION_URL = CONFIG.get('mp_verification_url')  # 手动过 CF 的验证入口页
 MP_COOKIE = CONFIG['mp_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
-THREAD_NUMBER = CONFIG.get('thread_number', 30)  # 线程数
-MP_BROWSER_PROFILE_DIR = CONFIG.get(
-    'mp_browser_profile_dir',
-    os.path.join(os.path.expanduser("~"), ".bunch_of_scripts", "mp_browser_profile"),
+THREAD_NUMBER = CONFIG.get('thread_number', 35)  # 线程数
+DEFAULT_MP_BROWSER_PROFILE_DIR = CONFIG.get('mp_browser_profile_dir') or os.path.join(
+    os.environ.get("LOCALAPPDATA", ""),
+    "Google",
+    "Chrome",
+    "User Data",
 )
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'mp_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'mp_processing')  # 处理中队列
-REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'mp_failed')  # 失败队列
-REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'mp_seen')  # 已入队帖子集合
 REDIS_SCAN_PAGE_KEY = CONFIG.get('redis_scan_page_key', 'mp_scan_page')  # 列表扫描断点页码
 REDIS_SCAN_COMPLETE_KEY = CONFIG.get('redis_scan_complete_key', 'mp_scan_complete')  # 列表扫描完成标记
 
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
-
-_mp_cookie_refresh_lock = threading.Lock()
-_mp_cookie_last_refresh_time = 0.0
-_mp_cookie_refresh_ttl = 30
 
 
 class MpCloudflareError(RuntimeError):
     """MP 请求命中 Cloudflare 验证页，通常意味着 Cookie 已失效。"""
 
 
-def get_mp_playwright():
-    """懒加载 Playwright，避免模块导入阶段就强依赖。"""
+class DataBlob(ctypes.Structure):
+    """Windows DPAPI 需要的原始数据结构。"""
+
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_byte)),
+    ]
+
+
+def dpapi_decrypt(cipher_text: bytes) -> bytes:
+    """用 Windows DPAPI 解密浏览器本地密钥或旧式 Cookie。"""
+    if not cipher_text:
+        return b""
+
+    buffer = ctypes.create_string_buffer(cipher_text, len(cipher_text))
+    in_blob = DataBlob(
+        cbData=len(cipher_text),
+        pbData=ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
+    )
+    out_blob = DataBlob()
+    crypt_unprotect_data = ctypes.windll.crypt32.CryptUnprotectData
+    local_free = ctypes.windll.kernel32.LocalFree
+
+    if not crypt_unprotect_data(
+            ctypes.byref(in_blob),
+            None,
+            None,
+            None,
+            None,
+            0,
+            ctypes.byref(out_blob),
+    ):
+        raise ctypes.WinError()
+
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:  # pragma: no cover - 取决于运行环境
-        raise RuntimeError("未安装 playwright，无法自动刷新 mp Cookie") from exc
-    return sync_playwright
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        local_free(out_blob.pbData)
+
+
+def load_mp_browser_local_state(local_state_path: str) -> dict:
+    """读取 Chrome 的 ``Local State``。"""
+    with open(local_state_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def get_mp_chrome_master_key(local_state_path: str) -> bytes:
+    """从 Chrome ``Local State`` 中解出 Cookie 主密钥。"""
+    local_state = load_mp_browser_local_state(local_state_path)
+    encrypted_key_b64 = local_state["os_crypt"]["encrypted_key"]
+    encrypted_key = base64.b64decode(encrypted_key_b64)
+    if encrypted_key.startswith(b"DPAPI"):
+        encrypted_key = encrypted_key[5:]
+    return dpapi_decrypt(encrypted_key)
+
+
+def get_mp_cookie_profile_names(local_state_path: str) -> list[str]:
+    """按最近使用优先顺序给出候选 Chrome profile 名称。"""
+    try:
+        local_state = load_mp_browser_local_state(local_state_path)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ["Default"]
+
+    profile_state = local_state.get("profile", {})
+    names = []
+    last_used = profile_state.get("last_used")
+    if last_used:
+        names.append(last_used)
+    names.extend(profile_state.get("last_active_profiles", []))
+    names.extend(profile_state.get("profiles_order", []))
+    names.extend(profile_state.get("info_cache", {}).keys())
+    names.append("Default")
+
+    seen = set()
+    result = []
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def get_mp_browser_cookie_source() -> tuple[str, str] | None:
+    """定位当前 MP 浏览器 Cookie 库和对应的 ``Local State``。"""
+    local_state_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, "Local State")
+    if os.path.exists(local_state_path):
+        for profile_name in get_mp_cookie_profile_names(local_state_path):
+            cookies_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, profile_name, "Network", "Cookies")
+            if os.path.exists(cookies_path):
+                return cookies_path, local_state_path
+
+    cookies_path = os.path.join(DEFAULT_MP_BROWSER_PROFILE_DIR, "Network", "Cookies")
+    local_state_path = os.path.join(os.path.dirname(DEFAULT_MP_BROWSER_PROFILE_DIR), "Local State")
+    if os.path.exists(cookies_path) and os.path.exists(local_state_path):
+        return cookies_path, local_state_path
+
+    return None
+
+
+def copy_mp_cookie_database(cookies_path: str) -> tuple[tempfile.TemporaryDirectory, str]:
+    """复制 Cookie SQLite 数据库及其 sidecar，便于稳定读取。"""
+    temp_dir = tempfile.TemporaryDirectory()
+    copied_db_path = os.path.join(temp_dir.name, "Cookies")
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        src = f"{cookies_path}{suffix}"
+        if not os.path.exists(src):
+            continue
+        with open(src, 'rb') as src_file, open(f"{copied_db_path}{suffix}", 'wb') as dst_file:
+            dst_file.write(src_file.read())
+    return temp_dir, copied_db_path
+
+
+def decrypt_mp_browser_cookie_value(value: str, encrypted_value: bytes, master_key: bytes) -> str:
+    """解密单个 Chrome Cookie 值。"""
+    if value:
+        return value
+    if not encrypted_value:
+        return ""
+    if encrypted_value.startswith((b"v10", b"v11")):
+        nonce = encrypted_value[3:15]
+        cipher_text = encrypted_value[15:]
+        return AESGCM(master_key).decrypt(nonce, cipher_text, None).decode('utf-8')
+    if encrypted_value.startswith(b"v20"):
+        raise RuntimeError("当前 Chrome Cookie 使用 v20 App-Bound Encryption，暂不支持自动提取")
+    return dpapi_decrypt(encrypted_value).decode('utf-8')
+
+
+def get_mp_browser_cookie_entries() -> list[dict]:
+    """从 Chrome profile 提取 ``movieparadise.org`` 的 Cookie 条目。"""
+    source = get_mp_browser_cookie_source()
+    if not source:
+        logger.warning("未找到 MP 浏览器 Cookie 库，跳过启动同步")
+        return []
+
+    cookies_path, local_state_path = source
+    try:
+        master_key = get_mp_chrome_master_key(local_state_path)
+    except Exception as exc:
+        logger.warning(f"读取 MP 浏览器主密钥失败，跳过启动同步：{exc}")
+        return []
+
+    temp_dir, copied_db_path = copy_mp_cookie_database(cookies_path)
+    try:
+        conn = sqlite3.connect(copied_db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT name, value, encrypted_value, host_key
+                FROM cookies
+                WHERE host_key LIKE ?
+                ORDER BY host_key, name
+                """,
+                ("%movieparadise.org%",),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(f"读取 MP 浏览器 Cookie 数据库失败，跳过启动同步：{exc}")
+        return []
+    finally:
+        temp_dir.cleanup()
+
+    cookies = []
+    for name, value, encrypted_value, host_key in rows:
+        try:
+            cookie_value = decrypt_mp_browser_cookie_value(value, encrypted_value, master_key)
+        except Exception as exc:
+            logger.warning(f"解密 MP 浏览器 Cookie 失败，已跳过 {name}：{exc}")
+            continue
+        if cookie_value:
+            cookies.append({"name": name, "value": cookie_value, "domain": host_key})
+    return cookies
+
+
+def sync_mp_cookie_from_browser() -> str | None:
+    """启动时从浏览器提取 MP Cookie，并同步到配置。"""
+    global MP_COOKIE
+    cookies = get_mp_browser_cookie_entries()
+    if not cookies:
+        return None
+    if "cf_clearance" not in {cookie["name"] for cookie in cookies}:
+        logger.warning("浏览器中的 MP Cookie 尚未包含 cf_clearance，保留现有配置")
+        return None
+
+    cookie_str = "; ".join(
+        f"{cookie['name']}={cookie['value']}"
+        for cookie in cookies
+        if "movieparadise.org" in cookie.get("domain", "")
+    )
+    if not cookie_str:
+        logger.warning("浏览器中未找到可用的 MP Cookie，保留现有配置")
+        return None
+
+    MP_COOKIE = cookie_str
+    REQUEST_HEAD["Cookie"] = cookie_str
+    update_json_config(CONFIG_PATH, "mp_cookie", cookie_str)
+    logger.info(f"已从浏览器同步 MP Cookie，共 {len(cookies)} 项")
+    return cookie_str
 
 
 def normalize_mp_end_urls(end) -> set[str]:
@@ -98,8 +288,8 @@ def serialize_mp_post(item: dict) -> str:
     )
 
 
-def get_mp_active_queue_links(redis_client: redis.Redis) -> set[str]:
-    """读取 Redis 活跃队列中的帖子 URL。"""
+def get_mp_queued_links(redis_client: redis.Redis) -> set[str]:
+    """读取当前 Redis 队列中已经存在的帖子 URL。"""
     queue_links = set()
     for key in (REDIS_PENDING_KEY, REDIS_PROCESSING_KEY):
         for payload in redis_client.lrange(key, 0, -1):
@@ -127,179 +317,36 @@ def is_mp_cloudflare_challenge(response: requests.Response) -> bool:
     return any(marker in text for marker in markers)
 
 
-def is_mp_cloudflare_html(text: str) -> bool:
-    """按页面 HTML 判断是否仍停留在 Cloudflare 验证页。"""
-    html = text.lower()
-    markers = (
-        "<title>just a moment",
-        "challenges.cloudflare.com",
-        "cf_chl",
-        "challenge-platform",
-        "cf-browser-verification",
-        "<title>attention required!",
-    )
-    return any(marker in html for marker in markers)
-
-
-def get_mp_response_once(url: str) -> requests.Response:
-    """发起一次 MP 请求并统一设置编码。"""
-    response = requests.get(url, headers=REQUEST_HEAD, timeout=20)
-    response.encoding = 'utf-8'
-    return response
-
-
-def set_mp_cookie(cookie_str: str, *, persist: bool = False) -> str:
-    """更新内存中的 MP Cookie，并按需回写配置文件。"""
-    global MP_COOKIE, _mp_cookie_last_refresh_time
-    MP_COOKIE = cookie_str
-    REQUEST_HEAD["Cookie"] = cookie_str
-    _mp_cookie_last_refresh_time = time.time()
-    if persist:
-        update_json_config(CONFIG_PATH, "mp_cookie", cookie_str)
-    return cookie_str
-
-
-def build_mp_cookie_string(cookies: list[dict]) -> str:
-    """将指定域名的 Cookie 列表整理为请求头字符串。"""
-    filtered = [
-        cookie for cookie in cookies
-        if "movieparadise.org" in cookie.get("domain", "")
-    ]
-    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in filtered)
-
-
-def validate_mp_cookie_candidate(url: str, cookie_str: str) -> requests.Response:
-    """用候选 Cookie 反向验证当前 URL 是否已可正常访问。"""
+def request_mp_page(url: str, *, allow_not_found: bool = False) -> requests.Response:
+    """请求 MP 页面；命中 Cloudflare 时直接停止，等待人工处理后重跑。"""
     headers = dict(REQUEST_HEAD)
-    headers["Cookie"] = cookie_str
+    headers["Cookie"] = MP_COOKIE
     response = requests.get(url, headers=headers, timeout=20)
     response.encoding = 'utf-8'
-    return response
-
-
-def refresh_mp_cookie_interactively(
-        url: str,
-        *,
-        previous_cookie: str | None = None,
-        timeout_seconds: int = 300,
-        playwright_factory=None,
-) -> str:
-    """打开浏览器等待人工过 Cloudflare，成功后自动刷新 MP Cookie。"""
-    current_cookie = REQUEST_HEAD.get("Cookie", "")
-    if previous_cookie is None:
-        previous_cookie = current_cookie
-
-    with _mp_cookie_refresh_lock:
-        latest_cookie = REQUEST_HEAD.get("Cookie", "")
-        if latest_cookie and latest_cookie != previous_cookie:
-            logger.info("检测到 MP Cookie 已被其他线程刷新，继续使用最新 Cookie")
-            return latest_cookie
-        if latest_cookie and (time.time() - _mp_cookie_last_refresh_time) < _mp_cookie_refresh_ttl:
-            logger.info("最近刚刷新过 MP Cookie，继续复用")
-            return latest_cookie
-
-        if playwright_factory is None:
-            playwright_factory = get_mp_playwright()
-
-        logger.warning(f"检测到 MP Cloudflare 验证，正在打开浏览器，请手动完成验证：{url}")
-        with playwright_factory() as p:
-            os.makedirs(MP_BROWSER_PROFILE_DIR, exist_ok=True)
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=MP_BROWSER_PROFILE_DIR,
-                headless=False,
-                channel="chrome",
-                viewport={"width": 1280, "height": 800},
-                ignore_default_args=["--enable-automation"],
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(MP_URL, wait_until="domcontentloaded", timeout=60000)
-                logger.warning("浏览器已打开。请在首页中手动通过 Cloudflare 验证，脚本会在成功后自动继续。")
-
-                deadline = time.time() + timeout_seconds
-                while time.time() < deadline:
-                    page.wait_for_timeout(3000)
-                    cookies = context.cookies()
-                    cookie_names = {cookie["name"] for cookie in cookies if "movieparadise.org" in cookie.get("domain", "")}
-                    if "cf_clearance" in cookie_names:
-                        cookie_str = build_mp_cookie_string(cookies)
-                        if cookie_str:
-                            validation_response = validate_mp_cookie_candidate(url, cookie_str)
-                            if not is_mp_cloudflare_challenge(validation_response) and validation_response.status_code in (200, 404):
-                                set_mp_cookie(cookie_str, persist=True)
-                                logger.warning("MP Cookie 已自动更新，继续执行当前任务")
-                                return cookie_str
-
-                raise MpCloudflareError("MP Cloudflare 验证超时，请重试并在浏览器中完成验证")
-            finally:
-                context.close()
-
-
-def request_mp_page(url: str, *, allow_not_found: bool = False) -> requests.Response:
-    """请求 MP 页面，必要时自动刷新 Cookie 后重试一次。"""
-    response = get_mp_response_once(url)
     if is_mp_cloudflare_challenge(response):
-        previous_cookie = REQUEST_HEAD.get("Cookie", "")
-        refresh_mp_cookie_interactively(url, previous_cookie=previous_cookie)
-        response = get_mp_response_once(url)
-
-    if is_mp_cloudflare_challenge(response):
-        raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
+        verification_url = MP_VERIFICATION_URL or url
+        raise MpCloudflareError(
+            f"mp Cookie 已失效或触发 Cloudflare 验证，请先在浏览器手动通过后重跑：{verification_url}"
+        )
 
     if response.status_code == 404 and allow_not_found:
         return response
-    return response
-
-
-def raise_for_mp_response(response: requests.Response, url: str) -> None:
-    """校验 MP 响应状态，并识别 Cookie 失效导致的 CF 验证页。"""
-    if is_mp_cloudflare_challenge(response):
-        raise MpCloudflareError(f"mp Cookie 已失效或触发 Cloudflare 验证，请先手动过验证并更新 Cookie：{url}")
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
+    return response
 
 
 def validate_mp_end_urls(end_urls: set[str]) -> None:
     """运行前校验截止 URL 是否仍然可访问，避免因 404 导致无限翻页。"""
-    logger.info(f"校验阶段...")
+    logger.info("校验阶段...")
     missing_urls = []
     for url in sorted(end_urls):
         response = request_mp_page(url, allow_not_found=True)
         if response.status_code == 404:
             missing_urls.append(url)
-            continue
-        if response.status_code != 200:
-            raise RuntimeError(f"验证 mp 截止 URL 失败，状态码 {response.status_code}：{url}")
 
     if missing_urls:
         raise ValueError(f"mp 截止 URL 已失效（404）：{', '.join(missing_urls)}")
-
-
-def get_mp_scan_start_page(redis_client: redis.Redis, start_page: int) -> int:
-    """读取 Redis 中保存的扫描页码，或初始化为 ``start_page``。"""
-    saved_page = redis_client.get(REDIS_SCAN_PAGE_KEY)
-    current_page = int(saved_page) if saved_page is not None else start_page
-    if saved_page is None:
-        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
-    else:
-        logger.info(f"从第 {current_page} 页继续扫描")
-    return current_page
-
-
-def advance_mp_scan_page(redis_client: redis.Redis, current_page: int) -> int:
-    """推进到下一页，并写回 Redis 断点。"""
-    next_page = current_page + 1
-    redis_client.set(REDIS_SCAN_PAGE_KEY, str(next_page))
-    logger.warning("-" * 255)
-    return next_page
-
-
-def mark_mp_scan_complete(redis_client: redis.Redis, current_page: int) -> None:
-    """标记列表扫描完成。"""
-    redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
-    redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
-    logger.info("MP 列表扫描完成")
 
 
 def scrapy_mp(start_page, end) -> None:
@@ -307,25 +354,14 @@ def scrapy_mp(start_page, end) -> None:
     先顺序翻页把新帖子写入 Redis，再并发抓取详情页。
     """
     logger.info("抓取 mp 站点发布信息")
+    sync_mp_cookie_from_browser()
     redis_client = get_redis_client()
-    enqueue_mp_posts(start_page=start_page, end=end, redis_client=redis_client)
-    drain_mp_queue(redis_client=redis_client)
-    finalize_mp_run(redis_client=redis_client)
-
-
-def process_all(result_list, redis_client: redis.Redis | None = None) -> int:
-    """将单页列表结果写入 Redis 待处理队列。"""
-    if redis_client is None:
-        redis_client = get_redis_client()
-
-    return push_items_to_queue(
-        redis_client,
-        result_list,
-        seen_key=REDIS_SEEN_KEY,
-        pending_key=REDIS_PENDING_KEY,
-        unique_value=lambda item: item["link"],
-        serializer=serialize_mp_post,
-    )
+    try:
+        recover_mp_processing_when_pending_is_empty(redis_client)
+        enqueue_mp_posts(start_page=start_page, end=end, redis_client=redis_client)
+        drain_mp_queue(redis_client=redis_client)
+    finally:
+        finalize_mp_run(redis_client=redis_client)
 
 
 def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | None = None) -> None:
@@ -341,8 +377,15 @@ def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | 
         raise ValueError("mp 截止 URL 不能为空")
     validate_mp_end_urls(end_urls)
 
-    current_page = get_mp_scan_start_page(redis_client, start_page)
-    matched_end_urls = get_mp_active_queue_links(redis_client) & end_urls
+    saved_page = redis_client.get(REDIS_SCAN_PAGE_KEY)
+    current_page = int(saved_page) if saved_page is not None else start_page
+    if saved_page is None:
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+    else:
+        logger.info(f"从第 {current_page} 页继续扫描")
+
+    queued_links = get_mp_queued_links(redis_client)
+    matched_end_urls = queued_links & end_urls
     while True:
         logger.info(f"抓取第 {current_page} 页")
         url = f"{MP_MOVIE_URL}{current_page}/"
@@ -351,32 +394,60 @@ def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | 
         if not result_list:
             raise RuntimeError("MP 列表页解析结果为空，网站结构可能已变更")
 
-        enqueued_count = process_all(result_list, redis_client=redis_client)
+        page_unique_links = set()
+        new_items = []
+        for item in result_list:
+            link = item["link"]
+            if not link or link in queued_links or link in page_unique_links:
+                continue
+            page_unique_links.add(link)
+            new_items.append(item)
+
+        if new_items:
+            pipe = redis_client.pipeline()
+            for item in new_items:
+                pipe.rpush(REDIS_PENDING_KEY, serialize_mp_post(item))
+            pipe.execute()
+
+        enqueued_count = len(new_items)
+        skipped_count = len(result_list) - enqueued_count
+        queued_links.update(page_unique_links)
         matched_end_urls.update(item["link"] for item in result_list if item["link"] in end_urls)
         logger.info(
-            f"第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条，"
+            f"第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条，跳过重复 {skipped_count} 条，"
             f"截止 URL 已命中 {len(matched_end_urls)}/{len(end_urls)} 条"
         )
 
         if matched_end_urls == end_urls:
-            mark_mp_scan_complete(redis_client, current_page)
+            redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
+            redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
+            logger.info("MP 列表扫描完成")
             break
 
-        current_page = advance_mp_scan_page(redis_client, current_page)
+        current_page += 1
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+        logger.info("-" * 80)
 
 
-def recover_mp_failed_queue(redis_client: redis.Redis) -> int:
-    """将失败队列中的任务恢复回待处理队列，便于更新 Cookie 后重试。"""
+def recover_mp_processing_queue(redis_client: redis.Redis) -> int:
+    """将处理中队列中的残留任务恢复回待处理队列，留待下次重跑。"""
     recovered_count = 0
     while True:
-        payload = redis_client.rpoplpush(REDIS_FAILED_KEY, REDIS_PENDING_KEY)
+        payload = redis_client.rpoplpush(REDIS_PROCESSING_KEY, REDIS_PENDING_KEY)
         if not payload:
             break
         recovered_count += 1
 
-    if recovered_count:
-        logger.warning(f"恢复 {recovered_count} 条失败的 MP 任务回待处理队列")
+    return recovered_count
 
+
+def recover_mp_processing_when_pending_is_empty(redis_client: redis.Redis) -> int:
+    """启动时若待处理为空但处理中有残留，则回退到待处理并继续运行。"""
+    if redis_client.llen(REDIS_PENDING_KEY) or not redis_client.llen(REDIS_PROCESSING_KEY):
+        return 0
+
+    recovered_count = recover_mp_processing_queue(redis_client)
+    logger.warning(f"MP 检测到待处理为空但处理中残留 {recovered_count} 条，已回退到待处理队列并继续运行")
     return recovered_count
 
 
@@ -384,20 +455,20 @@ def drain_mp_queue(redis_client: redis.Redis | None = None) -> None:
     """从 Redis 队列中取帖子，使用多线程访问详情页并写出 .rare 文件。"""
     if redis_client is None:
         redis_client = get_redis_client()
-    recover_mp_failed_queue(redis_client)
 
     drain_queue(
-    redis_client,
-    pending_key=REDIS_PENDING_KEY,
-    processing_key=REDIS_PROCESSING_KEY,
-    failed_key=REDIS_FAILED_KEY,
-    max_workers=THREAD_NUMBER,
+        redis_client,
+        pending_key=REDIS_PENDING_KEY,
+        processing_key=REDIS_PROCESSING_KEY,
+        max_workers=THREAD_NUMBER,
         worker=visit_mp_url,
         deserialize=deserialize_payload,
         logger=logger,
         queue_label="MP",
         identify_item=lambda info: info["link"],
         abort_on_exception=lambda exc: isinstance(exc, MpCloudflareError),
+        recover_processing_on_start=False,
+        keep_failed_in_processing=True,
     )
 
 
@@ -410,12 +481,16 @@ def finalize_mp_run(redis_client: redis.Redis | None = None) -> None:
         logger.info("MP 列表扫描尚未完成，暂不清理扫描状态")
         return
 
-    if (
-            redis_client.llen(REDIS_PENDING_KEY)
-            or redis_client.llen(REDIS_PROCESSING_KEY)
-            or redis_client.llen(REDIS_FAILED_KEY)
-    ):
-        logger.info("MP 队列仍有未完成任务，暂不清理扫描状态")
+    pending_count = redis_client.llen(REDIS_PENDING_KEY)
+    if pending_count:
+        logger.info("MP 待处理队列仍有未完成任务，暂不清理扫描状态")
+        return
+
+    processing_count = redis_client.llen(REDIS_PROCESSING_KEY)
+    if processing_count:
+        logger.warning(
+            f"MP 待处理已空，但处理中仍有 {processing_count} 条，已保留处理中队列，请直接重跑"
+        )
         return
 
     redis_client.delete(REDIS_SCAN_PAGE_KEY, REDIS_SCAN_COMPLETE_KEY)
@@ -434,9 +509,7 @@ def should_retry_mp_request(exc: Exception) -> bool:
 )
 def get_mp_response(url: str) -> requests.Response:
     """请求流程"""
-    response = request_mp_page(url)
-    raise_for_mp_response(response, url)
-    return response
+    return request_mp_page(url)
 
 
 def parse_mp_response(response: requests.Response) -> list:
@@ -482,8 +555,6 @@ def parse_mp_article(article) -> dict | None:
         match = re.search(r'\b(19|20)\d{2}\b', text)
         if match:
             year = match.group(0)
-    if not year:
-        logger.warning(f"mp 列表条目缺少年份：{title}")
 
     return {
         'title': title,

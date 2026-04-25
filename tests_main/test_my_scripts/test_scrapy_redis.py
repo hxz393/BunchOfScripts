@@ -223,6 +223,39 @@ class TestScrapyRedis(unittest.TestCase):
         self.assertEqual(set(processed_ids), {"1", "2"})
         logger.warning.assert_called_once_with("恢复 1 条未完成的 TEST 任务回待处理队列")
 
+    def test_drain_queue_can_skip_processing_recovery_on_start(self):
+        """显式关闭启动恢复时，应只消费 pending，不处理 processing 残留。"""
+        logger = Mock()
+        processed_ids = []
+        pending_payload = self.module.serialize_payload({"id": "1"})
+        recovered_payload = self.module.serialize_payload({"id": "2"})
+        self.redis_client.rpush(self.pending_key, pending_payload)
+        self.redis_client.rpush(self.processing_key, recovered_payload)
+
+        def fake_worker(info: dict) -> None:
+            processed_ids.append(info["id"])
+
+        result = self.module.drain_queue(
+            self.redis_client,
+            pending_key=self.pending_key,
+            processing_key=self.processing_key,
+            failed_key=self.failed_key,
+            max_workers=2,
+            worker=fake_worker,
+            logger=logger,
+            queue_label="TEST",
+            identify_item=lambda info: info["id"],
+            recover_processing_on_start=False,
+        )
+
+        self.assertEqual(result, {"processed": 1, "success": 1, "failed": 0})
+        self.assertEqual(processed_ids, ["1"])
+        self.assertEqual(
+            self.redis_client.lrange(self.processing_key, 0, -1),
+            [recovered_payload],
+        )
+        logger.warning.assert_not_called()
+
     def test_drain_queue_processes_success_and_failure_and_cleans_processing(self):
         """消费队列时应统计成功/失败，并把失败任务写入 failed 队列。"""
         logger = Mock()
@@ -254,6 +287,40 @@ class TestScrapyRedis(unittest.TestCase):
             [self.module.deserialize_payload(payload)["id"] for payload in self.redis_client.lrange(self.failed_key, 0, -1)],
             ["2"],
         )
+        logger.error.assert_called_once()
+        self.assertIn("抓取出错：2，错误：boom", logger.error.call_args[0][0])
+
+    def test_drain_queue_can_keep_failed_items_in_processing(self):
+        """显式要求时，普通失败任务应保留在 processing 中。"""
+        logger = Mock()
+        payload_success = self.module.serialize_payload({"id": "1"})
+        payload_fail = self.module.serialize_payload({"id": "2"})
+        self.redis_client.rpush(self.pending_key, payload_success)
+        self.redis_client.rpush(self.pending_key, payload_fail)
+
+        def fake_worker(info: dict) -> None:
+            if info["id"] == "2":
+                raise RuntimeError("boom")
+
+        result = self.module.drain_queue(
+            self.redis_client,
+            pending_key=self.pending_key,
+            processing_key=self.processing_key,
+            max_workers=2,
+            worker=fake_worker,
+            logger=logger,
+            queue_label="TEST",
+            identify_item=lambda info: info["id"],
+            keep_failed_in_processing=True,
+        )
+
+        self.assertEqual(result, {"processed": 2, "success": 1, "failed": 1})
+        self.assertEqual(self.redis_client.llen(self.pending_key), 0)
+        self.assertEqual(
+            [self.module.deserialize_payload(payload)["id"] for payload in self.redis_client.lrange(self.processing_key, 0, -1)],
+            ["2"],
+        )
+        self.assertEqual(self.redis_client.llen(self.failed_key), 0)
         logger.error.assert_called_once()
         self.assertIn("抓取出错：2，错误：boom", logger.error.call_args[0][0])
 
