@@ -28,6 +28,7 @@ SK_MOVIE_URL = CONFIG['sk_movie_url']  # sk 电影列表地址
 SK_COOKIE = CONFIG['sk_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 
 REQUEST_HEAD["Cookie"] = SK_COOKIE  # 请求头加入认证
 
@@ -38,35 +39,31 @@ def scrapy_sk(start_page: int = 0, end_data="15/10/2013") -> None:
     """
     logger.info("抓取 sk 站点发布信息")
     while True:
-        # 请求 sk 主页
-        logger.info(f"抓取第 {start_page} 页")
-        url = f"{SK_MOVIE_URL}{start_page}"
-        response = get_sk_response(url)
-        result_list = parse_sk_response(response)
-        logger.info(f"共 {len(result_list)} 个结果")
-
-        # 循环抓取
-        # for result_item in result_list:
-        #     visit_sk_url(result_item)
-        process_all(result_list, max_workers=25)
-
-        # 检查日期
-        if end_data in (result_item['date'] for result_item in result_list):
+        if process_sk_page(start_page, end_data):
             logger.info("没有新发布，完成")
             break
 
-        # logger.info(f"结果：{result_list}")
         logger.warning("-" * 255)
         start_page += 1
 
 
-def process_all(result_list, max_workers=5):
+def process_sk_page(page_no: int, end_data: str) -> bool:
+    """抓取并处理单个 SK 列表页。"""
+    logger.info(f"抓取第 {page_no} 页")
+    url = f"{SK_MOVIE_URL}{page_no}"
+    response = get_sk_response(url)
+    result_list = parse_sk_response(response)
+    logger.info(f"共 {len(result_list)} 个结果")
+    process_all(result_list)
+    return end_data in (result_item['date'] for result_item in result_list)
+
+
+def process_all(result_list):
     """
     并发调用 visit_sk_url，result_list 中每个元素都会被提交到线程池执行。
-    max_workers 控制并发线程数，视网络 I/O 或目标服务器承受能力调整。
     """
     results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(THREAD_NUMBER) as executor:
         # 提交所有任务
         future_to_item = {
             executor.submit(visit_sk_url, item): item
@@ -87,7 +84,7 @@ def process_all(result_list, max_workers=5):
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
 def get_sk_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, headers=REQUEST_HEAD, timeout=20, verify=False)
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=20)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
