@@ -4,7 +4,7 @@
 这里不依赖真实配置文件，也不会发出真实网络请求。
 目标是只验证抓取脚本的核心行为：
 1. 页面解析、文件名规范化和磁链生成。
-2. 单条详情抓取、批量翻页停止条件和 newest_id 回写。
+2. 单条详情抓取、分页入队、队列消费和 newest_id 回写。
 3. ``.dhd`` 转 ``.log`` 的本地 I/O 编排逻辑。
 """
 
@@ -100,6 +100,13 @@ def load_scrapy_dhd(config: dict | None = None):
         "request_head": {"User-Agent": "unit-test"},
         "output_dir": str(Path(temp_dir.name) / "downloads"),
         "thread_number": 3,
+        "redis_host": "127.0.0.1",
+        "redis_port": 6379,
+        "redis_db": 0,
+        "redis_pending_key": "dhd_pending",
+        "redis_processing_key": "dhd_processing",
+        "redis_failed_key": "dhd_failed",
+        "redis_seen_key": "dhd_seen",
     }
     if config:
         module_config.update(config)
@@ -139,6 +146,15 @@ def load_scrapy_dhd(config: dict | None = None):
 
     fake_retrying.retry = fake_retry
 
+    fake_redis = types.ModuleType("redis")
+
+    class DummyRedis:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_redis.Redis = DummyRedis
+
     fake_bencodepy = types.ModuleType("bencodepy")
     fake_bencodepy.encode = fake_bencode_encode
     fake_bencodepy.decode = fake_bencode_decode
@@ -153,6 +169,7 @@ def load_scrapy_dhd(config: dict | None = None):
         {
             "my_module": fake_my_module,
             "retrying": fake_retrying,
+            "redis": fake_redis,
             "bencodepy": fake_bencodepy,
         },
     ):
@@ -187,6 +204,83 @@ def build_topic_html(
 def build_page_html(*topics: str) -> str:
     """把若干帖子块拼成最小可用页面。"""
     return f"<html><body>{''.join(topics)}</body></html>"
+
+
+class FakeRedisPipeline:
+    """最小 Redis pipeline 实现。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.commands = []
+
+    def sadd(self, key: str, value: str):
+        self.commands.append(("sadd", key, value))
+        return self
+
+    def rpush(self, key: str, value: str):
+        self.commands.append(("rpush", key, value))
+        return self
+
+    def execute(self):
+        results = []
+        for command, key, value in self.commands:
+            results.append(getattr(self.client, command)(key, value))
+        self.commands.clear()
+        return results
+
+
+class FakeRedis:
+    """用于测试 DHD Redis 队列流程的内存实现。"""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.sets = {}
+        self.lists = {}
+
+    def pipeline(self):
+        return FakeRedisPipeline(self)
+
+    def sadd(self, key: str, value: str) -> int:
+        members = self.sets.setdefault(key, set())
+        if value in members:
+            return 0
+        members.add(value)
+        return 1
+
+    def rpush(self, key: str, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        items.append(value)
+        return len(items)
+
+    def rpoplpush(self, source: str, destination: str):
+        source_items = self.lists.setdefault(source, [])
+        if not source_items:
+            return None
+        value = source_items.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def lrem(self, key: str, count: int, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        removed = 0
+        new_items = []
+        for item in items:
+            if item == value and removed < count:
+                removed += 1
+                continue
+            new_items.append(item)
+        self.lists[key] = new_items
+        return removed
+
+    def llen(self, key: str) -> int:
+        return len(self.lists.get(key, []))
+
+    def lrange(self, key: str, start: int, end: int) -> list[str]:
+        items = self.lists.get(key, [])
+        if end == -1:
+            end = len(items) - 1
+        return items[start:end + 1]
 
 
 class TestModuleLoad(unittest.TestCase):
@@ -534,31 +628,53 @@ class TestWorkingDhd(unittest.TestCase):
 
 
 class TestScrapyDhd(unittest.TestCase):
-    """验证线程池主抓取流程的编排逻辑。"""
+    """验证 Redis 两阶段抓取流程的编排逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_dhd({"newest_id": 100})
+        self.redis_client = FakeRedis()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_scrapy_dhd_stops_when_first_page_has_no_new_items(self):
+    def test_scrapy_dhd_calls_enqueue_and_drain(self):
+        """入口函数应先入队，再消费 Redis 队列。"""
+        with patch.object(self.module, "enqueue_dhd_posts") as mock_enqueue, patch.object(
+            self.module, "drain_dhd_queue"
+        ) as mock_drain:
+            self.module.scrapy_dhd(start_page=3)
+
+        mock_enqueue.assert_called_once_with(start_page=3)
+        mock_drain.assert_called_once_with()
+
+    def test_fetch_dhd_batch_raises_when_batch_keeps_returning_no_results(self):
+        """列表页连续返回空结果时，应在重试耗尽后抛出异常。"""
+        with patch.object(
+            self.module, "get_dhd_response", return_value=""
+        ) as mock_get, patch.object(
+            self.module.time, "sleep"
+        ) as mock_sleep:
+            with self.assertRaisesRegex(Exception, "批量请求失败"):
+                self.module.fetch_dhd_batch(start_page=1)
+
+        self.assertEqual(mock_get.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 5)
+
+    def test_enqueue_dhd_posts_stops_when_first_page_has_no_new_items(self):
         """第一页全部是旧项目时，应停止抓取并保留原 newest_id。"""
-        with patch.object(self.module, "get_dhd_response", return_value="page-1") as mock_get, patch.object(
-            self.module, "parse_dhd_response", return_value=[{"id": "100", "name": "Old", "url": "u"}]
-        ), patch.object(
-            self.module, "working_dhd"
-        ) as mock_work, patch.object(
+        with patch.object(
+            self.module, "fetch_dhd_batch", return_value=[{"id": "100", "name": "Old", "url": "u"}]
+        ) as mock_fetch, patch.object(
             self.module, "update_json_config"
         ) as mock_update:
-            self.module.scrapy_dhd(start_page=1)
+            self.module.enqueue_dhd_posts(start_page=1, redis_client=self.redis_client)
 
-        mock_get.assert_called_once_with("https://example.com/movie/1.html")
-        mock_work.assert_not_called()
+        mock_fetch.assert_called_once_with(1, 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 100)
 
-    def test_scrapy_dhd_processes_multiple_pages_and_updates_max_id(self):
-        """多页抓取时应处理每一页的新项目，并回写本轮最大 ID。"""
+    def test_enqueue_dhd_posts_processes_multiple_pages_and_updates_max_id(self):
+        """多页翻页时应把新帖子写入 Redis 队列，并回写本轮最大 ID。"""
         parsed_pages = [
             [
                 {"id": "101", "name": "A", "url": "https://example.com/topic/101"},
@@ -573,50 +689,74 @@ class TestScrapyDhd(unittest.TestCase):
         ]
 
         with patch.object(
-            self.module, "get_dhd_response", side_effect=["page-1", "page-2", "page-3"]
-        ) as mock_get, patch.object(
-            self.module, "parse_dhd_response", side_effect=parsed_pages
-        ), patch.object(
-            self.module, "working_dhd"
-        ) as mock_work, patch.object(
+            self.module, "fetch_dhd_batch", side_effect=parsed_pages
+        ) as mock_fetch, patch.object(
             self.module, "update_json_config"
         ) as mock_update:
-            self.module.scrapy_dhd(start_page=1)
+            self.module.enqueue_dhd_posts(start_page=1, redis_client=self.redis_client)
 
         self.assertEqual(
-            mock_get.call_args_list,
+            mock_fetch.call_args_list,
             [
-                call("https://example.com/movie/1.html"),
-                call("https://example.com/movie/2.html"),
-                call("https://example.com/movie/3.html"),
+                call(1, 1),
+                call(2, 1),
+                call(3, 1),
             ],
         )
-        mock_work.assert_has_calls(
-            [
-                call(parsed_pages[0][0]),
-                call(parsed_pages[0][1]),
-                call(parsed_pages[1][0]),
-            ],
-            any_order=True,
-        )
-        self.assertEqual(mock_work.call_count, 3)
+        pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        pending_ids = [self.module.deserialize_dhd_info(payload)["id"] for payload in pending_payloads]
+        self.assertEqual(pending_ids, ["101", "105", "103"])
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 105)
 
-    def test_scrapy_dhd_raises_when_batch_keeps_returning_no_results(self):
-        """列表页连续返回空结果时，应在重试耗尽后抛出异常且不回写配置。"""
-        with patch.object(
-            self.module, "get_dhd_response", return_value=""
-        ) as mock_get, patch.object(
-            self.module.time, "sleep"
-        ) as mock_sleep, patch.object(
-            self.module, "update_json_config"
-        ) as mock_update:
-            with self.assertRaisesRegex(Exception, "批量请求失败"):
-                self.module.scrapy_dhd(start_page=1)
+    def test_recover_dhd_processing_queue_moves_items_back_to_pending(self):
+        """中断残留在 processing 的任务应恢复回 pending。"""
+        payload_a = self.module.serialize_dhd_info({"id": "101", "name": "A", "url": "u1"})
+        payload_b = self.module.serialize_dhd_info({"id": "102", "name": "B", "url": "u2"})
+        payload_c = self.module.serialize_dhd_info({"id": "103", "name": "C", "url": "u3"})
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_a)
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, payload_b)
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, payload_c)
 
-        self.assertEqual(mock_get.call_count, 5)
-        self.assertEqual(mock_sleep.call_count, 5)
-        mock_update.assert_not_called()
+        recovered_count = self.module.recover_dhd_processing_queue(self.redis_client)
+
+        self.assertEqual(recovered_count, 2)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 3)
+
+    def test_drain_dhd_queue_processes_pending_items_and_records_failures(self):
+        """消费队列时，成功任务应清理 processing，失败任务应进入 failed。"""
+        payload_success = self.module.serialize_dhd_info(
+            {"id": "101", "name": "A", "url": "https://example.com/topic/101"}
+        )
+        payload_fail = self.module.serialize_dhd_info(
+            {"id": "102", "name": "B", "url": "https://example.com/topic/102"}
+        )
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_success)
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_fail)
+
+        def fake_working_dhd(info: dict) -> None:
+            if info["id"] == "102":
+                raise RuntimeError("boom")
+
+        with patch.object(self.module, "working_dhd", side_effect=fake_working_dhd) as mock_working, patch.object(
+            self.module.logger, "error"
+        ) as mock_error:
+            self.module.drain_dhd_queue(redis_client=self.redis_client)
+
+        self.assertEqual(mock_working.call_count, 2)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        failed_payloads = self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)
+        self.assertEqual(len(failed_payloads), 1)
+        self.assertEqual(self.module.deserialize_dhd_info(failed_payloads[0])["id"], "102")
+        self.assertIn("https://example.com/topic/102", mock_error.call_args[0][0])
+
+    def test_drain_dhd_queue_logs_when_queue_is_empty(self):
+        """没有待处理任务时，应输出空队列提示并直接返回。"""
+        with patch.object(self.module.logger, "info") as mock_info:
+            self.module.drain_dhd_queue(redis_client=self.redis_client)
+
+        self.assertIn("DHD 队列为空，没有待处理任务", [call.args[0] for call in mock_info.call_args_list])
 
 
 class TestDhdToLog(unittest.TestCase):
