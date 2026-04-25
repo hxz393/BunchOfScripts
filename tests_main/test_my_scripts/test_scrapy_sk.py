@@ -60,6 +60,8 @@ def load_scrapy_sk(config: dict | None = None):
         "request_head": {"User-Agent": "unit-test"},
         "output_dir": str(Path(temp_dir.name) / "downloads"),
         "thread_number": 2,
+        "max_empty_pages": 5,
+        "excluded_groups": ["Knihy a Časopisy"],
         "end_data": "15/10/2013",
         "redis_pending_key": "sk_pending",
         "redis_processing_key": "sk_processing",
@@ -283,6 +285,16 @@ def build_detail_page_html(csfd_href: str | None = None) -> str:
     return f"<html><body>{csfd_html}</body></html>"
 
 
+def build_sk_filtered_empty_page_html() -> str:
+    """构造账户过滤导致的 SK 空结果页。"""
+    notice_row = (
+        '<td class="lista" align="center" colspan="16">'
+        '<a href="index.php">Nenasli ste co ste hladali???...Napiste nam to na nastenku</a><br/>'
+        '</td>'
+    )
+    return build_sk_page_html(notice_row)
+
+
 class TestModuleLoad(unittest.TestCase):
     """验证模块导入时的配置注入。"""
 
@@ -445,7 +457,14 @@ class TestParseSkRow(unittest.TestCase):
             result = self.module.parse_sk_row(row)
 
         self.assertIsNone(result)
-        mock_info.assert_called_once_with("跳过：缺少链接字段")
+        mock_info.assert_called_once()
+        message, group, url, title, td_snippet = mock_info.call_args[0]
+        self.assertEqual(message, "跳过：缺少链接字段 - group=%r url=%r title=%r td=%s")
+        self.assertIsNone(group)
+        self.assertEqual(url, "https://example.com/torrent/details.php?name=movie&id=456")
+        self.assertEqual(title, "Missing Group")
+        self.assertIn("details.php?name=movie&amp;id=456", td_snippet)
+        self.assertIn("Missing Group", td_snippet)
 
     def test_parse_sk_row_returns_none_when_size_or_date_are_missing(self):
         """缺少大小日期信息时，应返回 ``None``。"""
@@ -468,6 +487,23 @@ class TestParseSkRow(unittest.TestCase):
         mock_info.assert_called_once_with(
             "跳过：缺少大小日期字段 - Missing Meta - https://example.com/torrent/details.php?name=movie&id=789"
         )
+
+    def test_parse_sk_row_returns_none_when_group_is_excluded(self):
+        """排除分组的帖子不应进入后续抓取流程。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group="Knihy a Časopisy",
+                    group_href="torrents_v2.php?category=23",
+                    title="Computer (04/2026) (CZ)",
+                    detail_href="details.php?name=computer&id=999",
+                    metadata="Velkost 79.3 MB | Pridany 25/03/2026",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        self.assertIsNone(self.module.parse_sk_row(row))
 
 
 class TestSkRowMetadataHelpers(unittest.TestCase):
@@ -585,6 +621,47 @@ class TestParseSkResponse(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "网站结构可能已变更"):
             self.module.parse_sk_response(response)
+
+    def test_parse_sk_response_returns_empty_list_for_filtered_empty_page(self):
+        """账户过滤导致的已知空页应返回空列表，而不是误报结构异常。"""
+        response = Mock(text=build_sk_filtered_empty_page_html())
+
+        self.assertEqual(self.module.parse_sk_response(response), [])
+
+    def test_parse_sk_response_skips_excluded_groups_and_keeps_movies(self):
+        """混合页面里应排除书籍分组，仅保留电影帖子。"""
+        response = Mock(
+            text=build_sk_page_html(
+                build_sk_item_html(
+                    group="Knihy a Časopisy",
+                    group_href="torrents_v2.php?category=23",
+                    title="Computer (04/2026) (CZ)",
+                    detail_href="details.php?name=computer&id=999",
+                    metadata="Velkost 79.3 MB | Pridany 25/03/2026",
+                ),
+                build_sk_item_html(
+                    group="2160p",
+                    title="Valid Title",
+                    detail_href="details.php?name=movie&id=123",
+                    metadata="Velkost 8 GB | Pridany 24/04/2026",
+                ),
+            )
+        )
+
+        result = self.module.parse_sk_response(response)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "group": "2160p",
+                    "url": "https://example.com/torrent/details.php?name=movie&id=123",
+                    "title": "Valid Title",
+                    "size": "8 GB",
+                    "date": "24/04/2026",
+                }
+            ],
+        )
 
 
 class TestSkDetailHelpers(unittest.TestCase):
@@ -935,11 +1012,41 @@ class TestFetchSkPage(unittest.TestCase):
 
     def test_fetch_sk_page_raises_when_parsed_page_is_empty(self):
         """整页解析结果为空时，应显式报错停止后续翻页。"""
-        with patch.object(self.module, "get_sk_response", return_value=Mock()), patch.object(
+        with patch.object(self.module, "get_sk_response", return_value=Mock(text="<html></html>")), patch.object(
             self.module, "parse_sk_response", return_value=[]
         ):
             with self.assertRaisesRegex(RuntimeError, "解析结果为空"):
                 self.module.fetch_sk_page(1)
+
+    def test_fetch_sk_page_allows_known_filtered_empty_page(self):
+        """账户过滤导致的已知空页应返回空列表并继续交给上层处理。"""
+        response = Mock(text=build_sk_filtered_empty_page_html())
+
+        with patch.object(self.module, "get_sk_response", return_value=response), patch.object(
+            self.module, "parse_sk_response", return_value=[]
+        ):
+            result = self.module.fetch_sk_page(17)
+
+        self.assertEqual(result, [])
+
+    def test_fetch_sk_page_allows_page_with_only_excluded_groups(self):
+        """整页只有排除分组帖子时，应返回空列表供上层继续翻页。"""
+        response = Mock(
+            text=build_sk_page_html(
+                build_sk_item_html(
+                    group="Knihy a Časopisy",
+                    group_href="torrents_v2.php?category=23",
+                    title="Computer (04/2026) (CZ)",
+                    detail_href="details.php?name=computer&id=999",
+                    metadata="Velkost 79.3 MB | Pridany 25/03/2026",
+                )
+            )
+        )
+
+        with patch.object(self.module, "get_sk_response", return_value=response):
+            result = self.module.fetch_sk_page(25)
+
+        self.assertEqual(result, [])
 
 
 class TestEnqueueSkPosts(unittest.TestCase):
@@ -1000,6 +1107,39 @@ class TestEnqueueSkPosts(unittest.TestCase):
 
         mock_fetch.assert_not_called()
 
+    def test_enqueue_sk_posts_skips_filtered_empty_pages_until_results_resume(self):
+        """连续空页未达到上限时，应继续翻页直到抓到有效帖子。"""
+        with patch.object(
+            self.module,
+            "fetch_sk_page",
+            side_effect=[
+                [],
+                [],
+                [{"group": "A", "url": "u9", "title": "Movie I", "size": "9 GB", "date": "15/10/2013"}],
+            ],
+        ) as mock_fetch:
+            self.module.enqueue_sk_posts(start_page=17, end_data="15/10/2013", redis_client=self.redis_client)
+
+        self.assertEqual(mock_fetch.call_args_list, [call(17), call(18), call(19)])
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "20")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "14/10/2013")
+        pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        pending_urls = [self.module.deserialize_payload(payload)["url"] for payload in pending_payloads]
+        self.assertEqual(pending_urls, ["u9"])
+
+    def test_enqueue_sk_posts_raises_after_too_many_empty_pages(self):
+        """连续空页超过上限时，应停止扫描避免无限翻页。"""
+        module, temp_dir = load_scrapy_sk({"max_empty_pages": 3})
+        self.addCleanup(temp_dir.cleanup)
+        redis_client = FakeRedis()
+
+        with patch.object(module, "fetch_sk_page", side_effect=[[], [], []]) as mock_fetch:
+            with self.assertRaisesRegex(RuntimeError, "连续 3 页无有效帖子"):
+                module.enqueue_sk_posts(start_page=17, redis_client=redis_client)
+
+        self.assertEqual(mock_fetch.call_args_list, [call(17), call(18), call(19)])
+
 
 class TestDrainSkQueue(unittest.TestCase):
     """验证 SK 队列消费逻辑。"""
@@ -1027,8 +1167,8 @@ class TestDrainSkQueue(unittest.TestCase):
                 raise RuntimeError("boom")
 
         with patch.object(self.module, "visit_sk_url", side_effect=fake_visit_sk_url) as mock_visit, patch.object(
-            self.module.logger, "exception"
-        ) as mock_exception:
+            self.module.logger, "error"
+        ) as mock_error:
             self.module.drain_sk_queue(redis_client=self.redis_client)
 
         self.assertEqual(mock_visit.call_count, 2)
@@ -1040,7 +1180,7 @@ class TestDrainSkQueue(unittest.TestCase):
             self.module.deserialize_payload(failed_payloads[0])["url"],
             "https://example.com/topic/102",
         )
-        self.assertIn("https://example.com/topic/102", mock_exception.call_args[0][0])
+        self.assertIn("https://example.com/topic/102", mock_error.call_args[0][0])
 
     def test_drain_sk_queue_logs_when_queue_is_empty(self):
         """没有待处理任务时，应输出空队列提示并直接返回。"""
