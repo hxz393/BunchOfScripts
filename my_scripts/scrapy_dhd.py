@@ -36,9 +36,7 @@ DHD_COOKIE = CONFIG['dhd_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 并发数
-REDIS_HOST = CONFIG.get('redis_host', '127.0.0.1')  # Redis 主机
-REDIS_PORT = CONFIG.get('redis_port', 6379)  # Redis 端口
-REDIS_DB = CONFIG.get('redis_db', 0)  # Redis DB
+REDIS_HOST = CONFIG['redis_host']  # Redis 主机
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'dhd_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'dhd_processing')  # 处理中队列
