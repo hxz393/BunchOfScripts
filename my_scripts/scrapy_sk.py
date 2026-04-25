@@ -9,12 +9,19 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
-from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import (
+    normalize_release_title_for_filename,
+    read_json_to_dict,
+    sanitize_filename,
+    update_json_config,
+    write_list_to_file,
+)
 from sort_movie_request import get_csfd_response, get_csfd_movie_details
 
 logger = logging.getLogger(__name__)
@@ -29,25 +36,40 @@ SK_COOKIE = CONFIG['sk_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
+END_DATA = CONFIG['end_data']  # 截止日期
 
 REQUEST_HEAD["Cookie"] = SK_COOKIE  # 请求头加入认证
 
 
-def scrapy_sk(start_page: int = 0, end_data="15/10/2013") -> None:
+def get_previous_day(date_str: str) -> str:
+    """返回 ``date_str`` 的前一天，格式保持 ``dd/mm/YYYY``。"""
+    date_value = datetime.strptime(date_str, "%d/%m/%Y")
+    previous_day = date_value - timedelta(days=1)
+    return previous_day.strftime("%d/%m/%Y")
+
+
+def scrapy_sk(start_page: int = 0) -> None:
     """
     抓取发布信息写入到文件。
     """
     logger.info("抓取 sk 站点发布信息")
+    new_end_data = None
     while True:
-        if process_sk_page(start_page, end_data):
+        should_stop, first_item_date = process_sk_page(start_page, END_DATA)
+        if new_end_data is None:
+            new_end_data = get_previous_day(first_item_date)
+
+        if should_stop:
             logger.info("没有新发布，完成")
             break
 
         logger.warning("-" * 255)
         start_page += 1
 
+    update_json_config(CONFIG_PATH, "end_data", new_end_data)
 
-def process_sk_page(page_no: int, end_data: str) -> bool:
+
+def process_sk_page(page_no: int, end_data: str) -> tuple[bool, str]:
     """抓取并处理单个 SK 列表页。"""
     logger.info(f"抓取第 {page_no} 页")
     url = f"{SK_MOVIE_URL}{page_no}"
@@ -57,7 +79,9 @@ def process_sk_page(page_no: int, end_data: str) -> bool:
         raise RuntimeError("SK 列表页解析结果为空，网站结构可能已变更")
     logger.info(f"共 {len(result_list)} 个结果")
     process_all(result_list)
-    return end_data in (result_item['date'] for result_item in result_list)
+    first_item_date = result_list[0]['date']
+    should_stop = end_data in (result_item['date'] for result_item in result_list)
+    return should_stop, first_item_date
 
 
 def process_all(result_list):
