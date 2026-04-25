@@ -20,10 +20,12 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import requests
+from bs4 import BeautifulSoup
 
 requests.packages.urllib3.disable_warnings()
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_sk.py"
+REDIS_HELPER_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
 
 
 def fake_normalize_release_title_for_filename(
@@ -57,14 +59,38 @@ def load_scrapy_sk(config: dict | None = None):
         "sk_cookie": "cookie=value",
         "request_head": {"User-Agent": "unit-test"},
         "output_dir": str(Path(temp_dir.name) / "downloads"),
+        "thread_number": 2,
+        "end_data": "15/10/2013",
+        "redis_pending_key": "sk_pending",
+        "redis_processing_key": "sk_processing",
+        "redis_failed_key": "sk_failed",
+        "redis_seen_key": "sk_seen",
+        "redis_scan_page_key": "sk_scan_page",
+        "redis_scan_complete_key": "sk_scan_complete",
+        "redis_next_end_data_key": "sk_next_end_data",
+    }
+    helper_config = {
+        "redis_host": "127.0.0.1",
+        "redis_port": 6379,
+        "redis_db": 0,
     }
     if config:
         module_config.update(config)
+        for key in ("redis_host", "redis_port", "redis_db"):
+            if key in config:
+                helper_config[key] = config[key]
 
     fake_my_module = types.ModuleType("my_module")
-    fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(module_config)
+
+    def fake_read_json_to_dict(path: str):
+        if path == "config/scrapy_redis.json":
+            return copy.deepcopy(helper_config)
+        return copy.deepcopy(module_config)
+
+    fake_my_module.read_json_to_dict = fake_read_json_to_dict
     fake_my_module.normalize_release_title_for_filename = fake_normalize_release_title_for_filename
     fake_my_module.sanitize_filename = lambda name: name
+    fake_my_module.update_json_config = lambda _path, _key, _value: None
 
     def fake_write_list_to_file(path: str, content: list[str]) -> bool:
         target_path = Path(path)
@@ -77,6 +103,15 @@ def load_scrapy_sk(config: dict | None = None):
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
+    fake_redis = types.ModuleType("redis")
+
+    class DummyRedis:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_redis.Redis = DummyRedis
+
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_csfd_response = lambda _url: Mock(text="")
     fake_sort_movie_request.get_csfd_movie_details = lambda _response: {
@@ -84,6 +119,14 @@ def load_scrapy_sk(config: dict | None = None):
         "director": "",
         "id": None,
     }
+
+    helper_spec = importlib.util.spec_from_file_location(
+        f"scrapy_redis_test_{uuid.uuid4().hex}",
+        REDIS_HELPER_PATH,
+    )
+    helper_module = importlib.util.module_from_spec(helper_spec)
+    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
+        helper_spec.loader.exec_module(helper_module)
 
     spec = importlib.util.spec_from_file_location(
         f"scrapy_sk_test_{uuid.uuid4().hex}",
@@ -95,12 +138,114 @@ def load_scrapy_sk(config: dict | None = None):
         {
             "my_module": fake_my_module,
             "retrying": fake_retrying,
+            "redis": fake_redis,
+            "scrapy_redis": helper_module,
             "sort_movie_request": fake_sort_movie_request,
         },
     ):
         spec.loader.exec_module(module)
 
+    module._scrapy_redis = helper_module
     return module, temp_dir
+
+
+class FakeRedisPipeline:
+    """最小 Redis pipeline 实现。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.commands = []
+
+    def sadd(self, key: str, value: str):
+        self.commands.append(("sadd", key, value))
+        return self
+
+    def rpush(self, key: str, value: str):
+        self.commands.append(("rpush", key, value))
+        return self
+
+    def execute(self):
+        results = []
+        for command, key, value in self.commands:
+            results.append(getattr(self.client, command)(key, value))
+        self.commands.clear()
+        return results
+
+
+class FakeRedis:
+    """用于测试 SK Redis 队列流程的内存实现。"""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.sets = {}
+        self.lists = {}
+        self.values = {}
+
+    def pipeline(self):
+        return FakeRedisPipeline(self)
+
+    def sadd(self, key: str, value: str) -> int:
+        members = self.sets.setdefault(key, set())
+        if value in members:
+            return 0
+        members.add(value)
+        return 1
+
+    def rpush(self, key: str, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        items.append(value)
+        return len(items)
+
+    def rpoplpush(self, source: str, destination: str):
+        source_items = self.lists.setdefault(source, [])
+        if not source_items:
+            return None
+        value = source_items.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def lrem(self, key: str, count: int, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        removed = 0
+        new_items = []
+        for item in items:
+            if item == value and removed < count:
+                removed += 1
+                continue
+            new_items.append(item)
+        self.lists[key] = new_items
+        return removed
+
+    def llen(self, key: str) -> int:
+        return len(self.lists.get(key, []))
+
+    def lrange(self, key: str, start: int, end: int) -> list[str]:
+        items = self.lists.get(key, [])
+        if end == -1:
+            end = len(items) - 1
+        return items[start:end + 1]
+
+    def get(self, key: str):
+        return self.values.get(key)
+
+    def set(self, key: str, value: str):
+        self.values[key] = value
+        return True
+
+    def delete(self, *keys: str) -> int:
+        deleted = 0
+        for key in keys:
+            if key in self.values:
+                del self.values[key]
+                deleted += 1
+            if key in self.lists:
+                del self.lists[key]
+                deleted += 1
+            if key in self.sets:
+                del self.sets[key]
+                deleted += 1
+        return deleted
 
 
 def build_sk_item_html(
@@ -151,6 +296,10 @@ class TestModuleLoad(unittest.TestCase):
         """模块加载时应把配置里的 cookie 注入请求头。"""
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
 
+    def test_load_scrapy_sk_reads_end_data_from_config(self):
+        """模块加载时应读取配置里的截止日期。"""
+        self.assertEqual(self.module.END_DATA, "15/10/2013")
+
 
 class TestGetSkResponse(unittest.TestCase):
     """验证单页请求逻辑。"""
@@ -170,7 +319,11 @@ class TestGetSkResponse(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/page", headers=self.module.REQUEST_HEAD)
+        mock_get.assert_called_once_with(
+            "https://example.com/page",
+            headers=self.module.REQUEST_HEAD,
+            timeout=20,
+        )
 
     def test_get_sk_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
@@ -187,6 +340,180 @@ class TestGetSkResponse(unittest.TestCase):
                 self.module.get_sk_response("https://example.com/page")
 
 
+class TestSkRowLinkHelpers(unittest.TestCase):
+    """验证 SK 行内链接提取 helper。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_extract_sk_row_links_returns_structured_data(self):
+        """结构完整的列表项应返回分组、标题和详情页链接。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group="2160p",
+                    title="Movie Title",
+                    detail_href="details.php?name=movie&id=321",
+                    metadata="Velkost 15.2 GB | Pridany 25/04/2026",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        result = self.module.extract_sk_row_links(row)
+
+        self.assertEqual(
+            result,
+            {
+                "group": "2160p",
+                "url": "https://example.com/torrent/details.php?name=movie&id=321",
+                "title": "Movie Title",
+            },
+        )
+
+    def test_extract_sk_row_links_returns_none_when_required_links_are_missing(self):
+        """缺少关键链接字段时，应返回 ``None``。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group=None,
+                    title="Missing Group",
+                    detail_href="details.php?name=movie&id=456",
+                    metadata="Velkost 10 GB | Pridany 24/04/2026",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        self.assertIsNone(self.module.extract_sk_row_links(row))
+
+
+class TestParseSkRow(unittest.TestCase):
+    """验证 SK 单行解析逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_parse_sk_row_returns_structured_item(self):
+        """结构完整的列表项应被解析成分组、标题、大小和日期。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group="2160p",
+                    title="Movie Title",
+                    detail_href="details.php?name=movie&id=321",
+                    metadata="Velkost 15.2 GB | Pridany 25/04/2026",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        result = self.module.parse_sk_row(row)
+
+        self.assertEqual(
+            result,
+            {
+                "group": "2160p",
+                "url": "https://example.com/torrent/details.php?name=movie&id=321",
+                "title": "Movie Title",
+                "size": "15.2 GB",
+                "date": "25/04/2026",
+            },
+        )
+
+    def test_parse_sk_row_logs_specific_message_when_links_are_missing(self):
+        """缺少链接字段时，应记录链接字段缺失日志。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group=None,
+                    title="Missing Group",
+                    detail_href="details.php?name=movie&id=456",
+                    metadata="Velkost 10 GB | Pridany 24/04/2026",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        with patch.object(self.module.logger, "info") as mock_info:
+            result = self.module.parse_sk_row(row)
+
+        self.assertIsNone(result)
+        mock_info.assert_called_once_with("跳过：缺少链接字段")
+
+    def test_parse_sk_row_returns_none_when_size_or_date_are_missing(self):
+        """缺少大小日期信息时，应返回 ``None``。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    group="1080p",
+                    title="Missing Meta",
+                    detail_href="details.php?name=movie&id=789",
+                    metadata=None,
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        with patch.object(self.module.logger, "info") as mock_info:
+            result = self.module.parse_sk_row(row)
+
+        self.assertIsNone(result)
+        mock_info.assert_called_once_with(
+            "跳过：缺少大小日期字段 - Missing Meta - https://example.com/torrent/details.php?name=movie&id=789"
+        )
+
+
+class TestSkRowMetadataHelpers(unittest.TestCase):
+    """验证 SK 行内元数据提取 helper。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_extract_sk_row_size_date_accepts_spacing_variants(self):
+        """大小日期文本中的空格不规则时，仍应正确提取。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    metadata="Velkost   2.4 GB|Pridany  27/07/2025",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        result = self.module.extract_sk_row_size_date(row)
+
+        self.assertEqual(
+            result,
+            {
+                "size": "2.4 GB",
+                "date": "27/07/2025",
+            },
+        )
+
+    def test_extract_sk_row_size_date_returns_none_when_text_format_is_invalid(self):
+        """元数据存在但分隔格式不对时，应返回 ``None`` 而不是抛异常。"""
+        row = BeautifulSoup(
+            build_sk_page_html(
+                build_sk_item_html(
+                    metadata="Velkost 2.4 GB Pridany 27/07/2025",
+                )
+            ),
+            "html.parser",
+        ).find("td", class_="lista")
+
+        self.assertIsNone(self.module.extract_sk_row_size_date(row))
+
+
 class TestParseSkResponse(unittest.TestCase):
     """验证 SK 列表页解析逻辑。"""
 
@@ -196,36 +523,8 @@ class TestParseSkResponse(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_parse_sk_response_returns_structured_items(self):
-        """结构完整的列表项应被解析成分组、标题、大小和日期。"""
-        response = Mock(
-            text=build_sk_page_html(
-                build_sk_item_html(
-                    group="2160p",
-                    title="Movie Title",
-                    detail_href="details.php?name=movie&id=321",
-                    metadata="Velkost 15.2 GB | Pridany 25/04/2026",
-                )
-            )
-        )
-
-        result = self.module.parse_sk_response(response)
-
-        self.assertEqual(
-            result,
-            [
-                {
-                    "group": "2160p",
-                    "url": "https://example.com/torrent/details.php?name=movie&id=321",
-                    "title": "Movie Title",
-                    "size": "15.2 GB",
-                    "date": "25/04/2026",
-                }
-            ],
-        )
-
-    def test_parse_sk_response_skips_items_missing_required_fields_or_metadata(self):
-        """缺少必要链接或缺少大小日期信息的项都应被跳过。"""
+    def test_parse_sk_response_collects_only_valid_rows(self):
+        """整页解析时应收集有效行并跳过无效行。"""
         response = Mock(
             text=build_sk_page_html(
                 build_sk_item_html(
@@ -239,12 +538,6 @@ class TestParseSkResponse(unittest.TestCase):
                     title="Missing Group",
                     detail_href="details.php?name=movie&id=456",
                     metadata="Velkost 10 GB | Pridany 24/04/2026",
-                ),
-                build_sk_item_html(
-                    group="1080p",
-                    title="Missing Meta",
-                    detail_href="details.php?name=movie&id=789",
-                    metadata=None,
                 ),
             )
         )
@@ -264,9 +557,38 @@ class TestParseSkResponse(unittest.TestCase):
             ],
         )
 
+    def test_parse_sk_response_passes_each_row_to_parse_sk_row(self):
+        """整页解析应逐行委托给 ``parse_sk_row``。"""
+        response = Mock(
+            text=build_sk_page_html(
+                build_sk_item_html(title="First"),
+                build_sk_item_html(title="Second", detail_href="details.php?name=movie&id=456"),
+            )
+        )
 
-class TestVisitSkUrl(unittest.TestCase):
-    """验证详情页访问与写盘逻辑。"""
+        with patch.object(
+            self.module,
+            "parse_sk_row",
+            side_effect=[
+                {"title": "First"},
+                None,
+            ],
+        ) as mock_parse_row:
+            result = self.module.parse_sk_response(response)
+
+        self.assertEqual(result, [{"title": "First"}])
+        self.assertEqual(mock_parse_row.call_count, 2)
+
+    def test_parse_sk_response_raises_when_no_rows_are_found(self):
+        """页面里找不到任何列表项时，应显式抛错而不是静默返回空列表。"""
+        response = Mock(text="<html><body><div>empty</div></body></html>")
+
+        with self.assertRaisesRegex(RuntimeError, "网站结构可能已变更"):
+            self.module.parse_sk_response(response)
+
+
+class TestSkDetailHelpers(unittest.TestCase):
+    """验证 SK 详情页相关 helper。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_sk()
@@ -274,47 +596,68 @@ class TestVisitSkUrl(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_visit_sk_url_returns_none_when_csfd_link_is_missing(self):
-        """详情页没有 CSFD 图标链接时，应直接返回且不做后续请求。"""
-        result_item = {
-            "title": "Movie Title",
-            "size": "4 GB",
-            "url": "https://example.com/torrent/details.php?name=movie&id=1",
-        }
-        response = Mock(text=build_detail_page_html())
+    def test_extract_csfd_url_from_sk_detail_returns_href(self):
+        """详情页存在 CSFD 图标链接时，应提取其 href。"""
+        result = self.module.extract_csfd_url_from_sk_detail(
+            build_detail_page_html("https://www.csfd.cz/film/123456")
+        )
 
-        with patch.object(self.module, "get_sk_response", return_value=response), patch.object(
-            self.module, "get_csfd_response"
-        ) as mock_get_csfd, patch.object(self.module, "get_csfd_movie_details") as mock_get_details, patch.object(
-            self.module, "write_list_to_file"
-        ) as mock_write:
-            result = self.module.visit_sk_url(result_item)
+        self.assertEqual(result, "https://www.csfd.cz/film/123456")
 
-        self.assertIsNone(result)
-        mock_get_csfd.assert_not_called()
-        mock_get_details.assert_not_called()
-        mock_write.assert_not_called()
+    def test_extract_csfd_url_from_sk_detail_returns_none_when_missing(self):
+        """详情页没有 CSFD 图标链接时，应返回 ``None``。"""
+        self.assertIsNone(self.module.extract_csfd_url_from_sk_detail(build_detail_page_html()))
 
-    def test_visit_sk_url_writes_sk_file_with_normalized_name(self):
-        """存在 CSFD 数据时，应按约定生成文件名并写入详情页链接。"""
+    def test_get_normalized_csfd_data_keeps_existing_id_and_fills_missing_text_fields(self):
+        """已有 IMDb/CSFD ID 时，应保留该 ID，并为缺失文本字段回填空串。"""
+        csfd_response = Mock(text="csfd page")
+
+        with patch.object(self.module, "get_csfd_response", return_value=csfd_response) as mock_get_response, patch.object(
+            self.module, "get_csfd_movie_details", return_value={"id": "tt1234567"}
+        ) as mock_get_details:
+            result = self.module.get_normalized_csfd_data("https://www.csfd.cz/film/123456")
+
+        self.assertEqual(
+            result,
+            {
+                "origin": "",
+                "director": "",
+                "id": "tt1234567",
+            },
+        )
+        mock_get_response.assert_called_once_with("https://www.csfd.cz/film/123456")
+        mock_get_details.assert_called_once_with(csfd_response)
+
+    def test_get_normalized_csfd_data_uses_csfd_fallback_id_with_trailing_slash(self):
+        """缺少 ID 时，应从 CSFD 链接中稳定提取编号，忽略尾部斜杠。"""
+        with patch.object(self.module, "get_csfd_response", return_value=Mock(text="csfd page")), patch.object(
+            self.module, "get_csfd_movie_details", return_value={"origin": "CZ", "director": "Alice", "id": None}
+        ):
+            result = self.module.get_normalized_csfd_data("https://www.csfd.cz/film/654321/")
+
+        self.assertEqual(
+            result,
+            {
+                "origin": "CZ",
+                "director": "Alice",
+                "id": "csfd654321",
+            },
+        )
+
+    def test_build_sk_output_filename_applies_normalization_and_suffix(self):
+        """输出文件名应包含清理后的主体、大小、ID 和 ``.sk`` 后缀。"""
         result_item = {
             "title": "Movie Title",
             "size": "15.2 GB",
             "url": "https://example.com/torrent/details.php?name=movie&id=321",
         }
-        detail_response = Mock(text=build_detail_page_html("https://www.csfd.cz/film/123456"))
-        csfd_response = Mock(text="csfd page")
         csfd_data = {
             "origin": "USA = CSFD 88%",
             "director": "Jane Doe",
             "id": "tt1234567",
         }
 
-        with patch.object(self.module, "get_sk_response", return_value=detail_response), patch.object(
-            self.module, "get_csfd_response", return_value=csfd_response
-        ) as mock_get_csfd, patch.object(
-            self.module, "get_csfd_movie_details", return_value=csfd_data
-        ) as mock_get_details, patch.object(
+        with patch.object(
             self.module,
             "normalize_release_title_for_filename",
             side_effect=fake_normalize_release_title_for_filename,
@@ -323,57 +666,21 @@ class TestVisitSkUrl(unittest.TestCase):
             "sanitize_filename",
             side_effect=lambda name: name,
         ) as mock_sanitize, patch.object(
-            self.module,
-            "write_list_to_file",
-            return_value=True,
-        ) as mock_write:
-            self.module.visit_sk_url(result_item)
+            self.module.logger,
+            "info",
+        ):
+            result = self.module.build_sk_output_filename(result_item, csfd_data)
 
-        mock_get_csfd.assert_called_once_with("https://www.csfd.cz/film/123456")
-        mock_get_details.assert_called_once_with(csfd_response)
         mock_normalize.assert_called_once_with(
             "Movie Title#USA = CSFD 88%#{Jane Doe}",
             extra_cleanup_patterns=(r"\s*=\s*CSFD\s*\d+%",),
         )
         mock_sanitize.assert_called_once_with("Movie Title#USA#{Jane Doe}")
-        mock_write.assert_called_once_with(
-            str(Path(self.module.OUTPUT_DIR) / "Movie Title#USA#{Jane Doe}(15.2 GB)[tt1234567].sk"),
-            ["https://example.com/torrent/details.php?name=movie&id=321"],
-        )
-
-    def test_visit_sk_url_uses_csfd_fallback_id_when_details_have_no_id(self):
-        """CSFD 详情未给出 ID 时，应回退到 CSFD 链接里的编号。"""
-        result_item = {
-            "title": "Movie Title",
-            "size": "6 GB",
-            "url": "https://example.com/torrent/details.php?name=movie&id=654",
-        }
-        detail_response = Mock(text=build_detail_page_html("https://www.csfd.cz/film/654321"))
-        csfd_data = {
-            "origin": "CZ",
-            "director": "Alice",
-            "id": None,
-        }
-
-        with patch.object(self.module, "get_sk_response", return_value=detail_response), patch.object(
-            self.module, "get_csfd_response", return_value=Mock(text="csfd page")
-        ), patch.object(
-            self.module, "get_csfd_movie_details", return_value=csfd_data
-        ), patch.object(
-            self.module,
-            "write_list_to_file",
-            return_value=True,
-        ) as mock_write:
-            self.module.visit_sk_url(result_item)
-
-        mock_write.assert_called_once_with(
-            str(Path(self.module.OUTPUT_DIR) / "Movie Title#CZ#{Alice}(6 GB)[csfd654321].sk"),
-            ["https://example.com/torrent/details.php?name=movie&id=654"],
-        )
+        self.assertEqual(result, "Movie Title#USA#{Jane Doe}(15.2 GB)[tt1234567].sk")
 
 
-class TestProcessAll(unittest.TestCase):
-    """验证并发处理流程。"""
+class TestVisitSkUrl(unittest.TestCase):
+    """验证详情页访问与写盘编排逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_sk()
@@ -381,24 +688,318 @@ class TestProcessAll(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_process_all_collects_success_results_and_logs_failures(self):
-        """单个任务失败时，应记录错误并继续收集其他成功结果。"""
-        items = [{"id": "1"}, {"id": "2"}, {"id": "3"}]
+    def test_visit_sk_url_raises_when_csfd_link_is_missing(self):
+        """详情页没有 CSFD 图标链接时，应抛错交给失败队列处理。"""
+        result_item = {
+            "title": "Movie Title",
+            "size": "4 GB",
+            "url": "https://example.com/torrent/details.php?name=movie&id=1",
+        }
+        response = Mock(text=build_detail_page_html())
 
-        def fake_visit(item):
-            if item["id"] == "2":
+        with patch.object(self.module, "get_sk_response", return_value=response), patch.object(
+            self.module, "extract_csfd_url_from_sk_detail", return_value=None
+        ) as mock_extract, patch.object(self.module, "get_normalized_csfd_data") as mock_get_csfd_data, patch.object(
+            self.module, "build_sk_output_filename"
+        ) as mock_build_name, patch.object(
+            self.module, "write_list_to_file"
+        ) as mock_write:
+            with self.assertRaisesRegex(RuntimeError, "未找到 CSFD 链接"):
+                self.module.visit_sk_url(result_item)
+
+        mock_extract.assert_called_once_with(response.text)
+        mock_get_csfd_data.assert_not_called()
+        mock_build_name.assert_not_called()
+        mock_write.assert_not_called()
+
+    def test_visit_sk_url_delegates_to_helpers_and_writes_detail_url(self):
+        """主流程应串联 helper，并把详情页链接写入最终文件。"""
+        result_item = {
+            "title": "Movie Title",
+            "size": "6 GB",
+            "url": "https://example.com/torrent/details.php?name=movie&id=654",
+        }
+        detail_response = Mock(text=build_detail_page_html("https://www.csfd.cz/film/654321"))
+        csfd_data = {"origin": "CZ", "director": "Alice", "id": "csfd654321"}
+
+        with patch.object(self.module, "get_sk_response", return_value=detail_response), patch.object(
+            self.module, "extract_csfd_url_from_sk_detail", return_value="https://www.csfd.cz/film/654321"
+        ) as mock_extract, patch.object(
+            self.module, "get_normalized_csfd_data", return_value=csfd_data
+        ) as mock_get_csfd_data, patch.object(
+            self.module, "build_sk_output_filename", return_value="Movie Title#CZ#{Alice}(6 GB)[csfd654321].sk"
+        ) as mock_build_name, patch.object(
+            self.module,
+            "write_list_to_file",
+            return_value=True,
+        ) as mock_write:
+            self.module.visit_sk_url(result_item)
+
+        mock_extract.assert_called_once_with(detail_response.text)
+        mock_get_csfd_data.assert_called_once_with("https://www.csfd.cz/film/654321")
+        mock_build_name.assert_called_once_with(result_item, csfd_data)
+        mock_write.assert_called_once_with(
+            str(Path(self.module.OUTPUT_DIR) / "Movie Title#CZ#{Alice}(6 GB)[csfd654321].sk"),
+            ["https://example.com/torrent/details.php?name=movie&id=654"],
+        )
+
+
+class TestSkRedisHelpers(unittest.TestCase):
+    """验证 SK 的 Redis 辅助逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_get_redis_client_uses_shared_config_connection(self):
+        """应按共享 Redis 配置创建客户端。"""
+        module, temp_dir = load_scrapy_sk(
+            {
+                "redis_host": "10.0.0.2",
+                "redis_port": 6380,
+                "redis_db": 5,
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        client = module.get_redis_client()
+
+        self.assertEqual(client.kwargs["host"], "10.0.0.2")
+        self.assertEqual(client.kwargs["port"], 6380)
+        self.assertEqual(client.kwargs["db"], 5)
+        self.assertTrue(client.kwargs["decode_responses"])
+
+    def test_push_items_to_queue_deduplicates_by_url_for_sk_keys(self):
+        """重复 URL 不应重复入队。"""
+        items = [
+            {
+                "group": "2160p",
+                "url": "https://example.com/torrent/details.php?name=movie&id=1",
+                "title": "Movie A",
+                "size": "10 GB",
+                "date": "25/04/2026",
+            },
+            {
+                "group": "2160p",
+                "url": "https://example.com/torrent/details.php?name=movie&id=1",
+                "title": "Movie A",
+                "size": "10 GB",
+                "date": "25/04/2026",
+            },
+        ]
+
+        enqueued_count = self.module.push_items_to_queue(
+            self.redis_client,
+            items,
+            seen_key=self.module.REDIS_SEEN_KEY,
+            pending_key=self.module.REDIS_PENDING_KEY,
+            unique_value=lambda item: item["url"],
+            serializer=lambda item: self.module.serialize_payload(
+                {
+                    "group": item["group"],
+                    "url": item["url"],
+                    "title": item["title"],
+                    "size": item["size"],
+                    "date": item["date"],
+                }
+            ),
+        )
+
+        self.assertEqual(enqueued_count, 1)
+        pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        self.assertEqual(len(pending_payloads), 1)
+        self.assertEqual(
+            self.module.deserialize_payload(pending_payloads[0])["url"],
+            "https://example.com/torrent/details.php?name=movie&id=1",
+        )
+
+    def test_recover_processing_queue_moves_items_back_to_pending_for_sk_keys(self):
+        """中断残留在 processing 的任务应恢复回 pending。"""
+        payload_a = self.module.serialize_payload(
+            {"group": "A", "url": "u1", "title": "A", "size": "1 GB", "date": "25/04/2026"}
+        )
+        payload_b = self.module.serialize_payload(
+            {"group": "B", "url": "u2", "title": "B", "size": "2 GB", "date": "24/04/2026"}
+        )
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_a)
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, payload_b)
+
+        recovered_count = self.module._scrapy_redis.recover_processing_queue(
+            self.redis_client,
+            processing_key=self.module.REDIS_PROCESSING_KEY,
+            pending_key=self.module.REDIS_PENDING_KEY,
+            logger=self.module.logger,
+            queue_label="SK",
+        )
+
+        self.assertEqual(recovered_count, 1)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 2)
+
+    def test_finalize_sk_run_updates_end_data_and_clears_run_state(self):
+        """扫描完成且队列清空后，应回写 end_data 并清理本轮临时状态。"""
+        failed_payload = self.module.serialize_payload(
+            {"group": "A", "url": "u1", "title": "A", "size": "1 GB", "date": "25/04/2026"}
+        )
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(self.module.REDIS_NEXT_END_DATA_KEY, "24/04/2026")
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "3")
+        self.redis_client.sadd(self.module.REDIS_SEEN_KEY, "u1")
+        self.redis_client.rpush(self.module.REDIS_FAILED_KEY, failed_payload)
+
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_sk_run(redis_client=self.redis_client)
+
+        mock_update.assert_called_once_with("config/scrapy_sk.json", "end_data", "24/04/2026")
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY))
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY))
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_FAILED_KEY), 1)
+
+    def test_finalize_sk_run_skips_update_when_pending_tasks_remain(self):
+        """仍有未完成任务时，不应提前回写 end_data。"""
+        payload = self.module.serialize_payload(
+            {"group": "A", "url": "u1", "title": "A", "size": "1 GB", "date": "25/04/2026"}
+        )
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(self.module.REDIS_NEXT_END_DATA_KEY, "24/04/2026")
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload)
+
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_sk_run(redis_client=self.redis_client)
+
+        mock_update.assert_not_called()
+
+
+class TestFetchSkPage(unittest.TestCase):
+    """验证单页抓取流程。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_fetch_sk_page_returns_parsed_result_list(self):
+        """应请求列表页并返回解析结果。"""
+        parsed_page = [{"date": "15/10/2013"}]
+
+        with patch.object(self.module, "get_sk_response", return_value=Mock()) as mock_get, patch.object(
+            self.module, "parse_sk_response", return_value=parsed_page
+        ):
+            result = self.module.fetch_sk_page(0)
+
+        self.assertEqual(result, parsed_page)
+        mock_get.assert_called_once_with("https://example.com/browse?page=0")
+
+    def test_fetch_sk_page_raises_when_parsed_page_is_empty(self):
+        """整页解析结果为空时，应显式报错停止后续翻页。"""
+        with patch.object(self.module, "get_sk_response", return_value=Mock()), patch.object(
+            self.module, "parse_sk_response", return_value=[]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "解析结果为空"):
+                self.module.fetch_sk_page(1)
+
+
+class TestEnqueueSkPosts(unittest.TestCase):
+    """验证 SK 列表扫描入队逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_enqueue_sk_posts_scans_until_end_date_and_persists_resume_state(self):
+        """应逐页入队，命中截止日期后标记扫描完成。"""
+        parsed_pages = [
+            [
+                {"group": "A", "url": "u1", "title": "Movie A", "size": "1 GB", "date": "25/04/2026"},
+                {"group": "B", "url": "u2", "title": "Movie B", "size": "2 GB", "date": "24/04/2026"},
+            ],
+            [
+                {"group": "C", "url": "u3", "title": "Movie C", "size": "3 GB", "date": "15/10/2013"},
+            ],
+        ]
+
+        with patch.object(self.module, "fetch_sk_page", side_effect=parsed_pages) as mock_fetch:
+            self.module.enqueue_sk_posts(start_page=0, end_data="15/10/2013", redis_client=self.redis_client)
+
+        self.assertEqual(mock_fetch.call_args_list, [call(0), call(1)])
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "2")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "24/04/2026")
+        pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
+        pending_urls = [self.module.deserialize_payload(payload)["url"] for payload in pending_payloads]
+        self.assertEqual(pending_urls, ["u1", "u2", "u3"])
+
+    def test_enqueue_sk_posts_resumes_from_saved_page_and_keeps_existing_next_end_data(self):
+        """恢复扫描时应从 Redis 里的页码继续，且不重算已有的下一轮截止日期。"""
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "3")
+        self.redis_client.set(self.module.REDIS_NEXT_END_DATA_KEY, "24/03/2026")
+
+        with patch.object(
+            self.module,
+            "fetch_sk_page",
+            return_value=[{"group": "A", "url": "u4", "title": "Movie D", "size": "4 GB", "date": "01/05/2026"}],
+        ) as mock_fetch:
+            self.module.enqueue_sk_posts(start_page=0, end_data="01/05/2026", redis_client=self.redis_client)
+
+        mock_fetch.assert_called_once_with(3)
+        self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "24/03/2026")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+
+
+class TestDrainSkQueue(unittest.TestCase):
+    """验证 SK 队列消费逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_drain_sk_queue_processes_pending_items_and_records_failures(self):
+        """消费队列时，成功任务应清理 processing，失败任务应进入 failed。"""
+        payload_success = self.module.serialize_payload(
+            {"group": "A", "url": "https://example.com/topic/101", "title": "A", "size": "1 GB", "date": "25/04/2026"}
+        )
+        payload_fail = self.module.serialize_payload(
+            {"group": "B", "url": "https://example.com/topic/102", "title": "B", "size": "2 GB", "date": "24/04/2026"}
+        )
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_success)
+        self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_fail)
+
+        def fake_visit_sk_url(info: dict) -> None:
+            if info["url"].endswith("102"):
                 raise RuntimeError("boom")
-            return f"ok-{item['id']}"
 
-        with patch.object(self.module, "visit_sk_url", side_effect=fake_visit), patch.object(
-            self.module.logger, "error"
-        ) as mock_error:
-            result = self.module.process_all(items, max_workers=2)
+        with patch.object(self.module, "visit_sk_url", side_effect=fake_visit_sk_url) as mock_visit, patch.object(
+            self.module.logger, "exception"
+        ) as mock_exception:
+            self.module.drain_sk_queue(redis_client=self.redis_client)
 
-        self.assertCountEqual(result, ["ok-1", "ok-3"])
-        mock_error.assert_called_once()
-        self.assertIn("boom", mock_error.call_args.args[0])
-        self.assertIn("'id': '2'", mock_error.call_args.args[0])
+        self.assertEqual(mock_visit.call_count, 2)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        failed_payloads = self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)
+        self.assertEqual(len(failed_payloads), 1)
+        self.assertEqual(
+            self.module.deserialize_payload(failed_payloads[0])["url"],
+            "https://example.com/topic/102",
+        )
+        self.assertIn("https://example.com/topic/102", mock_exception.call_args[0][0])
+
+    def test_drain_sk_queue_logs_when_queue_is_empty(self):
+        """没有待处理任务时，应输出空队列提示并直接返回。"""
+        with patch.object(self.module.logger, "info") as mock_info:
+            self.module.drain_sk_queue(redis_client=self.redis_client)
+
+        self.assertIn("SK 队列为空，没有待处理任务", [call.args[0] for call in mock_info.call_args_list])
 
 
 class TestScrapySkMain(unittest.TestCase):
@@ -406,48 +1007,45 @@ class TestScrapySkMain(unittest.TestCase):
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_sk()
+        self.redis_client = FakeRedis()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_scrapy_sk_stops_immediately_when_first_page_contains_end_date(self):
-        """第一页命中截止日期时，应立即停止且只处理一页。"""
-        parsed_page = [{"date": "15/10/2013"}]
+    def test_scrapy_sk_calls_enqueue_drain_and_finalize_with_shared_redis_client(self):
+        """入口函数应依次执行入队、消费和收尾，并复用同一个 Redis 客户端。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client) as mock_get_redis, patch.object(
+            self.module, "enqueue_sk_posts"
+        ) as mock_enqueue, patch.object(
+            self.module, "drain_sk_queue"
+        ) as mock_drain, patch.object(
+            self.module, "finalize_sk_run"
+        ) as mock_finalize:
+            self.module.scrapy_sk(start_page=2)
 
-        with patch.object(self.module, "get_sk_response", return_value=Mock()) as mock_get, patch.object(
-            self.module, "parse_sk_response", return_value=parsed_page
-        ), patch.object(self.module, "process_all") as mock_process:
-            self.module.scrapy_sk()
+        mock_get_redis.assert_called_once_with()
+        mock_enqueue.assert_called_once_with(start_page=2, redis_client=self.redis_client)
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
 
-        mock_get.assert_called_once_with("https://example.com/browse?page=0")
-        mock_process.assert_called_once_with(parsed_page, max_workers=25)
 
-    def test_scrapy_sk_advances_pages_until_end_date_is_found(self):
-        """未命中截止日期时应继续翻页，直到某一页包含截止日期。"""
-        parsed_pages = [
-            [{"date": "03/05/2026"}],
-            [{"date": "02/05/2026"}, {"date": "01/05/2026"}],
-        ]
+class TestScrapySkDateHelpers(unittest.TestCase):
+    """验证 SK 截止日期 helper。"""
 
-        with patch.object(self.module, "get_sk_response", side_effect=[Mock(), Mock()]) as mock_get, patch.object(
-            self.module, "parse_sk_response", side_effect=parsed_pages
-        ), patch.object(self.module, "process_all") as mock_process:
-            self.module.scrapy_sk(start_page=2, end_data="01/05/2026")
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_sk()
 
-        self.assertEqual(
-            mock_get.call_args_list,
-            [
-                call("https://example.com/browse?page=2"),
-                call("https://example.com/browse?page=3"),
-            ],
-        )
-        self.assertEqual(
-            mock_process.call_args_list,
-            [
-                call([{"date": "03/05/2026"}], max_workers=25),
-                call([{"date": "02/05/2026"}, {"date": "01/05/2026"}], max_workers=25),
-            ],
-        )
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_get_previous_day_returns_previous_calendar_day(self):
+        """应返回输入日期的前一天。"""
+        self.assertEqual(self.module.get_previous_day("01/05/2026"), "30/04/2026")
+
+    def test_get_current_end_data_reads_latest_value_from_config(self):
+        """应在运行时读取当前配置里的截止日期。"""
+        with patch.object(self.module, "read_json_to_dict", return_value={"end_data": "01/05/2026"}):
+            self.assertEqual(self.module.get_current_end_data(), "01/05/2026")
 
 
 if __name__ == "__main__":

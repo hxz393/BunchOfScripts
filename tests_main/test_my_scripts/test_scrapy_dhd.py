@@ -25,6 +25,7 @@ import requests
 requests.packages.urllib3.disable_warnings()
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_dhd.py"
+REDIS_HELPER_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
 
 
 def fake_bencode_encode(value):
@@ -100,19 +101,30 @@ def load_scrapy_dhd(config: dict | None = None):
         "request_head": {"User-Agent": "unit-test"},
         "output_dir": str(Path(temp_dir.name) / "downloads"),
         "thread_number": 3,
-        "redis_host": "127.0.0.1",
-        "redis_port": 6379,
-        "redis_db": 0,
         "redis_pending_key": "dhd_pending",
         "redis_processing_key": "dhd_processing",
         "redis_failed_key": "dhd_failed",
         "redis_seen_key": "dhd_seen",
     }
+    helper_config = {
+        "redis_host": "127.0.0.1",
+        "redis_port": 6379,
+        "redis_db": 0,
+    }
     if config:
         module_config.update(config)
+        for key in ("redis_host", "redis_port", "redis_db"):
+            if key in config:
+                helper_config[key] = config[key]
 
     fake_my_module = types.ModuleType("my_module")
-    fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(module_config)
+
+    def fake_read_json_to_dict(path: str):
+        if path == "config/scrapy_redis.json":
+            return copy.deepcopy(helper_config)
+        return copy.deepcopy(module_config)
+
+    fake_my_module.read_json_to_dict = fake_read_json_to_dict
     fake_my_module.sanitize_filename = lambda name: name
 
     def fake_write_list_to_file(path: str, content: list[str]) -> bool:
@@ -159,6 +171,14 @@ def load_scrapy_dhd(config: dict | None = None):
     fake_bencodepy.encode = fake_bencode_encode
     fake_bencodepy.decode = fake_bencode_decode
 
+    helper_spec = importlib.util.spec_from_file_location(
+        f"scrapy_redis_test_{uuid.uuid4().hex}",
+        REDIS_HELPER_PATH,
+    )
+    helper_module = importlib.util.module_from_spec(helper_spec)
+    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
+        helper_spec.loader.exec_module(helper_module)
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_dhd_test_{uuid.uuid4().hex}",
         MODULE_PATH,
@@ -170,11 +190,13 @@ def load_scrapy_dhd(config: dict | None = None):
             "my_module": fake_my_module,
             "retrying": fake_retrying,
             "redis": fake_redis,
+            "scrapy_redis": helper_module,
             "bencodepy": fake_bencodepy,
         },
     ):
         spec.loader.exec_module(module)
 
+    module._scrapy_redis = helper_module
     return module, temp_dir
 
 
@@ -704,20 +726,26 @@ class TestScrapyDhd(unittest.TestCase):
             ],
         )
         pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
-        pending_ids = [self.module.deserialize_dhd_info(payload)["id"] for payload in pending_payloads]
+        pending_ids = [self.module.deserialize_payload(payload)["id"] for payload in pending_payloads]
         self.assertEqual(pending_ids, ["101", "105", "103"])
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 105)
 
-    def test_recover_dhd_processing_queue_moves_items_back_to_pending(self):
+    def test_recover_processing_queue_moves_items_back_to_pending_for_dhd_keys(self):
         """中断残留在 processing 的任务应恢复回 pending。"""
-        payload_a = self.module.serialize_dhd_info({"id": "101", "name": "A", "url": "u1"})
-        payload_b = self.module.serialize_dhd_info({"id": "102", "name": "B", "url": "u2"})
-        payload_c = self.module.serialize_dhd_info({"id": "103", "name": "C", "url": "u3"})
+        payload_a = self.module.serialize_payload({"id": "101", "name": "A", "url": "u1"})
+        payload_b = self.module.serialize_payload({"id": "102", "name": "B", "url": "u2"})
+        payload_c = self.module.serialize_payload({"id": "103", "name": "C", "url": "u3"})
         self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_a)
         self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, payload_b)
         self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, payload_c)
 
-        recovered_count = self.module.recover_dhd_processing_queue(self.redis_client)
+        recovered_count = self.module._scrapy_redis.recover_processing_queue(
+            self.redis_client,
+            processing_key=self.module.REDIS_PROCESSING_KEY,
+            pending_key=self.module.REDIS_PENDING_KEY,
+            logger=self.module.logger,
+            queue_label="DHD",
+        )
 
         self.assertEqual(recovered_count, 2)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
@@ -725,10 +753,10 @@ class TestScrapyDhd(unittest.TestCase):
 
     def test_drain_dhd_queue_processes_pending_items_and_records_failures(self):
         """消费队列时，成功任务应清理 processing，失败任务应进入 failed。"""
-        payload_success = self.module.serialize_dhd_info(
+        payload_success = self.module.serialize_payload(
             {"id": "101", "name": "A", "url": "https://example.com/topic/101"}
         )
-        payload_fail = self.module.serialize_dhd_info(
+        payload_fail = self.module.serialize_payload(
             {"id": "102", "name": "B", "url": "https://example.com/topic/102"}
         )
         self.redis_client.rpush(self.module.REDIS_PENDING_KEY, payload_success)
@@ -748,7 +776,7 @@ class TestScrapyDhd(unittest.TestCase):
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
         failed_payloads = self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)
         self.assertEqual(len(failed_payloads), 1)
-        self.assertEqual(self.module.deserialize_dhd_info(failed_payloads[0])["id"], "102")
+        self.assertEqual(self.module.deserialize_payload(failed_payloads[0])["id"], "102")
         self.assertIn("https://example.com/topic/102", mock_error.call_args[0][0])
 
     def test_drain_dhd_queue_logs_when_queue_is_empty(self):

@@ -8,9 +8,10 @@
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from typing import cast
 
+import redis
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
@@ -21,6 +22,13 @@ from my_module import (
     sanitize_filename,
     update_json_config,
     write_list_to_file,
+)
+from scrapy_redis import (
+    deserialize_payload,
+    drain_queue,
+    get_redis_client,
+    push_items_to_queue,
+    serialize_payload,
 )
 from sort_movie_request import get_csfd_response, get_csfd_movie_details
 
@@ -38,6 +46,14 @@ OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 END_DATA = CONFIG['end_data']  # 截止日期
 
+REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'sk_pending')  # 待处理队列
+REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'sk_processing')  # 处理中队列
+REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'sk_failed')  # 失败队列
+REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'sk_seen')  # 已入队项目集合
+REDIS_SCAN_PAGE_KEY = CONFIG.get('redis_scan_page_key', 'sk_scan_page')  # 列表扫描断点页码
+REDIS_SCAN_COMPLETE_KEY = CONFIG.get('redis_scan_complete_key', 'sk_scan_complete')  # 列表扫描完成标记
+REDIS_NEXT_END_DATA_KEY = CONFIG.get('redis_next_end_data_key', 'sk_next_end_data')  # 下一轮截止日期
+
 REQUEST_HEAD["Cookie"] = SK_COOKIE  # 请求头加入认证
 
 
@@ -48,29 +64,13 @@ def get_previous_day(date_str: str) -> str:
     return previous_day.strftime("%d/%m/%Y")
 
 
-def scrapy_sk(start_page: int = 0) -> None:
-    """
-    抓取发布信息写入到文件。
-    """
-    logger.info("抓取 sk 站点发布信息")
-    new_end_data = None
-    while True:
-        should_stop, first_item_date = process_sk_page(start_page, END_DATA)
-        if new_end_data is None:
-            new_end_data = get_previous_day(first_item_date)
-
-        if should_stop:
-            logger.info("没有新发布，完成")
-            break
-
-        logger.warning("-" * 255)
-        start_page += 1
-
-    update_json_config(CONFIG_PATH, "end_data", new_end_data)
+def get_current_end_data() -> str:
+    """读取当前配置中的截止日期，避免同进程多次运行时使用过期值。"""
+    return read_json_to_dict(CONFIG_PATH).get("end_data", END_DATA)
 
 
-def process_sk_page(page_no: int, end_data: str) -> tuple[bool, str]:
-    """抓取并处理单个 SK 列表页。"""
+def fetch_sk_page(page_no: int) -> list[dict]:
+    """抓取并解析单个 SK 列表页。"""
     logger.info(f"抓取第 {page_no} 页")
     url = f"{SK_MOVIE_URL}{page_no}"
     response = get_sk_response(url)
@@ -78,29 +78,124 @@ def process_sk_page(page_no: int, end_data: str) -> tuple[bool, str]:
     if not result_list:
         raise RuntimeError("SK 列表页解析结果为空，网站结构可能已变更")
     logger.info(f"共 {len(result_list)} 个结果")
-    process_all(result_list)
-    first_item_date = result_list[0]['date']
-    should_stop = end_data in (result_item['date'] for result_item in result_list)
-    return should_stop, first_item_date
+    return result_list
 
 
-def process_all(result_list):
+def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_client: redis.Redis | None = None) -> None:
+    """顺序翻页，收集帖子并写入 Redis 待处理队列。"""
+    if end_data is None:
+        end_data = get_current_end_data()
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    if redis_client.get(REDIS_SCAN_COMPLETE_KEY) == "1":
+        logger.info("SK 列表扫描已完成，跳过入队阶段")
+        return
+
+    saved_page = cast(str | None, redis_client.get(REDIS_SCAN_PAGE_KEY))
+    current_page = int(saved_page) if saved_page is not None else start_page
+    if saved_page is None:
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+    else:
+        logger.info(f"从第 {current_page} 页继续扫描")
+
+    while True:
+        result_list = fetch_sk_page(current_page)
+        if redis_client.get(REDIS_NEXT_END_DATA_KEY) is None:
+            redis_client.set(REDIS_NEXT_END_DATA_KEY, get_previous_day(result_list[0]["date"]))
+
+        enqueued_count = push_items_to_queue(
+            redis_client,
+            result_list,
+            seen_key=REDIS_SEEN_KEY,
+            pending_key=REDIS_PENDING_KEY,
+            unique_value=lambda item: item["url"],
+            serializer=lambda item: serialize_payload(
+                {
+                    "group": item["group"],
+                    "url": item["url"],
+                    "title": item["title"],
+                    "size": item["size"],
+                    "date": item["date"],
+                }
+            ),
+        )
+        logger.info(f"第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条")
+
+        should_stop = end_data in (result_item['date'] for result_item in result_list)
+        if should_stop:
+            redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
+            redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page + 1))
+            logger.info("SK 列表扫描完成")
+            break
+
+        current_page += 1
+        redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+        logger.warning("-" * 255)
+
+
+def drain_sk_queue(redis_client: redis.Redis | None = None) -> None:
+    """从 Redis 队列中取帖子，使用多线程访问详情页并写出 .sk 文件。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    drain_queue(
+        redis_client,
+        pending_key=REDIS_PENDING_KEY,
+        processing_key=REDIS_PROCESSING_KEY,
+        failed_key=REDIS_FAILED_KEY,
+        max_workers=THREAD_NUMBER,
+        worker=visit_sk_url,
+        deserialize=deserialize_payload,
+        logger=logger,
+        queue_label="SK",
+        identify_item=lambda info: info["url"],
+        log_traceback=True,
+    )
+
+
+def finalize_sk_run(redis_client: redis.Redis | None = None) -> None:
+    """在扫描和详情任务都结束后，回写 end_data 并清理本轮运行状态。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    if redis_client.get(REDIS_SCAN_COMPLETE_KEY) != "1":
+        logger.info("SK 列表扫描尚未完成，暂不回写 end_data")
+        return
+
+    if redis_client.llen(REDIS_PENDING_KEY) or redis_client.llen(REDIS_PROCESSING_KEY):
+        logger.info("SK 队列仍有未完成任务，暂不回写 end_data")
+        return
+
+    next_end_data = cast(str | None, redis_client.get(REDIS_NEXT_END_DATA_KEY))
+    if not next_end_data:
+        logger.warning("SK 未记录新的 end_data，跳过配置更新")
+        return
+
+    update_json_config(CONFIG_PATH, "end_data", next_end_data)
+    redis_client.delete(
+        REDIS_PENDING_KEY,
+        REDIS_PROCESSING_KEY,
+        REDIS_SEEN_KEY,
+        REDIS_SCAN_PAGE_KEY,
+        REDIS_SCAN_COMPLETE_KEY,
+        REDIS_NEXT_END_DATA_KEY,
+    )
+
+    failed_count = redis_client.llen(REDIS_FAILED_KEY)
+    if failed_count:
+        logger.warning(f"SK 队列有 {failed_count} 条失败任务保留在 Redis 中待手动排查")
+
+
+def scrapy_sk(start_page: int = 0) -> None:
     """
-    并发调用 visit_sk_url，result_list 中每个元素都会被提交到线程池执行。
+    先翻页入 Redis，再从 Redis 队列中多线程抓取详情。
     """
-    with ThreadPoolExecutor(THREAD_NUMBER) as executor:
-        # 提交所有任务
-        future_to_item = {
-            executor.submit(visit_sk_url, item): item
-            for item in result_list
-        }
-        # 按完成顺序收集结果或捕获异常
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            try:
-                future.result()
-            except Exception as exc:
-                logger.exception(f"[ERROR] {item} -> {exc!r}")
+    logger.info("抓取 sk 站点发布信息")
+    redis_client = get_redis_client()
+    enqueue_sk_posts(start_page=start_page, redis_client=redis_client)
+    drain_sk_queue(redis_client=redis_client)
+    finalize_sk_run(redis_client=redis_client)
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
@@ -235,7 +330,7 @@ def visit_sk_url(result_item: dict):
     response = get_sk_response(url)
     csfd_url = extract_csfd_url_from_sk_detail(response.text)
     if not csfd_url:
-        return
+        raise RuntimeError(f"未找到 CSFD 链接：{url}")
 
     csfd_data = get_normalized_csfd_data(csfd_url)
     file_name = build_sk_output_filename(result_item, csfd_data)

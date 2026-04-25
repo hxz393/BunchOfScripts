@@ -7,7 +7,6 @@
 """
 import concurrent.futures
 import hashlib
-import json
 import logging
 import os
 import re
@@ -21,6 +20,13 @@ from bs4 import BeautifulSoup
 from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, update_json_config, read_file_to_list
+from scrapy_redis import (
+    deserialize_payload,
+    drain_queue,
+    get_redis_client,
+    push_items_to_queue,
+    serialize_payload,
+)
 
 requests.packages.urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
@@ -36,7 +42,6 @@ DHD_COOKIE = CONFIG['dhd_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 并发数
-REDIS_HOST = CONFIG['redis_host']  # Redis 主机
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'dhd_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'dhd_processing')  # 处理中队列
@@ -109,52 +114,6 @@ def working_dhd(info: dict) -> None:
     write_list_to_file(file_path, content)
 
 
-def get_dhd_redis_client() -> redis.Redis:
-    """获取 DHD 任务队列使用的 Redis 客户端。"""
-    return redis.Redis(host=REDIS_HOST, decode_responses=True)
-
-
-def serialize_dhd_info(info: dict) -> str:
-    """将帖子信息序列化为 Redis 中保存的字符串。"""
-    payload = {
-        "id": str(info["id"]),
-        "name": info["name"],
-        "url": info["url"],
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-
-def deserialize_dhd_info(payload: str) -> dict:
-    """将 Redis 中保存的字符串还原为帖子信息。"""
-    return json.loads(payload)
-
-
-def push_dhd_posts_to_queue(redis_client: redis.Redis, items: list[dict]) -> int:
-    """
-    将新帖子写入 Redis 队列，并使用 set 做去重。
-    返回本次真正入队的任务数量。
-    """
-    if not items:
-        return 0
-
-    pipe = redis_client.pipeline()
-    for item in items:
-        pipe.sadd(REDIS_SEEN_KEY, str(item["id"]))
-    added_results = pipe.execute()
-
-    queue_pipe = redis_client.pipeline()
-    enqueued_count = 0
-    for added, item in zip(added_results, items):
-        if added:
-            queue_pipe.rpush(REDIS_PENDING_KEY, serialize_dhd_info(item))
-            enqueued_count += 1
-
-    if enqueued_count:
-        queue_pipe.execute()
-
-    return enqueued_count
-
-
 def fetch_dhd_batch(start_page: int, pages_per_batch: int = 1, max_batch_attempts: int = 5) -> list:
     """抓取一批列表页，并在返回空结果时按批次重试。"""
     batch_attempt = 0
@@ -189,7 +148,7 @@ def enqueue_dhd_posts(start_page: int = 1, redis_client: redis.Redis | None = No
     """顺序翻页，收集新帖子并写入 Redis 待处理队列。"""
     logger.info("抓取 dhd 站点发布信息")
     if redis_client is None:
-        redis_client = get_dhd_redis_client()
+        redis_client = get_redis_client()
 
     max_ids = []
     pages_per_batch = 1
@@ -202,7 +161,20 @@ def enqueue_dhd_posts(start_page: int = 1, redis_client: redis.Redis | None = No
             logger.info("没有新发布")
             break
 
-        enqueued_count = push_dhd_posts_to_queue(redis_client, new_list)
+        enqueued_count = push_items_to_queue(
+            redis_client,
+            new_list,
+            seen_key=REDIS_SEEN_KEY,
+            pending_key=REDIS_PENDING_KEY,
+            unique_value=lambda item: str(item["id"]),
+            serializer=lambda item: serialize_payload(
+                {
+                    "id": str(item["id"]),
+                    "name": item["name"],
+                    "url": item["url"],
+                }
+            ),
+        )
         logger.info(f"第 {start_page} 页新增 {len(new_list)} 条，入队 {enqueued_count} 条")
 
         start_page += pages_per_batch
@@ -212,83 +184,23 @@ def enqueue_dhd_posts(start_page: int = 1, redis_client: redis.Redis | None = No
     update_json_config(CONFIG_PATH, "newest_id", max_id)
 
 
-def recover_dhd_processing_queue(redis_client: redis.Redis) -> int:
-    """将中断时残留在 processing 队列中的任务恢复回 pending 队列。"""
-    recovered_count = 0
-    while True:
-        payload = redis_client.rpoplpush(REDIS_PROCESSING_KEY, REDIS_PENDING_KEY)
-        if not payload:
-            break
-        recovered_count += 1
-
-    if recovered_count:
-        logger.warning(f"恢复 {recovered_count} 条未完成的 DHD 任务回待处理队列")
-
-    return recovered_count
-
-
-def pop_next_dhd_payload(redis_client: redis.Redis) -> str | None:
-    """从 pending 队列中取出一个任务，并移动到 processing 队列。"""
-    return redis_client.rpoplpush(REDIS_PENDING_KEY, REDIS_PROCESSING_KEY)
-
-
 def drain_dhd_queue(redis_client: redis.Redis | None = None) -> None:
     """从 Redis 队列中取帖子，使用多线程访问详情页并写出 .dhd 文件。"""
     if redis_client is None:
-        redis_client = get_dhd_redis_client()
+        redis_client = get_redis_client()
 
-    recover_dhd_processing_queue(redis_client)
-    initial_pending_count = redis_client.llen(REDIS_PENDING_KEY)
-    if initial_pending_count == 0:
-        logger.info("DHD 队列为空，没有待处理任务")
-        return
-
-    logger.info(f"DHD 队列开始处理：待处理 {initial_pending_count} 条")
-    processed_count = 0
-    success_count = 0
-    failed_count = 0
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_NUMBER) as executor:
-        future_to_task = {}
-
-        while True:
-            while len(future_to_task) < THREAD_NUMBER:
-                payload = pop_next_dhd_payload(redis_client)
-                if not payload:
-                    break
-                info = deserialize_dhd_info(payload)
-                future = executor.submit(working_dhd, info)
-                future_to_task[future] = (payload, info)
-
-            if not future_to_task:
-                break
-
-            done, _ = concurrent.futures.wait(
-                future_to_task,
-                return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            for future in done:
-                payload, info = future_to_task.pop(future)
-                processed_count += 1
-                try:
-                    future.result()
-                    success_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"抓取出错：{info['url']}，错误：{e}")
-                    redis_client.rpush(REDIS_FAILED_KEY, payload)
-                finally:
-                    redis_client.lrem(REDIS_PROCESSING_KEY, 1, payload)
-
-                if processed_count % 100 == 0:
-                    remaining_count = redis_client.llen(REDIS_PENDING_KEY) + len(future_to_task)
-                    logger.info(
-                        f"DHD 队列进度：已处理 {processed_count} 条，成功 {success_count} 条，"
-                        f"失败 {failed_count} 条，剩余约 {remaining_count} 条"
-                    )
-
-    logger.info(
-        f"DHD 队列处理完成：总计 {processed_count} 条，成功 {success_count} 条，失败 {failed_count} 条"
+    drain_queue(
+        redis_client,
+        pending_key=REDIS_PENDING_KEY,
+        processing_key=REDIS_PROCESSING_KEY,
+        failed_key=REDIS_FAILED_KEY,
+        max_workers=THREAD_NUMBER,
+        worker=working_dhd,
+        deserialize=deserialize_payload,
+        logger=logger,
+        queue_label="DHD",
+        identify_item=lambda info: info["url"],
+        progress_every=100,
     )
 
 
