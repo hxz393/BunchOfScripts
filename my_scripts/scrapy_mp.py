@@ -100,36 +100,48 @@ def parse_mp_response(response: requests.Response) -> list:
         return results
 
     for art in container.find_all('article', class_='item movies'):
-        data_div = art.find('div', class_='data')
-        if not data_div:
-            continue
-
-        h3 = data_div.find('h3')
-        if not h3:
-            continue
-
-        h3_a = h3.find('a', href=True)
-        if not h3_a:
-            continue
-        title = h3_a.get_text(strip=True)
-        link = h3_a['href']
-
-        span = data_div.find('span')
-        year = ''
-        if span:
-            text = span.get_text(strip=True)
-            # 圆整年份，支持如 "Jul. 20, 1990" 或 "1990"
-            match = re.search(r'\b(19|20)\d{2}\b', text)
-            if match:
-                year = match.group(0)
-
-        results.append({
-            'title': title,
-            'link': link,
-            'year': year
-        })
+        result_item = parse_mp_article(art)
+        if result_item is not None:
+            results.append(result_item)
 
     return results
+
+
+def parse_mp_article(article) -> dict | None:
+    """解析单个列表页条目。"""
+    data_div = article.find('div', class_='data')
+    if not data_div:
+        logger.warning("mp 列表条目缺少 data 容器，已跳过")
+        return None
+
+    h3 = data_div.find('h3')
+    if not h3:
+        logger.warning("mp 列表条目缺少 h3 标题节点，已跳过")
+        return None
+
+    h3_a = h3.find('a', href=True)
+    if not h3_a:
+        logger.warning("mp 列表条目缺少标题链接，已跳过")
+        return None
+    title = h3_a.get_text(strip=True)
+    link = h3_a['href']
+
+    span = data_div.find('span')
+    year = ''
+    if span:
+        text = span.get_text(strip=True)
+        # 圆整年份，支持如 "Jul. 20, 1990" 或 "1990"
+        match = re.search(r'\b(19|20)\d{2}\b', text)
+        if match:
+            year = match.group(0)
+    if not year:
+        logger.warning(f"mp 列表条目缺少年份：{title}")
+
+    return {
+        'title': title,
+        'link': link,
+        'year': year
+    }
 
 
 def is_mp_image_reference_line(line: str) -> bool:
