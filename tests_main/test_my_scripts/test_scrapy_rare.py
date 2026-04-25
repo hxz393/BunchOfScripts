@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
+from bs4 import BeautifulSoup
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_rare.py"
 
@@ -90,7 +91,7 @@ class TestGetRareResponse(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/post", headers=self.module.REQUEST_HEAD)
+        mock_get.assert_called_once_with("https://example.com/post", headers=self.module.REQUEST_HEAD, timeout=20)
 
     def test_get_rare_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
@@ -183,6 +184,95 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(self.module.parse_response(response), {})
 
 
+class TestFindEntry(unittest.TestCase):
+    """验证正文容器定位逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_rare()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_find_entry_prefers_entry_content_when_both_candidates_exist(self):
+        """同时存在两个候选容器时，应优先使用 ``entry-content``。"""
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <div class="entry-content"><p>primary</p></div>
+                <div class="entry"><p>fallback</p></div>
+              </body>
+            </html>
+            """,
+            "html.parser",
+        )
+
+        entry = self.module.find_entry(soup)
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.get_text(strip=True), "primary")
+
+
+class TestExtractEntryLines(unittest.TestCase):
+    """验证正文行提取逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_rare()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_extract_entry_lines_keeps_bare_link_when_anchor_has_no_text(self):
+        """链接只有图片或空文本时，应直接保留裸 URL。"""
+        entry = BeautifulSoup(
+            """
+            <div class="entry-content">
+              <p><a href="https://example.com/image-link"><img src="cover.jpg" /></a></p>
+            </div>
+            """,
+            "html.parser",
+        ).select_one("div.entry-content")
+
+        result = self.module.extract_entry_lines(entry)
+
+        self.assertEqual(result, ["https://example.com/image-link"])
+
+    def test_extract_entry_lines_flattens_br_and_skips_empty_paragraphs(self):
+        """``br`` 应压成空格，空段落和清空后的图片段不应写入结果。"""
+        entry = BeautifulSoup(
+            """
+            <div class="entry-content">
+              <p>Alpha<br/>Beta</p>
+              <p>   </p>
+              <p><img src="only-image.jpg" /></p>
+            </div>
+            """,
+            "html.parser",
+        ).select_one("div.entry-content")
+
+        result = self.module.extract_entry_lines(entry)
+
+        self.assertEqual(result, ["Alpha Beta"])
+
+
+class TestBuildFileName(unittest.TestCase):
+    """验证文件名拼装逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_rare()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_build_file_name_uses_empty_imdb_placeholder_when_missing(self):
+        """正文里缺少 IMDb 时，应保留空占位符。"""
+        soup = BeautifulSoup("<html><head><title>No IMDb</title></head></html>", "html.parser")
+
+        result = self.module.build_file_name(soup, "plain text without imdb")
+
+        self.assertEqual(result, "No IMDb[].rare")
+
+
 class TestProcessAll(unittest.TestCase):
     """验证批量多线程编排逻辑。"""
 
@@ -192,15 +282,15 @@ class TestProcessAll(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_process_all_collects_completed_results(self):
-        """所有任务成功时，应收集每个 future 的返回值。"""
+    def test_process_all_runs_all_tasks_without_collecting_results(self):
+        """批处理流程只负责执行任务，不再返回无意义的结果列表。"""
         with patch.object(self.module, "visit_rare_url", side_effect=lambda link: f"done:{link}"):
             result = self.module.process_all(["u1", "u2"], max_workers=2)
 
-        self.assertEqual(set(result), {"done:u1", "done:u2"})
+        self.assertIsNone(result)
 
-    def test_process_all_logs_errors_and_keeps_successful_results(self):
-        """单个任务失败时，应记录错误并保留其余成功结果。"""
+    def test_process_all_logs_errors_without_raising(self):
+        """单个任务失败时，应记录错误且不向上抛出。"""
 
         def fake_visit(link: str):
             if link == "bad":
@@ -213,7 +303,7 @@ class TestProcessAll(unittest.TestCase):
         ) as logs:
             result = self.module.process_all(["good", "bad"], max_workers=1)
 
-        self.assertEqual(result, ["done:good"])
+        self.assertIsNone(result)
         self.assertIn("[ERROR] bad -> RuntimeError('boom')", logs.output[0])
 
 

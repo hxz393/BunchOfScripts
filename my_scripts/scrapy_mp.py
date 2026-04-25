@@ -31,11 +31,19 @@ OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 REQUEST_HEAD["Cookie"] = MP_COOKIE  # 请求头加入认证
 
 
+def normalize_end_targets(end) -> list[str]:
+    """将结束标记统一转换为文件名列表。"""
+    if isinstance(end, str):
+        return [end]
+    return list(end)
+
+
 def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
     """
     抓取发布信息写入到文件。
     """
     logger.info("抓取 mp 站点发布信息")
+    end_targets = normalize_end_targets(end)
     while True:
         # 请求 mp 主页
         logger.info(f"抓取第 {start_page} 页")
@@ -47,7 +55,7 @@ def scrapy_mp(start_page: int = 0, end="face-to-face-2") -> None:
         process_all(result_list, max_workers=20)
 
         # 检查帖子
-        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end)
+        all_exist = all(os.path.exists(os.path.join(OUTPUT_DIR, f)) for f in end_targets)
 
         if all_exist:
             logger.info("没有新发布，完成")
@@ -103,7 +111,11 @@ def parse_mp_response(response: requests.Response) -> list:
         if not data_div:
             continue
 
-        h3_a = data_div.find('h3').find('a', href=True)
+        h3 = data_div.find('h3')
+        if not h3:
+            continue
+
+        h3_a = h3.find('a', href=True)
         if not h3_a:
             continue
         title = h3_a.get_text(strip=True)
