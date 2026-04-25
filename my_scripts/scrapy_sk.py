@@ -53,6 +53,8 @@ def process_sk_page(page_no: int, end_data: str) -> bool:
     url = f"{SK_MOVIE_URL}{page_no}"
     response = get_sk_response(url)
     result_list = parse_sk_response(response)
+    if not result_list:
+        raise RuntimeError("SK 列表页解析结果为空，网站结构可能已变更")
     logger.info(f"共 {len(result_list)} 个结果")
     process_all(result_list)
     return end_data in (result_item['date'] for result_item in result_list)
@@ -62,7 +64,6 @@ def process_all(result_list):
     """
     并发调用 visit_sk_url，result_list 中每个元素都会被提交到线程池执行。
     """
-    results = []
     with ThreadPoolExecutor(THREAD_NUMBER) as executor:
         # 提交所有任务
         future_to_item = {
@@ -73,12 +74,9 @@ def process_all(result_list):
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             try:
-                ret = future.result()
+                future.result()
             except Exception as exc:
-                logger.error(f"[ERROR] {item} -> {exc!r}")
-            else:
-                results.append(ret)
-    return results
+                logger.exception(f"[ERROR] {item} -> {exc!r}")
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
