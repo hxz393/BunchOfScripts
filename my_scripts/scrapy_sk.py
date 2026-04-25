@@ -45,6 +45,8 @@ REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG['thread_number']  # 线程数
 END_DATA = CONFIG['end_data']  # 截止日期
+MAX_EMPTY_PAGES = CONFIG.get('max_empty_pages', 5)  # 连续空页上限
+EXCLUDED_GROUPS = tuple(CONFIG.get('excluded_groups', ['Knihy a Časopisy']))  # 排除分组
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'sk_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'sk_processing')  # 处理中队列
@@ -76,6 +78,12 @@ def fetch_sk_page(page_no: int) -> list[dict]:
     response = get_sk_response(url)
     result_list = parse_sk_response(response)
     if not result_list:
+        if is_sk_filtered_empty_page(response.text):
+            logger.info(f"第 {page_no} 页无有效帖子，疑似被账户设置过滤")
+            return []
+        if is_sk_excluded_groups_only_page(response.text):
+            logger.info(f"第 {page_no} 页仅包含排除分组帖子，已跳过")
+            return []
         raise RuntimeError("SK 列表页解析结果为空，网站结构可能已变更")
     logger.info(f"共 {len(result_list)} 个结果")
     return result_list
@@ -99,8 +107,20 @@ def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_cli
     else:
         logger.info(f"从第 {current_page} 页继续扫描")
 
+    empty_page_count = 0
     while True:
         result_list = fetch_sk_page(current_page)
+        if not result_list:
+            empty_page_count += 1
+            if empty_page_count >= MAX_EMPTY_PAGES:
+                raise RuntimeError(f"SK 连续 {empty_page_count} 页无有效帖子，已停止扫描")
+
+            current_page += 1
+            redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
+            logger.info("-" * 255)
+            continue
+
+        empty_page_count = 0
         if redis_client.get(REDIS_NEXT_END_DATA_KEY) is None:
             redis_client.set(REDIS_NEXT_END_DATA_KEY, get_previous_day(result_list[0]["date"]))
 
@@ -131,7 +151,7 @@ def enqueue_sk_posts(start_page: int = 0, end_data: str | None = None, redis_cli
 
         current_page += 1
         redis_client.set(REDIS_SCAN_PAGE_KEY, str(current_page))
-        logger.warning("-" * 255)
+        logger.info("-" * 255)
 
 
 def drain_sk_queue(redis_client: redis.Redis | None = None) -> None:
@@ -150,7 +170,6 @@ def drain_sk_queue(redis_client: redis.Redis | None = None) -> None:
         logger=logger,
         queue_label="SK",
         identify_item=lambda info: info["url"],
-        log_traceback=True,
     )
 
 
@@ -211,6 +230,19 @@ def get_sk_response(url: str) -> requests.Response:
 
 def extract_sk_row_links(td) -> dict | None:
     """从 SK 列表项中提取分组、详情页链接和标题。"""
+    link_snapshot = inspect_sk_row_links(td)
+    if not (link_snapshot["group"] and link_snapshot["url"] and link_snapshot["title"]):
+        return None
+
+    return {
+        "group": link_snapshot["group"],
+        "url": link_snapshot["url"],
+        "title": link_snapshot["title"],
+    }
+
+
+def inspect_sk_row_links(td) -> dict:
+    """提取链接字段，并保留调试所需的原始片段。"""
     group = None
     url = None
     title = None
@@ -223,22 +255,33 @@ def extract_sk_row_links(td) -> dict | None:
             url = SK_URL + "torrent/" + href
             title = a.get_text(strip=True)
 
-    if not (group and url and title):
-        return None
-
     return {
         "group": group,
         "url": url,
         "title": title,
+        "td_snippet": re.sub(r"\s+", " ", str(td)).strip()[:500],
     }
 
 
 def parse_sk_row(td) -> dict | None:
     """解析单个 SK 列表项。"""
-    links = extract_sk_row_links(td)
-    if not links:
-        logger.info("跳过：缺少链接字段")
+    link_snapshot = inspect_sk_row_links(td)
+    if not (link_snapshot["group"] and link_snapshot["url"] and link_snapshot["title"]):
+        logger.info(
+            "跳过：缺少链接字段 - group=%r url=%r title=%r td=%s",
+            link_snapshot["group"],
+            link_snapshot["url"],
+            link_snapshot["title"],
+            link_snapshot["td_snippet"],
+        )
         return None
+    if is_sk_excluded_group(link_snapshot["group"]):
+        return None
+    links = {
+        "group": link_snapshot["group"],
+        "url": link_snapshot["url"],
+        "title": link_snapshot["title"],
+    }
 
     size_date = extract_sk_row_size_date(td)
     if not size_date:
@@ -253,6 +296,9 @@ def parse_sk_row(td) -> dict | None:
 
 def parse_sk_response(response: requests.Response) -> list:
     """解析流程"""
+    if is_sk_filtered_empty_page(response.text):
+        return []
+
     soup = BeautifulSoup(response.text, "html.parser")
     rows = soup.select("table.lista table.lista td.lista")
     if not rows:
@@ -265,6 +311,42 @@ def parse_sk_response(response: requests.Response) -> list:
             results.append(result)
 
     return results
+
+
+def is_sk_filtered_empty_page(html: str) -> bool:
+    """识别账户过滤导致的已知空页提示。"""
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.select_one('a[href^="details.php?name"]'):
+        return False
+
+    page_text = soup.get_text(" ", strip=True)
+    return (
+        "Nenasli ste co ste hladali" in page_text
+        and "Napiste nam to na nastenku" in page_text
+    )
+
+
+def is_sk_excluded_group(group: str) -> bool:
+    """判断分组是否应从抓取结果中排除。"""
+    return group in EXCLUDED_GROUPS
+
+
+def is_sk_excluded_groups_only_page(html: str) -> bool:
+    """识别仅包含排除分组帖子的页面。"""
+    soup = BeautifulSoup(html, "html.parser")
+    rows = soup.select("table.lista table.lista td.lista")
+    detail_row_count = 0
+
+    for td in rows:
+        link_snapshot = inspect_sk_row_links(td)
+        if not (link_snapshot["group"] and link_snapshot["url"] and link_snapshot["title"]):
+            continue
+
+        detail_row_count += 1
+        if not is_sk_excluded_group(link_snapshot["group"]):
+            return False
+
+    return detail_row_count > 0
 
 
 def extract_sk_row_size_date(td) -> dict | None:
