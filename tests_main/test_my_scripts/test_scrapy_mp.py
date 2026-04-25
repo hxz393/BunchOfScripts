@@ -541,6 +541,50 @@ class TestMpQueueHelpers(unittest.TestCase):
             {"https://example.com/pending", "https://example.com/processing"},
         )
 
+    def test_prepare_mp_enqueue_scan_returns_saved_page_and_matched_end_urls(self):
+        """准备阶段应恢复页码，并累计当前队列里已命中的截止 URL。"""
+        redis_client = FakeRedis()
+        redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "5")
+        redis_client.rpush(
+            self.module.REDIS_PENDING_KEY,
+            self.module._scrapy_redis.serialize_payload(
+                {"link": "https://example.com/end-a", "title": "Queued", "year": "2026"}
+            ),
+        )
+
+        with patch.object(self.module, "validate_mp_end_urls") as mock_validate:
+            current_page, end_urls, queued_links, matched_end_urls = self.module.prepare_mp_enqueue_scan(
+                start_page=2,
+                end=["https://example.com/end-a", "https://example.com/end-b"],
+                redis_client=redis_client,
+            )
+
+        self.assertEqual(current_page, 5)
+        self.assertEqual(end_urls, {"https://example.com/end-a", "https://example.com/end-b"})
+        self.assertEqual(queued_links, {"https://example.com/end-a"})
+        self.assertEqual(matched_end_urls, {"https://example.com/end-a"})
+        mock_validate.assert_called_once_with({"https://example.com/end-a", "https://example.com/end-b"})
+
+    def test_split_new_mp_items_filters_empty_and_duplicate_links(self):
+        """单页分类应排除空链接、当前队列重复和页内重复。"""
+        result_list = [
+            {"title": "Movie 1", "link": "https://example.com/existing", "year": "2026"},
+            {"title": "Movie 2", "link": "https://example.com/new", "year": "2026"},
+            {"title": "Movie 3", "link": "https://example.com/new", "year": "2026"},
+            {"title": "Movie 4", "link": "", "year": "2026"},
+        ]
+
+        new_items, page_unique_links = self.module.split_new_mp_items(
+            result_list,
+            {"https://example.com/existing"},
+        )
+
+        self.assertEqual(
+            new_items,
+            [{"title": "Movie 2", "link": "https://example.com/new", "year": "2026"}],
+        )
+        self.assertEqual(page_unique_links, {"https://example.com/new"})
+
     def test_validate_mp_end_urls_raises_when_any_url_returns_404(self):
         """截止 URL 若已 404，应在运行前直接报错。"""
         responses = [

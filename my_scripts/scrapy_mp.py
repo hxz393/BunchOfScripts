@@ -149,13 +149,15 @@ def scrapy_mp(start_page, end) -> None:
         finalize_mp_run(redis_client=redis_client)
 
 
-def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | None = None) -> None:
-    """顺序翻页，收集新帖子并写入 Redis 待处理队列。"""
-    if redis_client is None:
-        redis_client = get_redis_client()
+def prepare_mp_enqueue_scan(
+        start_page: int,
+        end,
+        redis_client: redis.Redis,
+) -> tuple[int, set[str], set[str], set[str]] | None:
+    """准备列表扫描所需的起始页、截止 URL 和当前队列状态。"""
     if redis_client.get(REDIS_SCAN_COMPLETE_KEY) == "1":
         logger.info("MP 列表扫描已完成，跳过入队阶段")
-        return
+        return None
 
     end_urls = normalize_mp_end_urls(end)
     if not end_urls:
@@ -171,6 +173,35 @@ def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | 
 
     queued_links = get_mp_queued_links(redis_client)
     matched_end_urls = queued_links & end_urls
+    return current_page, end_urls, queued_links, matched_end_urls
+
+
+def split_new_mp_items(result_list: list[dict], queued_links: set[str]) -> tuple[list[dict], set[str]]:
+    """从单页结果中筛出本页真正需要入队的新增帖子。"""
+    page_unique_links = set()
+    new_items = []
+    for item in result_list:
+        link = item["link"]
+        if not link or link in queued_links or link in page_unique_links:
+            continue
+        page_unique_links.add(link)
+        new_items.append(item)
+    return new_items, page_unique_links
+
+
+def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | None = None) -> None:
+    """顺序翻页，收集新帖子并写入 Redis 待处理队列。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+    scan_state = prepare_mp_enqueue_scan(
+        start_page=start_page,
+        end=end,
+        redis_client=redis_client,
+    )
+    if scan_state is None:
+        return
+    current_page, end_urls, queued_links, matched_end_urls = scan_state
+
     while True:
         logger.info(f"抓取第 {current_page} 页")
         url = f"{MP_MOVIE_URL}{current_page}/"
@@ -179,14 +210,7 @@ def enqueue_mp_posts(start_page: int = 0, end=None, redis_client: redis.Redis | 
         if not result_list:
             raise RuntimeError("MP 列表页解析结果为空，网站结构可能已变更")
 
-        page_unique_links = set()
-        new_items = []
-        for item in result_list:
-            link = item["link"]
-            if not link or link in queued_links or link in page_unique_links:
-                continue
-            page_unique_links.add(link)
-            new_items.append(item)
+        new_items, page_unique_links = split_new_mp_items(result_list, queued_links)
 
         if new_items:
             pipe = redis_client.pipeline()
