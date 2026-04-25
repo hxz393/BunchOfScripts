@@ -41,7 +41,6 @@ def scrapy_rare(source_file: str) -> None:
 
 def process_all(links, max_workers=5):
     """多线程访问链接"""
-    results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
         future_to_item = {
@@ -52,18 +51,15 @@ def process_all(links, max_workers=5):
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             try:
-                ret = future.result()
+                future.result()
             except Exception as exc:
                 logger.error(f"[ERROR] {item} -> {exc!r}")
-            else:
-                results.append(ret)
-    return results
 
 
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
 def get_rare_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, headers=REQUEST_HEAD)
+    response = requests.get(url, headers=REQUEST_HEAD, timeout=20)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
