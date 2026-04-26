@@ -33,7 +33,8 @@ BDS_COOKIE = CONFIG['bds_cookie']  # 用户甜甜
 REQUEST_HEAD = dict(CONFIG['request_head'])  # 请求头
 END_TIME = CONFIG.get('end_time', '2020-09-21')  # 截止日期
 REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'bds_seen')  # 已抓取 URL 集合
-MAX_WORKERS = 6  # 详情页抓取并发数
+THREAD_NUMBER = int(CONFIG.get('thread_number', 6))  # 详情页抓取并发数
+REQUEST_INTERVAL_SECONDS = float(CONFIG.get('request_interval_seconds', 0.05))  # 详情页访问间隔
 
 REQUEST_HEAD["Cookie"] = BDS_COOKIE  # 请求头加入认证
 START_URL = BDS_URL + "forum.php?mod=forumdisplay&fid={fid}&page={page}"
@@ -182,9 +183,7 @@ def build_bds_output_filename(title: str, tt: str) -> str:
 
 
 def scrapy_bds(start_page: int = 1, end_time: str | None = None) -> None:
-    """
-    抓取新发布内容写入到文件。
-    """
+    """抓取新发布内容写入到文件。"""
     logger.info("抓取 bds 站点发布信息")
     if end_time is None:
         end_time = get_current_end_time()
@@ -197,7 +196,7 @@ def scrapy_bds(start_page: int = 1, end_time: str | None = None) -> None:
         unseen_results = filter_seen_items(all_results, redis_client=redis_client)
         logger.info("-" * 255)
         logger.info(f"总共 {len(all_results)} 个帖子，待抓取 {len(unseen_results)} 个")
-        process_results = process_all(unseen_results, max_workers=MAX_WORKERS, redis_client=redis_client)
+        process_results = process_all(unseen_results, max_workers=THREAD_NUMBER, redis_client=redis_client)
         if len(process_results) != len(unseen_results):
             had_failures = True
         logger.info("-" * 255)
@@ -246,7 +245,7 @@ def read_thread(item: dict, redis_client=None) -> str:
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(item["link"])
     mark_seen_url(item["link"], redis_client=redis_client)
-    time.sleep(0.05)
+    time.sleep(REQUEST_INTERVAL_SECONDS)
     return item["link"]
 
 
