@@ -20,7 +20,7 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util.retry import Retry
 
-from my_module import read_json_to_dict, update_json_config
+from my_module import read_json_to_dict, sanitize_filename, update_json_config
 from scrapy_redis import get_redis_client
 
 CONFIG_PATH = 'config/scrapy_bds.json'
@@ -30,9 +30,10 @@ GROUP_DICT = CONFIG['group_dict']  # 栏目 ID 字典
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 BDS_URL = CONFIG['bds_url']  # BDS 站点地址
 BDS_COOKIE = CONFIG['bds_cookie']  # 用户甜甜
-REQUEST_HEAD = CONFIG['request_head']  # 请求头
+REQUEST_HEAD = dict(CONFIG['request_head'])  # 请求头
 END_TIME = CONFIG.get('end_time', '2020-09-21')  # 截止日期
 REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'bds_seen')  # 已抓取 URL 集合
+MAX_WORKERS = 6  # 详情页抓取并发数
 
 REQUEST_HEAD["Cookie"] = BDS_COOKIE  # 请求头加入认证
 START_URL = BDS_URL + "forum.php?mod=forumdisplay&fid={fid}&page={page}"
@@ -40,12 +41,21 @@ START_URL = BDS_URL + "forum.php?mod=forumdisplay&fid={fid}&page={page}"
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
-retry_strategy = Retry(
-    total=15,  # 总共重试次数
-    status_forcelist=[502],  # 触发重试状态码
-    method_whitelist=["POST", "GET"],  # 允许重试方法
-    backoff_factor=1  # 重试等待间隔（指数增长）
-)
+
+def create_retry_strategy() -> Retry:
+    """兼容 urllib3 1.x / 2.x 的 Retry 初始化参数。"""
+    retry_kwargs = {
+        "total": 15,
+        "status_forcelist": [502],
+        "backoff_factor": 1,
+    }
+    try:
+        return Retry(allowed_methods=["POST", "GET"], **retry_kwargs)
+    except TypeError:
+        return Retry(method_whitelist=["POST", "GET"], **retry_kwargs)
+
+
+retry_strategy = create_retry_strategy()
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=8, pool_maxsize=16)
 session = requests.Session()
 session.proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890", }
@@ -65,48 +75,69 @@ def get_current_end_time() -> str:
     return read_json_to_dict(CONFIG_PATH).get("end_time", END_TIME)
 
 
-def get_next_end_time(all_results: list[dict]) -> str | None:
-    """根据本轮抓到的最新日期，推导下一轮要使用的 ``end_time``。"""
-    dated_posts = []
-    for item in all_results:
-        try:
-            dated_posts.append(datetime.datetime.strptime(item["date"], "%Y-%m-%d"))
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    if not dated_posts:
+def parse_bds_date(date_str: str) -> datetime.datetime | None:
+    """尝试把页面日期解析为 ``datetime``。"""
+    try:
+        return datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    except (TypeError, ValueError):
         return None
 
-    newest_date = max(dated_posts)
-    return get_previous_day(newest_date.strftime("%Y-%m-%d"))
+
+def get_yesterday_date_str(reference_date: datetime.date | None = None) -> str:
+    """返回当天前一天的日期字符串，格式为 ``YYYY-mm-dd``。"""
+    if reference_date is None:
+        reference_date = datetime.date.today()
+    return get_previous_day(reference_date.strftime("%Y-%m-%d"))
 
 
-def merge_next_end_time(current_end_time: str | None, candidate_end_time: str | None) -> str | None:
-    """在多栏目结果中保留更靠后的 ``end_time``。"""
-    if candidate_end_time is None:
-        return current_end_time
-    if current_end_time is None:
-        return candidate_end_time
-
-    current_value = datetime.datetime.strptime(current_end_time, "%Y-%m-%d")
-    candidate_value = datetime.datetime.strptime(candidate_end_time, "%Y-%m-%d")
-    if candidate_value > current_value:
-        return candidate_end_time
-    return current_end_time
-
-
-def finalize_bds_run(next_end_time: str | None, had_failures: bool) -> None:
+def finalize_bds_run(had_failures: bool) -> None:
     """在本轮抓取完成后回写配置中的 ``end_time``。"""
     if had_failures:
         logger.warning("BDS 有详情任务失败，暂不回写 end_time")
         return
 
-    if not next_end_time:
-        logger.info("BDS 本轮没有可用于推进的日期，保留 end_time 不变")
-        return
-
+    next_end_time = get_yesterday_date_str()
     update_json_config(CONFIG_PATH, "end_time", next_end_time)
     logger.info(f"BDS 已更新 end_time 为 {next_end_time}")
+
+
+def append_page_results(all_results: list[dict], seen_links: set[str], page_results: list[dict]) -> bool:
+    """按 URL 合并单页结果；遇到重复 URL 时返回 ``True`` 表示停止翻页。"""
+    for item in page_results:
+        link = item["link"]
+        if link in seen_links:
+            return True
+        seen_links.add(link)
+        all_results.append(item)
+    return False
+
+
+def collect_group_results(
+        group_name: str,
+        group_id: int,
+        start_page: int,
+        stop_date: datetime.datetime,
+) -> list[dict]:
+    """顺序抓取单个栏目，并按 URL 去重。"""
+    all_results = []
+    seen_links = set()
+    current_page = start_page
+
+    while True:
+        logger.info(f"爬取栏目 {group_name} ，爬取页面 {current_page} …")
+        results, stop = parse_forum_page(group_id, current_page, stop_date)
+        if not results:
+            logger.info(f"栏目 {group_name} 没有爬取结果")
+            break
+        logger.info(f"共 {len(results)} 个帖子")
+
+        has_duplicate_link = append_page_results(all_results, seen_links, results)
+        if stop or has_duplicate_link:
+            break
+
+        current_page += 1
+
+    return all_results
 
 
 def filter_seen_items(all_results: list[dict], redis_client=None) -> list[dict]:
@@ -143,6 +174,13 @@ def mark_seen_url(url: str, redis_client=None) -> None:
     redis_client.sadd(REDIS_SEEN_KEY, url)
 
 
+def build_bds_output_filename(title: str, tt: str) -> str:
+    """生成输出文件名。"""
+    safe_title = re.sub(r'[\\/:*?"<>|]', " ", title)
+    safe_title = sanitize_filename(safe_title).strip()
+    return f"{safe_title}[{tt}].bds"
+
+
 def scrapy_bds(start_page: int = 1, end_time: str | None = None) -> None:
     """
     抓取新发布内容写入到文件。
@@ -153,51 +191,29 @@ def scrapy_bds(start_page: int = 1, end_time: str | None = None) -> None:
 
     redis_client = get_redis_client()
     stop_date = datetime.datetime.strptime(end_time, "%Y-%m-%d")
-    next_end_time = None
     had_failures = False
     for group_name, group_id in GROUP_DICT.items():
-        # 一次一个栏目
-        all_results = []
-        while True:
-            logger.info(f"爬取栏目 {group_name} ，爬取页面 {start_page} …")
-            results, stop = parse_forum_page(group_id, start_page, stop_date)
-            if not results:
-                logger.info(f"栏目 {group_name} 没有爬取结果")
-                break
-            logger.info(f"共 {len(results)} 个帖子")
-
-            # 将所有加过插入到 all_results
-            for item in results:
-                if item in all_results:
-                    stop = True
-                    break
-                all_results.append(item)
-            # 如果某一页有帖子早于停止日期，就停止翻页
-            if stop:
-                break
-            start_page += 1
-
-        # 遍历帖子链接，获取 tt 编号并创建文件
-        # for item in all_results:
-        #     tt = read_thread(item)
+        all_results = collect_group_results(group_name, group_id, start_page, stop_date)
         unseen_results = filter_seen_items(all_results, redis_client=redis_client)
         logger.info("-" * 255)
         logger.info(f"总共 {len(all_results)} 个帖子，待抓取 {len(unseen_results)} 个")
-        process_results = process_all(unseen_results, max_workers=6, redis_client=redis_client)
+        process_results = process_all(unseen_results, max_workers=MAX_WORKERS, redis_client=redis_client)
         if len(process_results) != len(unseen_results):
             had_failures = True
-        next_end_time = merge_next_end_time(next_end_time, get_next_end_time(all_results))
         logger.info("-" * 255)
 
-    finalize_bds_run(next_end_time, had_failures)
+    finalize_bds_run(had_failures)
 
 
-def process_all(all_results, max_workers=5, redis_client=None):
+def process_all(all_results: list[dict], max_workers: int = 5, redis_client=None) -> list[str]:
     """多线程访问链接"""
+    if not all_results:
+        return []
+
     if redis_client is None:
         redis_client = get_redis_client()
 
-    results = []
+    results: list[str] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
         future_to_item = {
@@ -216,23 +232,16 @@ def process_all(all_results, max_workers=5, redis_client=None):
     return results
 
 
-def read_thread(item, redis_client=None):
+def read_thread(item: dict, redis_client=None) -> str:
     """ 在帖子内获取 tt 编号 """
-    invalid_chars = r'[\\/:*?"<>|]'  # Windows 不允许的字符
-    link = item["link"] + '&_dsign=39e16b34'
+    link = f"{item['link']}&_dsign=39e16b34"
     resp = get_bds_response(link)
-    # 通过正则搜索 tt 编号
-    m = re.search(r"tt\d+", resp.text)
-
-    if m:
-        tt = m.group(0)
-    else:
+    match = re.search(r"tt\d+", resp.text)
+    tt = match.group(0) if match else ""
+    if not tt:
         logger.warning(f"没有找到 tt 编号：{link}")
-        tt = ''
 
-    # 写入文件
-    safe_title = re.sub(invalid_chars, " ", item["title"])
-    filename = f"{safe_title}[{tt}].bds"
+    filename = build_bds_output_filename(item["title"], tt)
     file_path = os.path.join(OUTPUT_DIR, filename)
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(item["link"])
@@ -241,11 +250,37 @@ def read_thread(item, redis_client=None):
     return item["link"]
 
 
-def parse_forum_page(group_id, start_page, stop_time):
+def parse_forum_tbody(tbody) -> dict | None:
+    """解析单个帖子块，缺少必要节点时返回 ``None``。"""
+    th = tbody.find("th")
+    if not th:
+        return None
+
+    anchor = th.find("a", class_="s xst")
+    if not anchor:
+        return None
+
+    href = anchor.get("href")
+    if not href:
+        raise RuntimeError("BDS 列表项缺少 href，整页抓取已中止")
+
+    title = anchor.get_text(strip=True)
+    full_link = urljoin(BDS_URL, href)
+    td_by = tbody.find("td", class_="by")
+    time_span = td_by.find("span") if td_by else None
+    date_str = time_span.get_text(strip=True) if time_span else ""
+    return {
+        "title": title,
+        "link": full_link,
+        "date": date_str,
+    }
+
+
+def parse_forum_page(group_id: int, start_page: int, stop_time: datetime.datetime) -> tuple[list[dict], bool]:
     """ 获取某个栏目的所有帖子 """
     url = START_URL.format(fid=group_id, page=start_page)
     resp = get_bds_response(url)
-    soup = BeautifulSoup(resp.content, "html.parser")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     table = soup.find("table", {"id": "threadlisttableid"})
     if table is None:
@@ -256,45 +291,15 @@ def parse_forum_page(group_id, start_page, stop_time):
     stop = False
 
     for tbody in table.find_all("tbody"):
-        # 标题 + 链接
-        th = tbody.find("th")
-        if not th:
+        item = parse_forum_tbody(tbody)
+        if item is None:
             continue
-        a = th.find("a", class_="s xst")
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        href = a.get("href")
-        full_link = urljoin(BDS_URL, href)
 
-        # 发布时间
-        td_by = tbody.find("td", class_="by")
-        time_span = td_by.find("span") if td_by else None
-        if time_span:
-            date_str = time_span.get_text(strip=True)
-        else:
-            date_str = ""
-        # 尝试解析为 datetime
-        try:
-            post_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        except Exception:
-            post_date = None
-
-        if post_date:
-            if post_date >= stop_time:
-                result_list.append({
-                    "title": title,
-                    "link": full_link,
-                    "date": date_str
-                })
-            elif start_page != 1:  # 判断是否达到停止条件
-                stop = True
-        else:
-            result_list.append({
-                "title": title,
-                "link": full_link,
-                "date": date_str
-            })
+        post_date = parse_bds_date(item["date"])
+        if post_date is None or post_date >= stop_time:
+            result_list.append(item)
+        elif start_page != 1:
+            stop = True
 
     return result_list, stop
 
