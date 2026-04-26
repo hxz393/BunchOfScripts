@@ -4,16 +4,13 @@
 配置文件 ``config/scrapy_rls.json`` 需要提供：
 - ``rls_url``: 站点根地址。
 - ``output_dir``: 生成 ``.rls`` 文件的输出目录。
-- ``foreign_end_titles``: ``f_mode=True`` 时的截止标题列表。
-- ``movie_end_titles``: ``f_mode=False`` 时的截止标题列表。
-  正常跑完一轮后，脚本会把首次访问页的前两个标题写回当前流程对应的配置键。
+- ``foreign_end_titles``: ``foreign-movies`` 流程的截止标题列表。
+- ``movie_end_titles``: ``movies`` 流程的截止标题列表。
 
 主流程：
-1. 公开入口会依次抓取 ``foreign-movies`` 和 ``movies`` 两条流程。
-2. 每条流程都按各自分类列表页抓取。
-3. 并发访问详情页，提取 IMDb 编号并落盘为 ``.rls`` 文件。
-4. 当列表页中出现当前流程配置里的任一截止标题时停止翻页。
-5. 只有整轮成功结束后，才把首次访问页的前两个标题写回当前流程对应的配置键。
+1. 先顺序翻页，把两条列表流程的新帖子统一写入 Redis 队列。
+2. 再从 Redis 队列中并发抓取详情页并写出 ``.rls`` 文件。
+3. 两条列表都扫完且详情任务清空后，再回写两套 ``end_titles``。
 
 :author: assassing
 :contact: https://github.com/hxz393
@@ -24,14 +21,14 @@ import os
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
 
+import redis
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
+from scrapy_redis import deserialize_payload, drain_queue, get_redis_client, push_items_to_queue, serialize_payload
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -43,8 +40,19 @@ RLS_URL = CONFIG['rls_url']  # rlsbb 地址
 RLS_COOKIE = CONFIG['rls_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
-MAX_WORKERS = CONFIG.get("max_workers", 40)
+THREAD_NUMBER = CONFIG.get('thread_number', CONFIG.get('max_workers', 40))  # 线程数
 END_TITLES_KEEP_COUNT = 2
+
+REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'rls_pending')  # 待处理队列
+REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'rls_processing')  # 处理中队列
+REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'rls_failed')  # 失败队列
+REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'rls_seen')  # 已入队项目集合
+REDIS_FOREIGN_SCAN_PAGE_KEY = CONFIG.get('redis_foreign_scan_page_key', 'rls_foreign_scan_page')  # foreign 扫描断点
+REDIS_MOVIE_SCAN_PAGE_KEY = CONFIG.get('redis_movie_scan_page_key', 'rls_movie_scan_page')  # movie 扫描断点
+REDIS_FOREIGN_SCAN_COMPLETE_KEY = CONFIG.get('redis_foreign_scan_complete_key', 'rls_foreign_scan_complete')  # foreign 扫描完成
+REDIS_MOVIE_SCAN_COMPLETE_KEY = CONFIG.get('redis_movie_scan_complete_key', 'rls_movie_scan_complete')  # movie 扫描完成
+REDIS_FOREIGN_NEXT_END_TITLES_KEY = CONFIG.get('redis_foreign_next_end_titles_key', 'rls_foreign_next_end_titles')  # foreign 下一轮截止标题
+REDIS_MOVIE_NEXT_END_TITLES_KEY = CONFIG.get('redis_movie_next_end_titles_key', 'rls_movie_next_end_titles')  # movie 下一轮截止标题
 
 REQUEST_HEAD["Cookie"] = RLS_COOKIE  # 请求头加入认证
 
@@ -54,112 +62,197 @@ def normalize_rls_title(title: str) -> str:
     return title.strip().replace(" ⭐", "").replace(" ", ".")
 
 
-def build_rls_page_url(page_number: int, f_mode: bool = True) -> str:
-    """根据页码和抓取模式构造 RLS 列表页 URL。"""
-    category = "foreign-movies" if f_mode else "movies"
-    return f"{RLS_URL}category/{category}/page/{page_number}/?s="
-
-
-def get_end_titles_key(f_mode: bool = True) -> str:
-    """返回当前抓取模式对应的截止标题配置键。"""
-    return "foreign_end_titles" if f_mode else "movie_end_titles"
-
-
-def get_current_end_titles(f_mode: bool = True) -> List[str]:
-    """读取当前模式对应的截止标题列表，并做统一格式清洗。"""
-    config = read_json_to_dict(CONFIG_PATH)
-    raw_end_titles = config.get(get_end_titles_key(f_mode), [])
+def get_current_end_titles(f_mode: bool = True) -> list[str]:
+    """按当前模式读取并清洗截止标题列表。"""
+    key = "foreign_end_titles" if f_mode else "movie_end_titles"
     return [
         normalize_rls_title(title)
-        for title in raw_end_titles
+        for title in read_json_to_dict(CONFIG_PATH).get(key, [])
         if isinstance(title, str) and title.strip()
     ]
 
 
-def should_stop_scrapy(result_list: List[Dict[str, str]], end_titles: List[str]) -> bool:
-    """当前批次命中任一截止标题时返回 ``True``。"""
-    if not end_titles:
-        return False
-
-    return any(result_item.get("title") in end_titles for result_item in result_list)
-
-
-def select_next_end_titles(result_list: List[Dict[str, str]], keep_count: int = END_TITLES_KEEP_COUNT) -> List[str]:
-    """从首次访问页中选出下一轮要写回配置的前几个标题。"""
-    titles = [result_item.get("title", "").strip() for result_item in result_list if result_item.get("title", "").strip()]
-    return titles[:keep_count]
+def serialize_rls_post(item: dict) -> str:
+    """将 RLS 列表项序列化为 Redis 队列任务。"""
+    return serialize_payload(
+        {
+            "title": item["title"],
+            "url": item["url"],
+        }
+    )
 
 
-def _scrapy_rls_single_mode(start_page: int = 1, f_mode: bool = True) -> None:
-    """执行单个分类流程的抓取与截止标题更新。"""
+def enqueue_rls_single_mode(start_page: int, f_mode: bool, redis_client: redis.Redis) -> None:
+    """顺序翻页，把单条列表流程的新帖子写入 Redis 待处理队列。"""
     end_titles = get_current_end_titles(f_mode)
     if not end_titles:
         raise ValueError("至少需要提供一个截止标题")
 
-    next_end_titles: List[str] | None = None
-    end_titles_key = get_end_titles_key(f_mode)
+    if f_mode:
+        category = "foreign-movies"
+        scan_page_key = REDIS_FOREIGN_SCAN_PAGE_KEY
+        scan_complete_key = REDIS_FOREIGN_SCAN_COMPLETE_KEY
+        next_titles_key = REDIS_FOREIGN_NEXT_END_TITLES_KEY
+        log_prefix = "RLS foreign"
+    else:
+        category = "movies"
+        scan_page_key = REDIS_MOVIE_SCAN_PAGE_KEY
+        scan_complete_key = REDIS_MOVIE_SCAN_COMPLETE_KEY
+        next_titles_key = REDIS_MOVIE_NEXT_END_TITLES_KEY
+        log_prefix = "RLS movie"
 
-    logger.info("抓取 rlsbb 站点发布信息")
+    if redis_client.get(scan_complete_key) == "1":
+        logger.info(f"{log_prefix} 列表扫描已完成，跳过入队阶段")
+        return
+
+    saved_page = redis_client.get(scan_page_key)
+    current_page = int(saved_page) if saved_page is not None else start_page
+    if saved_page is None:
+        redis_client.set(scan_page_key, str(current_page))
+    else:
+        logger.info(f"{log_prefix} 从第 {current_page} 页继续扫描")
+
     while True:
-        logger.info(f"抓取第 {start_page} 页")
-        url = build_rls_page_url(start_page, f_mode)
+        logger.info(f"{log_prefix} 抓取第 {current_page} 页")
+        url = f"{RLS_URL}category/{category}/page/{current_page}/?s="
         while True:
             response = get_rls_response(url)
             result_list = parse_rls_response(response)
-            if len(result_list):
+            if result_list:
                 break
             time.sleep(3)
             logger.warning("等待 3 秒后重试")
-        logger.info(f"共 {len(result_list)} 个结果")
+        logger.info(f"{log_prefix} 共 {len(result_list)} 个结果")
 
-        if next_end_titles is None:
-            next_end_titles = select_next_end_titles(result_list)
+        if redis_client.get(next_titles_key) is None:
+            redis_client.set(
+                next_titles_key,
+                serialize_payload(
+                    {"titles": [item["title"] for item in result_list[:END_TITLES_KEEP_COUNT] if item["title"]]}
+                ),
+            )
 
-        if not process_all(result_list, max_workers=MAX_WORKERS):
-            raise RuntimeError("RLS 详情页抓取存在失败，已停止且未更新截止标题配置")
+        enqueued_count = push_items_to_queue(
+            redis_client,
+            result_list,
+            seen_key=REDIS_SEEN_KEY,
+            pending_key=REDIS_PENDING_KEY,
+            unique_value=lambda item: item["url"],
+            serializer=serialize_rls_post,
+        )
+        logger.info(f"{log_prefix} 第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条")
 
-        # 终止检查
-        if should_stop_scrapy(result_list, end_titles):
-            logger.info("没有新发布，完成")
+        if any(item["title"] in end_titles for item in result_list):
+            redis_client.set(scan_complete_key, "1")
+            redis_client.set(scan_page_key, str(current_page + 1))
+            logger.info(f"{log_prefix} 列表扫描完成")
             break
 
+        current_page += 1
+        redis_client.set(scan_page_key, str(current_page))
         logger.warning("-" * 255)
-        start_page += 1
 
-    if next_end_titles:
-        update_json_config(CONFIG_PATH, end_titles_key, next_end_titles)
+
+def enqueue_rls_posts(start_page: int = 1, redis_client: redis.Redis | None = None) -> None:
+    """顺序扫描两条列表流程，把新帖子统一写入 Redis 待处理队列。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    enqueue_rls_single_mode(start_page, True, redis_client)
+    logger.warning("-" * 255)
+    enqueue_rls_single_mode(start_page, False, redis_client)
+
+
+def recover_rls_processing_queue(redis_client: redis.Redis) -> int:
+    """将处理中队列中的残留任务恢复回待处理队列。"""
+    recovered_count = 0
+    while True:
+        payload = redis_client.rpoplpush(REDIS_PROCESSING_KEY, REDIS_PENDING_KEY)
+        if not payload:
+            break
+        recovered_count += 1
+
+    return recovered_count
+
+
+def recover_rls_processing_when_pending_is_empty(redis_client: redis.Redis) -> int:
+    """启动时若待处理为空但处理中有残留，则回退到待处理并继续运行。"""
+    if redis_client.llen(REDIS_PENDING_KEY) or not redis_client.llen(REDIS_PROCESSING_KEY):
+        return 0
+
+    recovered_count = recover_rls_processing_queue(redis_client)
+    logger.warning(f"RLS 检测到待处理为空但处理中残留 {recovered_count} 条，已回退到待处理队列并继续运行")
+    return recovered_count
+
+
+def drain_rls_queue(redis_client: redis.Redis | None = None) -> None:
+    """从 Redis 队列中取帖子，使用多线程访问详情页并写出 ``.rls`` 文件。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    drain_queue(
+        redis_client,
+        pending_key=REDIS_PENDING_KEY,
+        processing_key=REDIS_PROCESSING_KEY,
+        failed_key=REDIS_FAILED_KEY,
+        max_workers=THREAD_NUMBER,
+        worker=visit_rls_url,
+        deserialize=deserialize_payload,
+        logger=logger,
+        queue_label="RLS",
+        identify_item=lambda info: info["url"],
+        recover_processing_on_start=False,
+    )
+
+
+def finalize_rls_run(redis_client: redis.Redis | None = None) -> None:
+    """在列表扫描和详情任务都结束后，回写两套 ``end_titles`` 并清理运行状态。"""
+    if redis_client is None:
+        redis_client = get_redis_client()
+
+    if redis_client.get(REDIS_FOREIGN_SCAN_COMPLETE_KEY) != "1" or redis_client.get(REDIS_MOVIE_SCAN_COMPLETE_KEY) != "1":
+        logger.info("RLS 列表扫描尚未完成，暂不回写 end_titles")
+        return
+
+    if redis_client.llen(REDIS_PENDING_KEY) or redis_client.llen(REDIS_PROCESSING_KEY):
+        logger.info("RLS 队列仍有未完成任务，暂不回写 end_titles")
+        return
+
+    foreign_titles_payload = redis_client.get(REDIS_FOREIGN_NEXT_END_TITLES_KEY)
+    movie_titles_payload = redis_client.get(REDIS_MOVIE_NEXT_END_TITLES_KEY)
+    if not foreign_titles_payload or not movie_titles_payload:
+        logger.warning("RLS 未记录新的 end_titles，跳过配置更新")
+        return
+
+    update_json_config(CONFIG_PATH, "foreign_end_titles", deserialize_payload(foreign_titles_payload)["titles"])
+    update_json_config(CONFIG_PATH, "movie_end_titles", deserialize_payload(movie_titles_payload)["titles"])
+    redis_client.delete(
+        REDIS_PENDING_KEY,
+        REDIS_PROCESSING_KEY,
+        REDIS_SEEN_KEY,
+        REDIS_FOREIGN_SCAN_PAGE_KEY,
+        REDIS_MOVIE_SCAN_PAGE_KEY,
+        REDIS_FOREIGN_SCAN_COMPLETE_KEY,
+        REDIS_MOVIE_SCAN_COMPLETE_KEY,
+        REDIS_FOREIGN_NEXT_END_TITLES_KEY,
+        REDIS_MOVIE_NEXT_END_TITLES_KEY,
+    )
+
+    failed_count = redis_client.llen(REDIS_FAILED_KEY)
+    if failed_count:
+        logger.warning(f"RLS 队列有 {failed_count} 条失败任务保留在 Redis 中待手动排查")
 
 
 def scrapy_rls(start_page: int = 1) -> None:
-    """按固定顺序依次抓取外语电影和普通电影两条流程。"""
-    logger.info("抓取 rlsbb 站点发布信息：foreign-movies")
-    _scrapy_rls_single_mode(start_page=start_page, f_mode=True)
-    logger.warning("-" * 255)
-    logger.info("抓取 rlsbb 站点发布信息：movies")
-    _scrapy_rls_single_mode(start_page=start_page, f_mode=False)
-
-
-def process_all(result_list, max_workers=5):
     """
-    并发调用 ``visit_rls_url``，result_list 中每个元素都会被提交到线程池执行。
-    max_workers 控制并发线程数，视网络 I/O 或目标服务器承受能力调整。
+    先翻页入 Redis，再从 Redis 队列中多线程抓取详情。
     """
-    has_error = False
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        future_to_item = {
-            executor.submit(visit_rls_url, item): item
-            for item in result_list
-        }
-        # 按完成顺序收集结果或捕获异常
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            try:
-                future.result()
-            except Exception as exc:
-                has_error = True
-                logger.error(f"[ERROR] {item} -> {exc!r}")
-    return not has_error
+    logger.info("抓取 rlsbb 站点发布信息")
+    redis_client = get_redis_client()
+    recover_rls_processing_when_pending_is_empty(redis_client)
+    enqueue_rls_posts(start_page=start_page, redis_client=redis_client)
+    drain_rls_queue(redis_client=redis_client)
+    finalize_rls_run(redis_client=redis_client)
 
 
 @retry(stop_max_attempt_number=150, wait_random_min=1000, wait_random_max=10000)
@@ -179,25 +272,14 @@ def parse_rls_response(response: requests.Response) -> list:
     """解析响应文本"""
     soup = BeautifulSoup(response.text, "html.parser")
     results = []
-    # 找到所有 class="p-c p-c‑title" 的 div
     for title_div in soup.find_all("div", class_="p-c p-c-title"):
         a_tag = title_div.find("h2").find("a")
-        title_text = a_tag.get_text(strip=True)
-        url = a_tag.get("href")
-        # 替换无关符号
-        title_text = normalize_rls_title(title_text)
-
-        # # 用正则提取括号里面的大小 (比如 "394MB" 或 "1.45GB")
-        # m = re.search(r"\(([\d.]+\s*(?:GB|MB|TB))\)", title_text)
-        # if m:
-        #     size = m.group(1)
-        # else:
-        #     size = "100GB"  # 如果没匹配到，就设默认值
-
-        results.append({
-            "title": title_text,
-            "url": url
-        })
+        results.append(
+            {
+                "title": normalize_rls_title(a_tag.get_text(strip=True)),
+                "url": a_tag.get("href"),
+            }
+        )
 
     return results
 
@@ -210,26 +292,21 @@ def visit_rls_url(result_item: dict):
     soup = BeautifulSoup(response.text, 'lxml')
 
     imdb_id = ""
-
-    # 找所有 a 标签，href 包含 /title/tt
     for a in soup.find_all('a', href=True):
         href = a['href']
-        # 查找 imdb title 链接
-        m = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
-        if m:
-            imdb_id = m.group(1)
+        match = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
+        if match:
+            imdb_id = match.group(1)
             break
 
-    # 如果找不到，可以尝试更宽松匹配
     if not imdb_id:
         for a in soup.find_all('a', href=True):
             href = a['href']
-            m2 = re.search(r"(tt\d+)", href)
-            if m2:
-                imdb_id = m2.group(1)
+            match = re.search(r"(tt\d+)", href)
+            if match:
+                imdb_id = match.group(1)
                 break
 
-    # 存回 result_item 或返回
     result_item["imdb"] = imdb_id
     file_name = normalize_release_title_for_filename(result_item['title'])
     file_name = sanitize_filename(file_name)
