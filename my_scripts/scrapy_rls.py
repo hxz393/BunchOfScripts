@@ -1,6 +1,19 @@
 """
 抓取 rlsbb 站点发布信息
 
+配置文件 ``config/scrapy_rls.json`` 需要提供：
+- ``rls_url``: 站点根地址。
+- ``output_dir``: 生成 ``.rls`` 文件的输出目录。
+- ``foreign_end_titles``: ``f_mode=True`` 时的截止标题列表。
+- ``movie_end_titles``: ``f_mode=False`` 时的截止标题列表。
+  正常跑完一轮后，脚本会把首次访问页的前两个标题写回当前流程对应的配置键。
+
+主流程：
+1. 按 ``f_mode`` 抓取对应分类列表页。
+2. 并发访问详情页，提取 IMDb 编号并落盘为 ``.rls`` 文件。
+3. 当列表页中出现当前流程配置里的任一截止标题时停止翻页。
+4. 只有整轮成功结束后，才把首次访问页的前两个标题写回当前流程对应的配置键。
+
 :author: assassing
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
@@ -11,12 +24,13 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List
 
 import requests
 from bs4 import BeautifulSoup
 from retrying import retry
 
-from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
+from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -28,18 +42,68 @@ RLS_URL = CONFIG['rls_url']  # rlsbb 地址
 RLS_COOKIE = CONFIG['rls_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+MAX_WORKERS = CONFIG.get("max_workers", 40)
+END_TITLES_KEEP_COUNT = 2
 
 REQUEST_HEAD["Cookie"] = RLS_COOKIE  # 请求头加入认证
 
 
-def scrapy_rls(start_page: int = 1, f_mode=True, end_title="The Gangster The Cop The Devil 2019 HDRip AC3 X264-CMRG (1.35GB)") -> None:
+def normalize_rls_title(title: str) -> str:
+    """统一截止标题和列表页标题的比较格式。"""
+    return title.strip().replace(" ⭐", "").replace(" ", ".")
+
+
+def build_rls_page_url(page_number: int, f_mode: bool = True) -> str:
+    """根据页码和抓取模式构造 RLS 列表页 URL。"""
+    category = "foreign-movies" if f_mode else "movies"
+    return f"{RLS_URL}category/{category}/page/{page_number}/?s="
+
+
+def get_end_titles_key(f_mode: bool = True) -> str:
+    """返回当前抓取模式对应的截止标题配置键。"""
+    return "foreign_end_titles" if f_mode else "movie_end_titles"
+
+
+def get_current_end_titles(f_mode: bool = True) -> List[str]:
+    """读取当前模式对应的截止标题列表，并做统一格式清洗。"""
+    config = read_json_to_dict(CONFIG_PATH)
+    raw_end_titles = config.get(get_end_titles_key(f_mode), [])
+    return [
+        normalize_rls_title(title)
+        for title in raw_end_titles
+        if isinstance(title, str) and title.strip()
+    ]
+
+
+def should_stop_scrapy(result_list: List[Dict[str, str]], end_titles: List[str]) -> bool:
+    """当前批次命中任一截止标题时返回 ``True``。"""
+    if not end_titles:
+        return False
+
+    return any(result_item.get("title") in end_titles for result_item in result_list)
+
+
+def select_next_end_titles(result_list: List[Dict[str, str]], keep_count: int = END_TITLES_KEEP_COUNT) -> List[str]:
+    """从首次访问页中选出下一轮要写回配置的前几个标题。"""
+    titles = [result_item.get("title", "").strip() for result_item in result_list if result_item.get("title", "").strip()]
+    return titles[:keep_count]
+
+
+def scrapy_rls(start_page: int = 1, f_mode: bool = True) -> None:
     """
     抓取发布信息写入到文件。
     """
+    end_titles = get_current_end_titles(f_mode)
+    if not end_titles:
+        raise ValueError("至少需要提供一个截止标题")
+
+    next_end_titles: List[str] | None = None
+    end_titles_key = get_end_titles_key(f_mode)
+
     logger.info("抓取 rlsbb 站点发布信息")
     while True:
         logger.info(f"抓取第 {start_page} 页")
-        url = f"{RLS_URL}category/foreign-movies/page/{start_page}/?s=" if f_mode else f"{RLS_URL}category/movies/page/{start_page}/?s="
+        url = build_rls_page_url(start_page, f_mode)
         while True:
             response = get_rls_response(url)
             result_list = parse_rls_response(response)
@@ -49,28 +113,30 @@ def scrapy_rls(start_page: int = 1, f_mode=True, end_title="The Gangster The Cop
             logger.warning("等待 3 秒后重试")
         logger.info(f"共 {len(result_list)} 个结果")
 
-        # # 循环抓取
-        # for list_item in result_list:
-        #     visit_rls_url(list_item)
-        # return
+        if next_end_titles is None:
+            next_end_titles = select_next_end_titles(result_list)
 
-        process_all(result_list, max_workers=40)
+        if not process_all(result_list, max_workers=MAX_WORKERS):
+            raise RuntimeError("RLS 详情页抓取存在失败，已停止且未更新截止标题配置")
 
         # 终止检查
-        if end_title.replace(" ", ".") in (result_item['title'] for result_item in result_list):
+        if should_stop_scrapy(result_list, end_titles):
             logger.info("没有新发布，完成")
             break
 
         logger.warning("-" * 255)
         start_page += 1
 
+    if next_end_titles:
+        update_json_config(CONFIG_PATH, end_titles_key, next_end_titles)
+
 
 def process_all(result_list, max_workers=5):
     """
-    并发调用 visit_sk_url，result_list 中每个元素都会被提交到线程池执行。
+    并发调用 ``visit_rls_url``，result_list 中每个元素都会被提交到线程池执行。
     max_workers 控制并发线程数，视网络 I/O 或目标服务器承受能力调整。
     """
-    results = []
+    has_error = False
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
         future_to_item = {
@@ -81,12 +147,11 @@ def process_all(result_list, max_workers=5):
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             try:
-                ret = future.result()
+                future.result()
             except Exception as exc:
+                has_error = True
                 logger.error(f"[ERROR] {item} -> {exc!r}")
-            else:
-                results.append(ret)
-    return results
+    return not has_error
 
 
 @retry(stop_max_attempt_number=150, wait_random_min=1000, wait_random_max=10000)
@@ -112,7 +177,7 @@ def parse_rls_response(response: requests.Response) -> list:
         title_text = a_tag.get_text(strip=True)
         url = a_tag.get("href")
         # 替换无关符号
-        title_text = title_text.replace(" ⭐", "").replace(" ", ".")
+        title_text = normalize_rls_title(title_text)
 
         # # 用正则提取括号里面的大小 (比如 "394MB" 或 "1.45GB")
         # m = re.search(r"\(([\d.]+\s*(?:GB|MB|TB))\)", title_text)
