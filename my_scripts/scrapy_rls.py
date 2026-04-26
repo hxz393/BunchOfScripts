@@ -9,10 +9,11 @@
   正常跑完一轮后，脚本会把首次访问页的前两个标题写回当前流程对应的配置键。
 
 主流程：
-1. 按 ``f_mode`` 抓取对应分类列表页。
-2. 并发访问详情页，提取 IMDb 编号并落盘为 ``.rls`` 文件。
-3. 当列表页中出现当前流程配置里的任一截止标题时停止翻页。
-4. 只有整轮成功结束后，才把首次访问页的前两个标题写回当前流程对应的配置键。
+1. 公开入口会依次抓取 ``foreign-movies`` 和 ``movies`` 两条流程。
+2. 每条流程都按各自分类列表页抓取。
+3. 并发访问详情页，提取 IMDb 编号并落盘为 ``.rls`` 文件。
+4. 当列表页中出现当前流程配置里的任一截止标题时停止翻页。
+5. 只有整轮成功结束后，才把首次访问页的前两个标题写回当前流程对应的配置键。
 
 :author: assassing
 :contact: https://github.com/hxz393
@@ -89,10 +90,8 @@ def select_next_end_titles(result_list: List[Dict[str, str]], keep_count: int = 
     return titles[:keep_count]
 
 
-def scrapy_rls(start_page: int = 1, f_mode: bool = True) -> None:
-    """
-    抓取发布信息写入到文件。
-    """
+def _scrapy_rls_single_mode(start_page: int = 1, f_mode: bool = True) -> None:
+    """执行单个分类流程的抓取与截止标题更新。"""
     end_titles = get_current_end_titles(f_mode)
     if not end_titles:
         raise ValueError("至少需要提供一个截止标题")
@@ -129,6 +128,15 @@ def scrapy_rls(start_page: int = 1, f_mode: bool = True) -> None:
 
     if next_end_titles:
         update_json_config(CONFIG_PATH, end_titles_key, next_end_titles)
+
+
+def scrapy_rls(start_page: int = 1) -> None:
+    """按固定顺序依次抓取外语电影和普通电影两条流程。"""
+    logger.info("抓取 rlsbb 站点发布信息：foreign-movies")
+    _scrapy_rls_single_mode(start_page=start_page, f_mode=True)
+    logger.warning("-" * 255)
+    logger.info("抓取 rlsbb 站点发布信息：movies")
+    _scrapy_rls_single_mode(start_page=start_page, f_mode=False)
 
 
 def process_all(result_list, max_workers=5):
