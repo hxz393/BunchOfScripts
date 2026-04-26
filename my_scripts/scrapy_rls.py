@@ -44,10 +44,10 @@ REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 THREAD_NUMBER = CONFIG.get('thread_number', CONFIG.get('max_workers', 40))  # 线程数
 END_TITLES_KEEP_COUNT = 2
+MAX_EMPTY_PAGE_RETRIES = 3
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'rls_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'rls_processing')  # 处理中队列
-REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'rls_failed')  # 失败队列
 REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'rls_seen')  # 已入队项目集合
 REDIS_FOREIGN_SCAN_PAGE_KEY = CONFIG.get('redis_foreign_scan_page_key', 'rls_foreign_scan_page')  # foreign 扫描断点
 REDIS_MOVIE_SCAN_PAGE_KEY = CONFIG.get('redis_movie_scan_page_key', 'rls_movie_scan_page')  # movie 扫描断点
@@ -95,16 +95,6 @@ def get_current_end_titles(f_mode: bool = True) -> list[str]:
     ]
 
 
-def serialize_rls_post(item: dict) -> str:
-    """将 RLS 列表项序列化为 Redis 队列任务。"""
-    return serialize_payload(
-        {
-            "title": item["title"],
-            "url": item["url"],
-        }
-    )
-
-
 def enqueue_rls_single_mode(start_page: int, f_mode: bool, redis_client: redis.Redis) -> None:
     """顺序翻页，把单条列表流程的新帖子写入 Redis 待处理队列。"""
     end_titles = get_current_end_titles(f_mode)
@@ -138,13 +128,20 @@ def enqueue_rls_single_mode(start_page: int, f_mode: bool, redis_client: redis.R
     while True:
         logger.info(f"{log_prefix} 抓取第 {current_page} 页")
         url = f"{RLS_URL}category/{category}/page/{current_page}/?s="
+        empty_retry_count = 0
         while True:
             response = get_rls_response(url)
             result_list = parse_rls_response(response)
             if result_list:
                 break
+            empty_retry_count += 1
+            if empty_retry_count >= MAX_EMPTY_PAGE_RETRIES:
+                raise RuntimeError(
+                    f"{log_prefix} 第 {current_page} 页连续 {empty_retry_count} 次解析为空，"
+                    f"网站结构可能已变更或仍在 Cloudflare 验证页"
+                )
             time.sleep(3)
-            logger.warning("等待 3 秒后重试")
+            logger.warning(f"{log_prefix} 第 {current_page} 页解析为空，等待 3 秒后重试")
         logger.info(f"{log_prefix} 共 {len(result_list)} 个结果")
 
         if redis_client.get(next_titles_key) is None:
@@ -161,7 +158,12 @@ def enqueue_rls_single_mode(start_page: int, f_mode: bool, redis_client: redis.R
             seen_key=REDIS_SEEN_KEY,
             pending_key=REDIS_PENDING_KEY,
             unique_value=lambda item: item["url"],
-            serializer=serialize_rls_post,
+            serializer=lambda item: serialize_payload(
+                {
+                    "title": item["title"],
+                    "url": item["url"],
+                }
+            ),
         )
         logger.info(f"{log_prefix} 第 {current_page} 页解析 {len(result_list)} 条，入队 {enqueued_count} 条")
 
@@ -173,7 +175,7 @@ def enqueue_rls_single_mode(start_page: int, f_mode: bool, redis_client: redis.R
 
         current_page += 1
         redis_client.set(scan_page_key, str(current_page))
-        logger.warning("-" * 255)
+        logger.info("-" * 255)
 
 
 def enqueue_rls_posts(start_page: int = 1, redis_client: redis.Redis | None = None) -> None:
@@ -186,24 +188,17 @@ def enqueue_rls_posts(start_page: int = 1, redis_client: redis.Redis | None = No
     enqueue_rls_single_mode(start_page, False, redis_client)
 
 
-def recover_rls_processing_queue(redis_client: redis.Redis) -> int:
-    """将处理中队列中的残留任务恢复回待处理队列。"""
+def recover_rls_processing_when_pending_is_empty(redis_client: redis.Redis) -> int:
+    """启动时若待处理为空但处理中有残留，则回退到待处理并继续运行。"""
+    if redis_client.llen(REDIS_PENDING_KEY) or not redis_client.llen(REDIS_PROCESSING_KEY):
+        return 0
+
     recovered_count = 0
     while True:
         payload = redis_client.rpoplpush(REDIS_PROCESSING_KEY, REDIS_PENDING_KEY)
         if not payload:
             break
         recovered_count += 1
-
-    return recovered_count
-
-
-def recover_rls_processing_when_pending_is_empty(redis_client: redis.Redis) -> int:
-    """启动时若待处理为空但处理中有残留，则回退到待处理并继续运行。"""
-    if redis_client.llen(REDIS_PENDING_KEY) or not redis_client.llen(REDIS_PROCESSING_KEY):
-        return 0
-
-    recovered_count = recover_rls_processing_queue(redis_client)
     logger.warning(f"RLS 检测到待处理为空但处理中残留 {recovered_count} 条，已回退到待处理队列并继续运行")
     return recovered_count
 
@@ -217,7 +212,6 @@ def drain_rls_queue(redis_client: redis.Redis | None = None) -> None:
         redis_client,
         pending_key=REDIS_PENDING_KEY,
         processing_key=REDIS_PROCESSING_KEY,
-        failed_key=REDIS_FAILED_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_rls_url,
         deserialize=deserialize_payload,
@@ -268,10 +262,6 @@ def finalize_rls_run(redis_client: redis.Redis | None = None) -> None:
         REDIS_FOREIGN_NEXT_END_TITLES_KEY,
         REDIS_MOVIE_NEXT_END_TITLES_KEY,
     )
-
-    failed_count = redis_client.llen(REDIS_FAILED_KEY)
-    if failed_count:
-        logger.warning(f"RLS 队列有 {failed_count} 条失败任务保留在 Redis 中待手动排查")
 
 
 def scrapy_rls(start_page: int = 1) -> None:
@@ -332,28 +322,30 @@ def parse_rls_response(response: requests.Response) -> list:
     return results
 
 
+def extract_rls_imdb_id(soup: BeautifulSoup) -> str:
+    """先匹配标准 IMDb 链接，找不到再宽松回退到任意 tt 编号。"""
+    href_list = [a['href'] for a in soup.find_all('a', href=True)]
+
+    for href in href_list:
+        match = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
+        if match:
+            return match.group(1)
+
+    for href in href_list:
+        match = re.search(r"(tt\d+)", href)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
 def visit_rls_url(result_item: dict):
     """访问详情页"""
     url = result_item["url"]
     logger.info(f"访问 {url}")
     response = get_rls_response(url)
     soup = BeautifulSoup(response.text, 'lxml')
-
-    imdb_id = ""
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        match = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
-        if match:
-            imdb_id = match.group(1)
-            break
-
-    if not imdb_id:
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            match = re.search(r"(tt\d+)", href)
-            if match:
-                imdb_id = match.group(1)
-                break
+    imdb_id = extract_rls_imdb_id(soup)
 
     result_item["imdb"] = imdb_id
     file_name = normalize_release_title_for_filename(result_item['title'])
