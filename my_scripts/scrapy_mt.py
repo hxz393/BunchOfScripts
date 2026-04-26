@@ -3,18 +3,27 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import logging
 import os
 import re
+from datetime import date, datetime, timedelta
 
 import requests
 from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util.retry import Retry
 
-from my_module import format_size, normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_dict_to_json, write_list_to_file
+from my_module import (
+    format_size,
+    normalize_release_title_for_filename,
+    read_json_to_dict,
+    sanitize_filename,
+    update_json_config,
+    write_dict_to_json,
+    write_list_to_file,
+)
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -30,6 +39,7 @@ MT_TIME = CONFIG['mt_time']  # 请求验证加签对应时间戳
 
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+QUERY_TIME = CONFIG.get('query_time', '2026-03-25')  # 查询起始日期
 
 REQUEST_HEAD["Authorization"] = MT_AUTH  # 请求头加入认证
 
@@ -46,10 +56,38 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 
-def scrapy_mt(start_time="2011-01-01", end_time="2015-01-01") -> None:
+def get_previous_day(date_str: str) -> str:
+    """返回 ``date_str`` 的前一天，格式保持 ``YYYY-mm-dd``。"""
+    date_value = datetime.strptime(date_str, "%Y-%m-%d")
+    previous_day = date_value - timedelta(days=1)
+    return previous_day.strftime("%Y-%m-%d")
+
+
+def get_yesterday_date_str(reference_date: date | None = None) -> str:
+    """返回当天前一天的日期字符串，格式为 ``YYYY-mm-dd``。"""
+    if reference_date is None:
+        reference_date = date.today()
+    return get_previous_day(reference_date.strftime("%Y-%m-%d"))
+
+
+def get_current_query_time() -> str:
+    """读取当前配置中的查询起始日期，避免同进程多次运行时使用过期值。"""
+    return read_json_to_dict(CONFIG_PATH).get("query_time", QUERY_TIME)
+
+
+def finalize_mt_run(end_time: str) -> None:
+    """整轮抓取完成后，回写下一轮查询起始日期。"""
+    update_json_config(CONFIG_PATH, "query_time", end_time)
+    logger.info(f"MT 已更新 query_time 为 {end_time}")
+
+
+def scrapy_mt() -> None:
     """
     抓取发布信息写入到文件。
     """
+    start_time = get_current_query_time()
+    end_time = get_yesterday_date_str()
+
     logger.info("先获取区间页数")
     r_first = post_mt_response(start_time, end_time, 100)
     result_first = r_first.json()
@@ -73,6 +111,8 @@ def scrapy_mt(start_time="2011-01-01", end_time="2015-01-01") -> None:
         parse_mt_response(items_list)
         # print(items_list)
         # return
+
+    finalize_mt_run(end_time)
 
 
 def parse_mt_response(items_list):
