@@ -135,25 +135,6 @@ def parse_mt_response(items_list):
         write_dict_to_json(path, item_dict)
 
 
-def write_to_disk(result_list: list) -> None:
-    """写入到磁盘"""
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
-    for i in result_list:
-        name = i['name']
-        name = normalize_release_title_for_filename(
-            name,
-            replace_pipe=False,
-            replace_placeholder_dot=False,
-        )
-        name = sanitize_filename(name)
-        file_name = f"{name}({i['size']})[{i['imdb']}].ttg"
-        path = os.path.join(OUTPUT_DIR, file_name)
-        links = [i["url"], i["dl"]]
-        write_list_to_file(path, links)
-
-
 @retry(stop_max_attempt_number=15, wait_random_min=1000, wait_random_max=10000)
 def post_mt_response(s_date: str, e_date: str, page: int) -> requests.Response:
     """请求流程"""
