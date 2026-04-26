@@ -1,9 +1,24 @@
 """
 抓取 hde 站点发布信息
 
+配置文件 ``config/scrapy_hde.json`` 需要提供：
+- ``hde_url``: 站点根地址。
+- ``output_dir``: 生成 ``.rls`` 文件的输出目录。
+- ``default_end_title``: 分页抓取时用于判断“已经追到旧数据”的截止标题。
+- ``max_workers``: 详情页并发抓取线程数。
+- ``default_release_size``: 标题里提取不到体积信息时使用的默认值。
+- ``request_timeout_seconds``: 单次 HTTP 请求超时秒数。
+- ``retry_max_attempts`` / ``retry_wait_min_ms`` / ``retry_wait_max_ms``:
+  ``get_hde_response`` 的重试参数。
+
+主流程：
+1. 抓取列表页并解析出标题、详情页链接和体积。
+2. 并发访问详情页，提取 IMDb 编号并落盘为 ``.rls`` 文件。
+3. 当列表页中出现配置的截止标题时停止翻页。
+
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import logging
 import os
@@ -39,7 +54,7 @@ IMDB_ID_PATTERN = re.compile(r"(tt\d+)")
 
 
 def build_hde_page_url(page_number: int) -> str:
-    """构造列表页 URL。"""
+    """根据页码构造 HDE 电影列表页 URL。"""
     return f"{HDE_URL}tag/movies/page/{page_number}/"
 
 
@@ -50,7 +65,10 @@ def should_stop_scrapy(result_list: List[Dict[str, str]], end_title: str) -> boo
 
 def scrapy_hde(start_page: int = 1, end_title: str = DEFAULT_END_TITLE) -> None:
     """
-    抓取发布信息写入到文件。
+    从 ``start_page`` 开始连续抓取，直到命中 ``end_title`` 为止。
+
+    每一页会先解析列表，再并发访问详情页写出 ``.rls`` 文件。
+    这里默认使用配置文件中的截止标题和线程数，调用时也可以显式覆盖。
     """
     logger.info("抓取 hde 站点发布信息")
     while True:
@@ -72,14 +90,12 @@ def scrapy_hde(start_page: int = 1, end_title: str = DEFAULT_END_TITLE) -> None:
 
 
 def process_all(result_list, max_workers=5):
-    """多线程请求"""
+    """并发处理一批详情页任务，单个任务失败只记录日志，不中断整批。"""
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
         future_to_item = {
             executor.submit(visit_hde_url, item): item
             for item in result_list
         }
-        # 按完成顺序收集结果或捕获异常
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             try:
@@ -94,7 +110,7 @@ def process_all(result_list, max_workers=5):
     wait_random_max=RETRY_WAIT_MAX_MS,
 )
 def get_hde_response(url: str) -> requests.Response:
-    """请求流程"""
+    """请求页面并统一做编码设置与状态码校验。"""
     response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.encoding = 'utf-8'
     if response.status_code != 200:
@@ -104,7 +120,7 @@ def get_hde_response(url: str) -> requests.Response:
 
 
 def parse_hde_response(response: requests.Response) -> list:
-    """解析 HDE 单页列表，输出结果列表"""
+    """解析 HDE 单页列表，输出 ``title/url/size`` 字典列表。"""
     soup = BeautifulSoup(response.text, "lxml")
     results = []
     for fit in soup.select("div.fit.item"):
@@ -115,7 +131,7 @@ def parse_hde_response(response: requests.Response) -> list:
 
 
 def parse_hde_item(fit) -> Dict[str, str] | None:
-    """解析单个列表条目。"""
+    """解析单个列表条目，缺少必要节点时返回 ``None``。"""
     data_div = fit.select_one("div.data")
     if not data_div:
         return None
@@ -134,7 +150,7 @@ def parse_hde_item(fit) -> Dict[str, str] | None:
 
 
 def extract_release_size(title: str, default_size: str = DEFAULT_RELEASE_SIZE) -> str:
-    """从标题末尾提取体积信息。"""
+    """从标题末尾提取体积信息，失败时回退到配置中的默认体积。"""
     match = SIZE_WITH_DASH_PATTERN.search(title)
     if not match:
         match = TRAILING_SIZE_PATTERN.search(title)
@@ -144,7 +160,9 @@ def extract_release_size(title: str, default_size: str = DEFAULT_RELEASE_SIZE) -
 
 
 def visit_hde_url(result_item: dict):
-    """访问详情页"""
+    """
+    访问详情页并写出对应的 ``.rls`` 文件。
+    """
     url = result_item["url"]
     logger.info(f"访问 {url}")
     response = get_hde_response(url)
@@ -155,12 +173,14 @@ def visit_hde_url(result_item: dict):
 
 
 def extract_imdb_id_from_soup(soup: BeautifulSoup) -> str:
-    """从详情页中提取 IMDb 编号。"""
+    """从详情页所有链接中提取 IMDb 编号。"""
     return extract_imdb_id_from_links(a["href"] for a in soup.find_all("a", href=True))
 
 
 def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
-    """优先从标准 IMDb URL 提取，其次宽松匹配 ``tt`` 编号。"""
+    """
+    优先从标准 IMDb 标题页 URL 提取，其次回退到宽松 ``tt`` 编号匹配。
+    """
     fallback_imdb_id = ""
     for href in hrefs:
         match = IMDB_URL_PATTERN.search(href)
@@ -176,7 +196,7 @@ def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
 
 
 def build_hde_output_filename(result_item: Dict[str, str]) -> str:
-    """根据发布信息拼装输出文件名。"""
+    """根据发布信息拼装输出文件名，格式为 ``标题 - hde (体积)[IMDb].rls``。"""
     file_name = normalize_release_title_for_filename(result_item["title"])
     file_name = sanitize_filename(file_name)
     return f"{file_name} - hde ({result_item['size']})[{result_item.get('imdb', '')}].rls"
