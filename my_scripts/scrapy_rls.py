@@ -148,7 +148,7 @@ def visit_rls_url(result_item: dict):
             break
 
     # 如果找不到，可以尝试更宽松匹配
-    if imdb_id is None:
+    if not imdb_id:
         for a in soup.find_all('a', href=True):
             href = a['href']
             m2 = re.search(r"(tt\d+)", href)
