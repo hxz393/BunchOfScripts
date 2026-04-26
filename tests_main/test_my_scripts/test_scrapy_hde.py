@@ -2,7 +2,7 @@
 针对 ``my_scripts.scrapy_hde`` 的单元测试。
 
 这里在隔离环境中加载模块，不依赖真实配置，也不会发出真实网络请求。
-主要验证请求、列表页解析、大小拆分、详情页落盘和分页停止条件。
+主要验证请求、列表页解析、大小提取、详情页落盘和分页停止条件。
 """
 
 import copy
@@ -26,6 +26,13 @@ def load_scrapy_hde(config: dict | None = None):
     module_config = {
         "hde_url": "https://example.com/",
         "output_dir": str(Path(temp_dir.name) / "downloads"),
+        "default_end_title": "Old Movie – 1.0 GB",
+        "max_workers": 30,
+        "default_release_size": "100.0 GB",
+        "request_timeout_seconds": 30,
+        "retry_max_attempts": 150,
+        "retry_wait_min_ms": 1000,
+        "retry_wait_max_ms": 10000,
     }
     if config:
         module_config.update(config)
@@ -88,9 +95,11 @@ class TestModuleLoad(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_load_scrapy_hde_uses_injected_config(self):
-        """模块加载后应暴露注入的站点地址和输出目录。"""
+        """模块加载后应暴露注入的站点地址、输出目录和配置化默认值。"""
         self.assertEqual(self.module.HDE_URL, "https://example.com/")
         self.assertTrue(str(self.module.OUTPUT_DIR).endswith("downloads"))
+        self.assertEqual(self.module.DEFAULT_END_TITLE, "Old Movie – 1.0 GB")
+        self.assertEqual(self.module.DEFAULT_MAX_WORKERS, 30)
 
 
 class TestHdeHelpers(unittest.TestCase):
@@ -165,7 +174,7 @@ class TestParseHdeResponse(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_parse_hde_response_extracts_title_and_url(self):
-        """应从列表页提取标题和链接。"""
+        """应从列表页提取标题、链接和体积。"""
         response = Mock(
             text=build_list_page(
                 build_fit_item(
@@ -183,6 +192,7 @@ class TestParseHdeResponse(unittest.TestCase):
                 {
                     "title": "Movie Title – 1.2 GB",
                     "url": "https://example.com/post-1",
+                    "size": "1.2GB",
                 }
             ],
         )
@@ -208,6 +218,7 @@ class TestParseHdeResponse(unittest.TestCase):
                 {
                     "title": "Valid Movie",
                     "url": "https://example.com/post-2",
+                    "size": "100.0GB",
                 }
             ],
         )
@@ -227,7 +238,7 @@ class TestParseHdeResponse(unittest.TestCase):
         self.assertIsNone(self.module.parse_hde_item(fit_without_link))
 
 
-class TestSplitSize(unittest.TestCase):
+class TestReleaseSize(unittest.TestCase):
     """验证大小提取逻辑。"""
 
     def setUp(self):
@@ -236,36 +247,10 @@ class TestSplitSize(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_split_size_extracts_size_from_dash_suffix_or_trailing_size(self):
+    def test_extract_release_size_extracts_size_from_dash_suffix_or_trailing_size(self):
         """应优先提取破折号后的大小，其次回退到末尾大小。"""
-        items = [
-            {"title": "Movie One – 22.4 GB", "url": "https://example.com/1"},
-            {"title": "Movie Two 700 MB", "url": "https://example.com/2"},
-            {"title": "Movie Three", "url": "https://example.com/3"},
-        ]
-
-        result = self.module.split_size(items)
-
-        self.assertEqual(
-            result,
-            [
-                {
-                    "title": "Movie One – 22.4 GB",
-                    "url": "https://example.com/1",
-                    "size": "22.4GB",
-                },
-                {
-                    "title": "Movie Two 700 MB",
-                    "url": "https://example.com/2",
-                    "size": "700MB",
-                },
-                {
-                    "title": "Movie Three",
-                    "url": "https://example.com/3",
-                    "size": "100.0GB",
-                },
-            ],
-        )
+        self.assertEqual(self.module.extract_release_size("Movie One – 22.4 GB"), "22.4GB")
+        self.assertEqual(self.module.extract_release_size("Movie Two 700 MB"), "700MB")
 
     def test_extract_release_size_returns_normalized_default_when_size_is_missing(self):
         """没有体积信息时应返回去空格后的默认值。"""
@@ -283,13 +268,13 @@ class TestProcessAll(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_process_all_collects_successful_results(self):
-        """批处理应收集每个成功任务的返回值。"""
+        """批处理应执行全部任务，不再返回无意义的结果列表。"""
         items = [{"title": "A"}, {"title": "B"}]
 
         with patch.object(self.module, "visit_hde_url", side_effect=lambda item: f"done:{item['title']}"):
             result = self.module.process_all(items, max_workers=1)
 
-        self.assertEqual(result, ["done:A", "done:B"])
+        self.assertIsNone(result)
 
     def test_process_all_logs_errors_without_raising(self):
         """单个任务失败时，应记录错误且不影响其他任务。"""
@@ -306,7 +291,7 @@ class TestProcessAll(unittest.TestCase):
         ) as logs:
             result = self.module.process_all(items, max_workers=1)
 
-        self.assertEqual(result, ["done:good"])
+        self.assertIsNone(result)
         self.assertIn("[ERROR] {'title': 'bad'} -> RuntimeError('boom')", logs.output[0])
 
 
@@ -417,8 +402,7 @@ class TestScrapyHdeMain(unittest.TestCase):
     def test_scrapy_hde_stops_when_end_title_is_found_on_first_page(self):
         """第一页命中截止标题时应停止翻页。"""
         response = Mock()
-        result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1"}]
-        full_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1", "size": "1.0GB"}]
+        result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1", "size": "1.0GB"}]
 
         with patch.object(self.module, "get_hde_response", return_value=response) as mock_get, patch.object(
             self.module,
@@ -426,27 +410,20 @@ class TestScrapyHdeMain(unittest.TestCase):
             return_value=result_list,
         ) as mock_parse, patch.object(
             self.module,
-            "split_size",
-            return_value=full_list,
-        ) as mock_split, patch.object(
-            self.module,
             "process_all",
         ) as mock_process:
             self.module.scrapy_hde(start_page=2, end_title="Old Movie – 1.0 GB")
 
         mock_get.assert_called_once_with("https://example.com/tag/movies/page/2/")
         mock_parse.assert_called_once_with(response)
-        mock_split.assert_called_once_with(result_list)
-        mock_process.assert_called_once_with(full_list, max_workers=30)
+        mock_process.assert_called_once_with(result_list, max_workers=self.module.DEFAULT_MAX_WORKERS)
 
     def test_scrapy_hde_moves_to_next_page_until_end_title_is_found(self):
         """未命中截止标题时应继续抓取下一页。"""
         first_response = Mock()
         second_response = Mock()
-        first_result_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new"}]
-        second_result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/old"}]
-        first_full_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"}]
-        second_full_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/old", "size": "1.0GB"}]
+        first_result_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"}]
+        second_result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/old", "size": "1.0GB"}]
 
         with patch.object(
             self.module,
@@ -457,10 +434,6 @@ class TestScrapyHdeMain(unittest.TestCase):
             "parse_hde_response",
             side_effect=[first_result_list, second_result_list],
         ) as mock_parse, patch.object(
-            self.module,
-            "split_size",
-            side_effect=[first_full_list, second_full_list],
-        ) as mock_split, patch.object(
             self.module,
             "process_all",
         ) as mock_process:
@@ -474,12 +447,11 @@ class TestScrapyHdeMain(unittest.TestCase):
             ],
         )
         self.assertEqual(mock_parse.call_args_list, [call(first_response), call(second_response)])
-        self.assertEqual(mock_split.call_args_list, [call(first_result_list), call(second_result_list)])
         self.assertEqual(
             mock_process.call_args_list,
             [
-                call(first_full_list, max_workers=30),
-                call(second_full_list, max_workers=30),
+                call(first_result_list, max_workers=self.module.DEFAULT_MAX_WORKERS),
+                call(second_result_list, max_workers=self.module.DEFAULT_MAX_WORKERS),
             ],
         )
 

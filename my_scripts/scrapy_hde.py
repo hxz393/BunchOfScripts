@@ -18,13 +18,19 @@ from retrying import retry
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, write_list_to_file
 
 logger = logging.getLogger(__name__)
-requests.packages.urllib3.disable_warnings()
 
 CONFIG_PATH = 'config/scrapy_hde.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 
 HDE_URL = CONFIG['hde_url']  # hde 地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
+DEFAULT_END_TITLE = CONFIG['default_end_title']
+DEFAULT_MAX_WORKERS = CONFIG['max_workers']
+DEFAULT_RELEASE_SIZE = CONFIG['default_release_size']
+REQUEST_TIMEOUT_SECONDS = CONFIG['request_timeout_seconds']
+RETRY_MAX_ATTEMPTS = CONFIG['retry_max_attempts']
+RETRY_WAIT_MIN_MS = CONFIG['retry_wait_min_ms']
+RETRY_WAIT_MAX_MS = CONFIG['retry_wait_max_ms']
 
 SIZE_WITH_DASH_PATTERN = re.compile(r"\s[–-]\s*([\d.]+\s*(?:GB|MB|TB))\s*$")
 TRAILING_SIZE_PATTERN = re.compile(r"([\d.]+\s*(?:GB|MB|TB))\s*$")
@@ -42,7 +48,7 @@ def should_stop_scrapy(result_list: List[Dict[str, str]], end_title: str) -> boo
     return any(result_item.get("title") == end_title for result_item in result_list)
 
 
-def scrapy_hde(start_page: int = 1, end_title="Tawai.A.voice.from.the.forest.2017.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-EPSiLON – 22.4 GB") -> None:
+def scrapy_hde(start_page: int = 1, end_title: str = DEFAULT_END_TITLE) -> None:
     """
     抓取发布信息写入到文件。
     """
@@ -54,27 +60,19 @@ def scrapy_hde(start_page: int = 1, end_title="Tawai.A.voice.from.the.forest.201
         result_list = parse_hde_response(response)
         logger.info(f"共 {len(result_list)} 个结果")
 
-        full_list = split_size(result_list)
-
-        # 循环抓取
-        # for list_item in full_list:
-        #     visit_hde_url(list_item)
-        # return
-
-        process_all(full_list, max_workers=30)
+        process_all(result_list, max_workers=DEFAULT_MAX_WORKERS)
 
         # 检查日期
-        if should_stop_scrapy(full_list, end_title):
+        if should_stop_scrapy(result_list, end_title):
             logger.info("没有新发布，完成")
             break
 
-        # logger.info(f"结果：{result_list}")
         logger.warning("-" * 255)
         start_page += 1
 
 
 def process_all(result_list, max_workers=5):
-    results = []
+    """多线程请求"""
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有任务
         future_to_item = {
@@ -85,18 +83,19 @@ def process_all(result_list, max_workers=5):
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             try:
-                ret = future.result()
+                future.result()
             except Exception as exc:
                 logger.error(f"[ERROR] {item} -> {exc!r}")
-            else:
-                results.append(ret)
-    return results
 
 
-@retry(stop_max_attempt_number=150, wait_random_min=1000, wait_random_max=10000)
+@retry(
+    stop_max_attempt_number=RETRY_MAX_ATTEMPTS,
+    wait_random_min=RETRY_WAIT_MIN_MS,
+    wait_random_max=RETRY_WAIT_MAX_MS,
+)
 def get_hde_response(url: str) -> requests.Response:
     """请求流程"""
-    response = requests.get(url, timeout=30)
+    response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：{url}")
@@ -123,38 +122,18 @@ def parse_hde_item(fit) -> Dict[str, str] | None:
 
     a_tag = data_div.select_one("h5 a")
     if not a_tag:
-        # 有时候 h5 里可能直接是文字或结构不同，尝试取 h5 的第一个链接
-        a_tag = data_div.select_one("h5 > a, h5 a")
-    if not a_tag:
         return None
 
     title = a_tag.get_text(strip=True)
     url = a_tag.get("href", "").strip()
-    return {"title": title, "url": url}
+    return {
+        "title": title,
+        "url": url,
+        "size": extract_release_size(title),
+    }
 
 
-def split_size(items: List[Dict[str, str]], default_size: str = "100.0 GB") -> List[Dict[str, str]]:
-    """
-    对 items 做后处理。items 中每个 dict 有 "title" 和 "url"。
-    如果 title 中包含 “–” 分隔（或其他类似分隔符），提取 size，否则使用默认 size。
-    返回新的 list，每个 dict 增加 "size" 字段。
-    """
-    normalized = []
-    for it in items:
-        title = it.get("title", "")
-        size = extract_release_size(title, default_size=default_size)
-
-        # 构造新的 dict（也可以修改原来的）
-        new_it = {
-            "title": title,
-            "url": it.get("url", ""),
-            "size": size
-        }
-        normalized.append(new_it)
-    return normalized
-
-
-def extract_release_size(title: str, default_size: str = "100.0 GB") -> str:
+def extract_release_size(title: str, default_size: str = DEFAULT_RELEASE_SIZE) -> str:
     """从标题末尾提取体积信息。"""
     match = SIZE_WITH_DASH_PATTERN.search(title)
     if not match:
@@ -177,24 +156,23 @@ def visit_hde_url(result_item: dict):
 
 def extract_imdb_id_from_soup(soup: BeautifulSoup) -> str:
     """从详情页中提取 IMDb 编号。"""
-    hrefs = [a["href"] for a in soup.find_all("a", href=True)]
-    return extract_imdb_id_from_links(hrefs)
+    return extract_imdb_id_from_links(a["href"] for a in soup.find_all("a", href=True))
 
 
 def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
     """优先从标准 IMDb URL 提取，其次宽松匹配 ``tt`` 编号。"""
-    href_list = list(hrefs)
-    for href in href_list:
+    fallback_imdb_id = ""
+    for href in hrefs:
         match = IMDB_URL_PATTERN.search(href)
         if match:
             return match.group(1)
 
-    for href in href_list:
-        match = IMDB_ID_PATTERN.search(href)
-        if match:
-            return match.group(1)
+        if not fallback_imdb_id:
+            match = IMDB_ID_PATTERN.search(href)
+            if match:
+                fallback_imdb_id = match.group(1)
 
-    return ""
+    return fallback_imdb_id
 
 
 def build_hde_output_filename(result_item: Dict[str, str]) -> str:
