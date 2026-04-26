@@ -6,21 +6,18 @@
 :contact: https://github.com/hxz393
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
-import json
 import logging
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from lxml import etree
 from retrying import retry
 
-from my_module import read_json_to_dict, sanitize_filename
+from my_module import read_json_to_dict, sanitize_filename, update_json_config
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
-CONFIG_LOCK = threading.Lock()
 
 CONFIG_PATH = 'config/scrapy_ru.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -49,28 +46,6 @@ def scrapy_ru() -> None:
                 logger.info(f"抓取完成：{url}")
             except Exception as e:
                 logger.error(f"抓取出错：{url}，错误：{e}")
-
-
-def update_json_config(file_path: str, key: str, new_value: str) -> None:
-    """
-    更新 JSON 配置文件中的某个键的值。
-
-    :param file_path: JSON 配置路径
-    :param key: 键
-    :param new_value: 值
-    :return: 无
-    """
-    temp_file_path = f"{file_path}.tmp"
-    with CONFIG_LOCK:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)  # config 是个 dict
-
-        config["scrapy_process"][key] = new_value
-
-        with open(temp_file_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-
-        os.replace(temp_file_path, file_path)
 
 
 @retry(stop_max_attempt_number=10, wait_random_min=100, wait_random_max=1200)
@@ -242,4 +217,4 @@ def scripy(url: str) -> None:
         current_url = next_page_url
 
     if new_max_id is not None:
-        update_json_config(CONFIG_PATH, base_url, new_max_id)
+        update_json_config(CONFIG_PATH, ["scrapy_process", base_url], new_max_id)

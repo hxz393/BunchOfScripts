@@ -26,6 +26,7 @@ from lxml import etree
 requests.packages.urllib3.disable_warnings()
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_ru.py"
+UPDATE_JSON_CONFIG_PATH = Path(__file__).resolve().parents[2] / "my_module" / "file_ops" / "update_json_config.py"
 
 
 def load_scrapy_ru(config: dict | None = None):
@@ -50,6 +51,14 @@ def load_scrapy_ru(config: dict | None = None):
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(module_config)
     fake_my_module.sanitize_filename = lambda name: name
+
+    helper_spec = importlib.util.spec_from_file_location(
+        f"update_json_config_test_{uuid.uuid4().hex}",
+        UPDATE_JSON_CONFIG_PATH,
+    )
+    helper_module = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper_module)
+    fake_my_module.update_json_config = helper_module.update_json_config
 
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
@@ -361,7 +370,11 @@ class TestUpdateJsonConfig(unittest.TestCase):
         }
         config_path.write_text(json.dumps(config_data, ensure_ascii=False), encoding="utf-8")
 
-        self.module.update_json_config(str(config_path), "https://example.com/forum/viewforum.php?f=1", "300")
+        self.module.update_json_config(
+            str(config_path),
+            ["scrapy_process", "https://example.com/forum/viewforum.php?f=1"],
+            "300",
+        )
 
         updated = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["scrapy_process"]["https://example.com/forum/viewforum.php?f=1"], "300")
@@ -384,13 +397,13 @@ class TestUpdateJsonConfig(unittest.TestCase):
                 executor.submit(
                     self.module.update_json_config,
                     str(config_path),
-                    "https://example.com/forum/viewforum.php?f=1",
+                    ["scrapy_process", "https://example.com/forum/viewforum.php?f=1"],
                     "300",
                 ),
                 executor.submit(
                     self.module.update_json_config,
                     str(config_path),
-                    "https://example.com/forum/viewforum.php?f=2",
+                    ["scrapy_process", "https://example.com/forum/viewforum.php?f=2"],
                     "400",
                 ),
             ]
@@ -400,6 +413,26 @@ class TestUpdateJsonConfig(unittest.TestCase):
         updated = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["scrapy_process"]["https://example.com/forum/viewforum.php?f=1"], "300")
         self.assertEqual(updated["scrapy_process"]["https://example.com/forum/viewforum.php?f=2"], "400")
+        self.assertFalse(Path(f"{config_path}.tmp").exists())
+
+    def test_update_json_config_supports_json_list_values(self):
+        """配置更新函数应允许把列表直接写入 JSON。"""
+        config_path = Path(self.temp_dir.name) / "scrapy_ru.json"
+        config_data = {
+            "scrapy_process": {
+                "https://example.com/forum/viewforum.php?f=1": "100",
+            }
+        }
+        config_path.write_text(json.dumps(config_data, ensure_ascii=False), encoding="utf-8")
+
+        self.module.update_json_config(
+            str(config_path),
+            ["scrapy_process", "https://example.com/forum/viewforum.php?f=1"],
+            ["300", "301"],
+        )
+
+        updated = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["scrapy_process"]["https://example.com/forum/viewforum.php?f=1"], ["300", "301"])
         self.assertFalse(Path(f"{config_path}.tmp").exists())
 
 
@@ -435,7 +468,7 @@ class TestScripy(unittest.TestCase):
             topic_two.read_text(encoding="utf-8"),
             "https://example.com/forum/viewtopic.php?t=250\nhttps://example.com/forum/dl.php?t=250",
         )
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "250")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "250")
 
     def test_scripy_raises_when_topic_rows_are_missing(self):
         """页面中找不到帖子行时应抛出异常，而不是静默返回。"""
@@ -477,7 +510,7 @@ class TestScripy(unittest.TestCase):
         self.assertEqual(mock_get_page.call_args_list, [((self.base_url,),), ((next_url,),)])
         self.assertTrue((Path(self.temp_dir.name) / "Topic One[300][1 MB].txt").exists())
         self.assertTrue((Path(self.temp_dir.name) / "Topic Two[250][2 MB].txt").exists())
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "300")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "300")
 
     def test_scripy_stops_pagination_when_old_topic_is_found(self):
         """当前页已经遇到旧帖子时，不应继续请求下一页。"""
@@ -530,7 +563,7 @@ class TestScripy(unittest.TestCase):
         # 第二页仍应沿用原栏目的 stop_id=200，因此旧帖子不应被写出。
         self.assertTrue((Path(self.temp_dir.name) / "Topic One[300][1 MB].txt").exists())
         self.assertFalse((Path(self.temp_dir.name) / "Topic Two[150][2 MB].txt").exists())
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "300")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "300")
 
     def test_scripy_skips_row_without_title_link(self):
         """缺少标题链接的帖子行应被跳过，不应写出无效文件。"""
@@ -553,7 +586,7 @@ class TestScripy(unittest.TestCase):
             self.module.scripy(self.base_url)
 
         self.assertEqual([path.name for path in Path(self.temp_dir.name).iterdir()], ["Valid Topic[250][2 MB].txt"])
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "250")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "250")
 
     def test_scripy_skips_row_without_download_link(self):
         """缺少下载链接的帖子行应被跳过，只处理结构完整的帖子。"""
@@ -576,7 +609,7 @@ class TestScripy(unittest.TestCase):
             self.module.scripy(self.base_url)
 
         self.assertEqual([path.name for path in Path(self.temp_dir.name).iterdir()], ["Valid Topic[250][2 MB].txt"])
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "250")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "250")
 
     def test_scripy_truncates_long_title_before_creating_filename(self):
         """标题过长时应先截断，再生成输出文件名。"""
@@ -641,7 +674,7 @@ class TestScripy(unittest.TestCase):
         self.assertTrue((Path(self.temp_dir.name) / "Topic New 1[300][1 MB].txt").exists())
         self.assertTrue((Path(self.temp_dir.name) / "Topic New 2[250][2 MB].txt").exists())
         self.assertFalse((Path(self.temp_dir.name) / "Topic Old[150][3 MB].txt").exists())
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "300")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "300")
 
     def test_scripy_updates_config_once_with_max_id_across_all_pages(self):
         """多页都成功时，应只写一次配置，并取整个栏目链路中的最大 ID。"""
@@ -658,7 +691,7 @@ class TestScripy(unittest.TestCase):
 
         self.assertTrue((Path(self.temp_dir.name) / "Topic One[250][1 MB].txt").exists())
         self.assertTrue((Path(self.temp_dir.name) / "Topic Two[300][2 MB].txt").exists())
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, self.base_url, "300")
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, ["scrapy_process", self.base_url], "300")
 
 
 class TestScrapyRuEntrypoint(unittest.TestCase):

@@ -13,7 +13,7 @@ import types
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 import requests
 
@@ -26,7 +26,7 @@ def load_scrapy_hde(config: dict | None = None):
     module_config = {
         "hde_url": "https://example.com/",
         "output_dir": str(Path(temp_dir.name) / "downloads"),
-        "default_end_title": "Old Movie – 1.0 GB",
+        "end_titles": ["Old Movie – 1.0 GB", "Older Movie – 0.9 GB"],
         "max_workers": 30,
         "default_release_size": "100.0 GB",
         "request_timeout_seconds": 30,
@@ -49,6 +49,7 @@ def load_scrapy_hde(config: dict | None = None):
         return True
 
     fake_my_module.write_list_to_file = fake_write_list_to_file
+    fake_my_module.update_json_config = lambda _path, _key, _value: None
 
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
@@ -85,6 +86,36 @@ def build_detail_page(*hrefs: str) -> str:
     return "<html><body>" + "".join(f'<a href="{href}">id</a>' for href in hrefs) + "</body></html>"
 
 
+def build_protected_detail_page(
+    imdb_href: str = "https://www.imdb.com/title/tt1234567/",
+    token: str = "token-value",
+    ident: str = "ident-value",
+    chax_response: str = "chax-value",
+) -> str:
+    """构造带内容保护表单的详情页 HTML。"""
+    return f"""
+    <html>
+      <body>
+        <div class="entry-content">
+          <a href="{imdb_href}">IMDb</a>
+          <form method="post" action="/sample/#unlocked">
+            <input type="hidden" name="content-protector-captcha" value="1" />
+            <input type="hidden" name="content-protector-token" value="{token}" />
+            <input type="hidden" name="content-protector-ident" value="{ident}" />
+            <input type="hidden" name="chax-response" value="{chax_response}" />
+            <input type="submit" name="content-protector-submit" value="Access the links" />
+          </form>
+        </div>
+      </body>
+    </html>
+    """
+
+
+def build_unlocked_detail_page(*hrefs: str) -> str:
+    """构造已解锁的详情页正文 HTML。"""
+    return '<div class="entry-content">' + "".join(f'<a href="{href}">{href}</a>' for href in hrefs) + '</div>'
+
+
 class TestModuleLoad(unittest.TestCase):
     """验证模块导入时的配置注入。"""
 
@@ -98,7 +129,7 @@ class TestModuleLoad(unittest.TestCase):
         """模块加载后应暴露注入的站点地址、输出目录和配置化默认值。"""
         self.assertEqual(self.module.HDE_URL, "https://example.com/")
         self.assertTrue(str(self.module.OUTPUT_DIR).endswith("downloads"))
-        self.assertEqual(self.module.DEFAULT_END_TITLE, "Old Movie – 1.0 GB")
+        self.assertEqual(self.module.END_TITLES, ["Old Movie – 1.0 GB", "Older Movie – 0.9 GB"])
         self.assertEqual(self.module.DEFAULT_MAX_WORKERS, 30)
 
 
@@ -119,14 +150,132 @@ class TestHdeHelpers(unittest.TestCase):
         )
 
     def test_should_stop_scrapy_returns_true_only_when_end_title_is_present(self):
-        """截止标题存在时应停止翻页，否则继续。"""
+        """任一截止标题存在时应停止翻页，否则继续。"""
         result_list = [
             {"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"},
             {"title": "Old Movie – 1.0 GB", "url": "https://example.com/old", "size": "1.0GB"},
         ]
 
-        self.assertTrue(self.module.should_stop_scrapy(result_list, "Old Movie – 1.0 GB"))
-        self.assertFalse(self.module.should_stop_scrapy(result_list, "Missing Movie"))
+        self.assertTrue(self.module.should_stop_scrapy(result_list, ["Old Movie – 1.0 GB", "Older Movie – 0.9 GB"]))
+        self.assertFalse(self.module.should_stop_scrapy(result_list, ["Missing Movie", "Another Missing Movie"]))
+
+    def test_select_next_end_titles_returns_first_two_titles_from_first_page(self):
+        """下一轮截止标题应取首次访问页最前面的两个标题。"""
+        result_list = [
+            {"title": "Newest Movie – 2.0 GB", "url": "https://example.com/newest", "size": "2.0GB"},
+            {"title": "Second Movie – 1.8 GB", "url": "https://example.com/second", "size": "1.8GB"},
+            {"title": "Third Movie – 1.0 GB", "url": "https://example.com/third", "size": "1.0GB"},
+        ]
+
+        self.assertEqual(
+            self.module.select_next_end_titles(result_list),
+            ["Newest Movie – 2.0 GB", "Second Movie – 1.8 GB"],
+        )
+
+    def test_find_hde_protected_form_returns_matching_form(self):
+        """带保护字段的表单应被正确定位。"""
+        soup = self.module.BeautifulSoup(build_protected_detail_page(), "html.parser")
+
+        form = self.module.find_hde_protected_form(soup)
+
+        self.assertIsNotNone(form)
+        self.assertEqual(form.get("method"), "post")
+
+    def test_build_hde_protected_form_payload_collects_hidden_and_submit_inputs(self):
+        """回发表单时应只保留隐藏字段和提交按钮。"""
+        soup = self.module.BeautifulSoup(build_protected_detail_page(), "html.parser")
+        form = self.module.find_hde_protected_form(soup)
+
+        payload = self.module.build_hde_protected_form_payload(form)
+
+        self.assertEqual(
+            payload,
+            [
+                ("content-protector-captcha", "1"),
+                ("content-protector-token", "token-value"),
+                ("content-protector-ident", "ident-value"),
+                ("chax-response", "chax-value"),
+                ("content-protector-submit", "Access the links"),
+            ],
+        )
+
+    def test_unlock_hde_protected_soup_posts_form_and_returns_unlocked_page(self):
+        """存在保护表单时应自动 POST 解锁，并返回解锁后的 soup。"""
+        session = self.module.requests.Session()
+        protected_soup = self.module.BeautifulSoup(build_protected_detail_page(), "html.parser")
+        unlocked_response = Mock(
+            text=build_unlocked_detail_page(
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+            )
+        )
+
+        with patch.object(self.module, "post_hde_response", return_value=unlocked_response) as mock_post:
+            unlocked_soup = self.module.unlock_hde_protected_soup(
+                "https://example.com/post",
+                protected_soup,
+                session=session,
+            )
+
+        self.assertIsNotNone(unlocked_soup.select_one("div.entry-content"))
+        mock_post.assert_called_once_with(
+            "https://example.com/post",
+            [
+                ("content-protector-captcha", "1"),
+                ("content-protector-token", "token-value"),
+                ("content-protector-ident", "ident-value"),
+                ("chax-response", "chax-value"),
+                ("content-protector-submit", "Access the links"),
+            ],
+            session,
+        )
+
+    def test_extract_hde_useful_links_keeps_imdb_and_downloads_but_skips_images(self):
+        """应保留 IMDb 与下载链接，过滤截图和邮箱保护链接。"""
+        soup = self.module.BeautifulSoup(
+            """
+            <div class="entry-content">
+              <a href="https://www.imdb.com/title/tt1234567/">IMDb</a>
+              <a href="/cdn-cgi/l/email-protection">mail</a>
+              <a href="https://img2.pixhost.to/images/1/sample.png">image</a>
+              <a href="https://rapidgator.net/file/sample.rar.html">RG</a>
+              <a href="https://nitroflare.com/view/sample">NF</a>
+            </div>
+            """,
+            "html.parser",
+        )
+
+        result = self.module.extract_hde_useful_links(soup)
+
+        self.assertEqual(
+            result,
+            [
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+                "https://nitroflare.com/view/sample",
+            ],
+        )
+
+    def test_build_hde_output_content_prepends_detail_url_and_deduped_useful_links(self):
+        """写盘内容应以详情页 URL 开头，其后跟 IMDb 与解锁后的有效链接。"""
+        soup = self.module.BeautifulSoup(
+            build_unlocked_detail_page(
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+            ),
+            "html.parser",
+        )
+
+        result = self.module.build_hde_output_content("https://example.com/post", "tt1234567", soup)
+
+        self.assertEqual(
+            result,
+            [
+                "https://example.com/post",
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+            ],
+        )
 
 
 class TestGetHdeResponse(unittest.TestCase):
@@ -267,17 +416,17 @@ class TestProcessAll(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_process_all_collects_successful_results(self):
-        """批处理应执行全部任务，不再返回无意义的结果列表。"""
+    def test_process_all_returns_true_when_all_tasks_succeed(self):
+        """批处理全部成功时应返回 ``True``。"""
         items = [{"title": "A"}, {"title": "B"}]
 
         with patch.object(self.module, "visit_hde_url", side_effect=lambda item: f"done:{item['title']}"):
             result = self.module.process_all(items, max_workers=1)
 
-        self.assertIsNone(result)
+        self.assertTrue(result)
 
     def test_process_all_logs_errors_without_raising(self):
-        """单个任务失败时，应记录错误且不影响其他任务。"""
+        """单个任务失败时，应记录错误并返回 ``False``。"""
         items = [{"title": "good"}, {"title": "bad"}]
 
         def fake_visit(item: dict):
@@ -291,7 +440,7 @@ class TestProcessAll(unittest.TestCase):
         ) as logs:
             result = self.module.process_all(items, max_workers=1)
 
-        self.assertIsNone(result)
+        self.assertFalse(result)
         self.assertIn("[ERROR] {'title': 'bad'} -> RuntimeError('boom')", logs.output[0])
 
 
@@ -305,15 +454,26 @@ class TestVisitHdeUrl(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_visit_hde_url_extracts_imdb_and_writes_release_file(self):
-        """详情页包含 IMDb 链接时，应提取 ID 并按规则落盘。"""
+        """详情页包含 IMDb 链接时，应提取 ID、解锁链接并按规则落盘。"""
         result_item = {
             "title": "Movie / Title: 2026",
             "url": "https://example.com/post",
             "size": "22.4GB",
         }
         response = Mock(text=build_detail_page("https://www.imdb.com/title/tt1234567/"))
+        unlocked_soup = self.module.BeautifulSoup(
+            build_unlocked_detail_page(
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+            ),
+            "html.parser",
+        )
 
         with patch.object(self.module, "get_hde_response", return_value=response) as mock_get, patch.object(
+            self.module,
+            "unlock_hde_protected_soup",
+            return_value=unlocked_soup,
+        ) as mock_unlock, patch.object(
             self.module,
             "normalize_release_title_for_filename",
             return_value="Normalized / Title: 2026",
@@ -329,12 +489,17 @@ class TestVisitHdeUrl(unittest.TestCase):
             self.module.visit_hde_url(result_item)
 
         self.assertEqual(result_item["imdb"], "tt1234567")
-        mock_get.assert_called_once_with("https://example.com/post")
+        mock_get.assert_called_once_with("https://example.com/post", session=ANY)
+        mock_unlock.assert_called_once()
         mock_normalize.assert_called_once_with("Movie / Title: 2026")
         mock_sanitize.assert_called_once_with("Normalized / Title: 2026")
         mock_write.assert_called_once_with(
             str(Path(self.module.OUTPUT_DIR) / "Sanitized Title 2026 - hde (22.4GB)[tt1234567].rls"),
-            ["https://example.com/post"],
+            [
+                "https://example.com/post",
+                "https://www.imdb.com/title/tt1234567/",
+                "https://rapidgator.net/file/sample.rar.html",
+            ],
         )
 
     def test_visit_hde_url_falls_back_to_loose_tt_match_when_imdb_link_is_noncanonical(self):
@@ -347,6 +512,10 @@ class TestVisitHdeUrl(unittest.TestCase):
         response = Mock(text=build_detail_page("https://example.com/redirect?target=tt7654321"))
 
         with patch.object(self.module, "get_hde_response", return_value=response), patch.object(
+            self.module,
+            "unlock_hde_protected_soup",
+            return_value=self.module.BeautifulSoup("<div></div>", "html.parser"),
+        ), patch.object(
             self.module,
             "write_list_to_file",
             return_value=True,
@@ -411,18 +580,24 @@ class TestScrapyHdeMain(unittest.TestCase):
         ) as mock_parse, patch.object(
             self.module,
             "process_all",
+            return_value=True,
         ) as mock_process:
-            self.module.scrapy_hde(start_page=2, end_title="Old Movie – 1.0 GB")
+            with patch.object(self.module, "update_json_config") as mock_update:
+                self.module.scrapy_hde(start_page=2)
 
         mock_get.assert_called_once_with("https://example.com/tag/movies/page/2/")
         mock_parse.assert_called_once_with(response)
         mock_process.assert_called_once_with(result_list, max_workers=self.module.DEFAULT_MAX_WORKERS)
+        mock_update.assert_called_once_with(self.module.CONFIG_PATH, "end_titles", ["Old Movie – 1.0 GB"])
 
     def test_scrapy_hde_moves_to_next_page_until_end_title_is_found(self):
         """未命中截止标题时应继续抓取下一页。"""
         first_response = Mock()
         second_response = Mock()
-        first_result_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"}]
+        first_result_list = [
+            {"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"},
+            {"title": "Second Movie – 1.8 GB", "url": "https://example.com/second", "size": "1.8GB"},
+        ]
         second_result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/old", "size": "1.0GB"}]
 
         with patch.object(
@@ -436,8 +611,10 @@ class TestScrapyHdeMain(unittest.TestCase):
         ) as mock_parse, patch.object(
             self.module,
             "process_all",
+            return_value=True,
         ) as mock_process:
-            self.module.scrapy_hde(start_page=2, end_title="Old Movie – 1.0 GB")
+            with patch.object(self.module, "update_json_config") as mock_update:
+                self.module.scrapy_hde(start_page=2)
 
         self.assertEqual(
             mock_get.call_args_list,
@@ -454,6 +631,30 @@ class TestScrapyHdeMain(unittest.TestCase):
                 call(second_result_list, max_workers=self.module.DEFAULT_MAX_WORKERS),
             ],
         )
+        mock_update.assert_called_once_with(
+            self.module.CONFIG_PATH,
+            "end_titles",
+            ["New Movie – 2.0 GB", "Second Movie – 1.8 GB"],
+        )
+
+    def test_scrapy_hde_does_not_update_config_when_process_all_reports_failure(self):
+        """详情页处理失败时应直接终止，并保留原截止标题配置。"""
+        response = Mock()
+        result_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"}]
+
+        with patch.object(self.module, "get_hde_response", return_value=response), patch.object(
+            self.module,
+            "parse_hde_response",
+            return_value=result_list,
+        ), patch.object(
+            self.module,
+            "process_all",
+            return_value=False,
+        ), patch.object(self.module, "update_json_config") as mock_update:
+            with self.assertRaisesRegex(RuntimeError, "未更新截止标题配置"):
+                self.module.scrapy_hde(start_page=2)
+
+        mock_update.assert_not_called()
 
 
 if __name__ == "__main__":
