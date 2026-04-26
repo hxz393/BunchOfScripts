@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict
+from typing import Dict, Iterable, List
 
 import requests
 from bs4 import BeautifulSoup
@@ -26,6 +26,21 @@ CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 HDE_URL = CONFIG['hde_url']  # hde 地址
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 
+SIZE_WITH_DASH_PATTERN = re.compile(r"\s[–-]\s*([\d.]+\s*(?:GB|MB|TB))\s*$")
+TRAILING_SIZE_PATTERN = re.compile(r"([\d.]+\s*(?:GB|MB|TB))\s*$")
+IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)")
+IMDB_ID_PATTERN = re.compile(r"(tt\d+)")
+
+
+def build_hde_page_url(page_number: int) -> str:
+    """构造列表页 URL。"""
+    return f"{HDE_URL}tag/movies/page/{page_number}/"
+
+
+def should_stop_scrapy(result_list: List[Dict[str, str]], end_title: str) -> bool:
+    """当前批次命中截止标题时返回 True。"""
+    return any(result_item.get("title") == end_title for result_item in result_list)
+
 
 def scrapy_hde(start_page: int = 1, end_title="Tawai.A.voice.from.the.forest.2017.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-EPSiLON – 22.4 GB") -> None:
     """
@@ -34,7 +49,7 @@ def scrapy_hde(start_page: int = 1, end_title="Tawai.A.voice.from.the.forest.201
     logger.info("抓取 hde 站点发布信息")
     while True:
         logger.info(f"抓取第 {start_page} 页")
-        url = f"{HDE_URL}tag/movies/page/{start_page}/"
+        url = build_hde_page_url(start_page)
         response = get_hde_response(url)
         result_list = parse_hde_response(response)
         logger.info(f"共 {len(result_list)} 个结果")
@@ -49,7 +64,7 @@ def scrapy_hde(start_page: int = 1, end_title="Tawai.A.voice.from.the.forest.201
         process_all(full_list, max_workers=30)
 
         # 检查日期
-        if end_title in (result_item['title'] for result_item in full_list):
+        if should_stop_scrapy(full_list, end_title):
             logger.info("没有新发布，完成")
             break
 
@@ -90,22 +105,32 @@ def get_hde_response(url: str) -> requests.Response:
 
 
 def parse_hde_response(response: requests.Response) -> list:
+    """解析 HDE 单页列表，输出结果列表"""
     soup = BeautifulSoup(response.text, "lxml")
     results = []
     for fit in soup.select("div.fit.item"):
-        data_div = fit.select_one("div.data")
-        if not data_div:
-            continue
-        a_tag = data_div.select_one("h5 a")
-        if not a_tag:
-            # 有时候 h5 里可能直接是文字或结构不同，尝试取 h5 的第一个链接或文字
-            a_tag = data_div.select_one("h5 > a, h5 a")
-        if not a_tag:
-            continue
-        title = a_tag.get_text(strip=True)
-        url = a_tag.get("href", "").strip()
-        results.append({"title": title, "url": url})
+        result_item = parse_hde_item(fit)
+        if result_item:
+            results.append(result_item)
     return results
+
+
+def parse_hde_item(fit) -> Dict[str, str] | None:
+    """解析单个列表条目。"""
+    data_div = fit.select_one("div.data")
+    if not data_div:
+        return None
+
+    a_tag = data_div.select_one("h5 a")
+    if not a_tag:
+        # 有时候 h5 里可能直接是文字或结构不同，尝试取 h5 的第一个链接
+        a_tag = data_div.select_one("h5 > a, h5 a")
+    if not a_tag:
+        return None
+
+    title = a_tag.get_text(strip=True)
+    url = a_tag.get("href", "").strip()
+    return {"title": title, "url": url}
 
 
 def split_size(items: List[Dict[str, str]], default_size: str = "100.0 GB") -> List[Dict[str, str]]:
@@ -117,29 +142,26 @@ def split_size(items: List[Dict[str, str]], default_size: str = "100.0 GB") -> L
     normalized = []
     for it in items:
         title = it.get("title", "")
-        size = default_size
-
-        # 尝试用 “–” （长破折号）来分割
-        # 注意：可能有其它破折号类型（如普通的 "-","—" 等），可以做多个检查
-        # 下面用正则把最后的 “– XX GB” 提取出来
-        # 匹配 “ – ” 后面的小数 + 单位
-        m = re.search(r"\s[–-]\s*([\d.]+\s*(?:GB|MB|TB))\s*$", title)
-        if m:
-            size = m.group(1)
-        else:
-            # 如果没找到，用 fallback 方法：尝试更宽松的匹配
-            m2 = re.search(r"([\d.]+\s*(?:GB|MB|TB))\s*$", title)
-            if m2:
-                size = m2.group(1)
+        size = extract_release_size(title, default_size=default_size)
 
         # 构造新的 dict（也可以修改原来的）
         new_it = {
             "title": title,
             "url": it.get("url", ""),
-            "size": size.replace(" ", "")
+            "size": size
         }
         normalized.append(new_it)
     return normalized
+
+
+def extract_release_size(title: str, default_size: str = "100.0 GB") -> str:
+    """从标题末尾提取体积信息。"""
+    match = SIZE_WITH_DASH_PATTERN.search(title)
+    if not match:
+        match = TRAILING_SIZE_PATTERN.search(title)
+    if match:
+        return match.group(1).replace(" ", "")
+    return default_size.replace(" ", "")
 
 
 def visit_hde_url(result_item: dict):
@@ -148,31 +170,35 @@ def visit_hde_url(result_item: dict):
     logger.info(f"访问 {url}")
     response = get_hde_response(url)
     soup = BeautifulSoup(response.text, 'lxml')
-
-    imdb_id = ""
-
-    # 找所有 a 标签，href 包含 /title/tt
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        # 查找 imdb title 链接
-        m = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
-        if m:
-            imdb_id = m.group(1)
-            break
-
-    # 如果找不到，可以尝试更宽松匹配
-    if not imdb_id:
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            m2 = re.search(r"(tt\d+)", href)
-            if m2:
-                imdb_id = m2.group(1)
-                break
-
-    # 存回 result_item 或返回
-    result_item["imdb"] = imdb_id
-    file_name = normalize_release_title_for_filename(result_item['title'])
-    file_name = sanitize_filename(file_name)
-    file_name = f"{file_name} - hde ({result_item['size']})[{imdb_id}].rls"
-    path = os.path.join(OUTPUT_DIR, file_name)
+    result_item["imdb"] = extract_imdb_id_from_soup(soup)
+    path = os.path.join(OUTPUT_DIR, build_hde_output_filename(result_item))
     write_list_to_file(path, [url])
+
+
+def extract_imdb_id_from_soup(soup: BeautifulSoup) -> str:
+    """从详情页中提取 IMDb 编号。"""
+    hrefs = [a["href"] for a in soup.find_all("a", href=True)]
+    return extract_imdb_id_from_links(hrefs)
+
+
+def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
+    """优先从标准 IMDb URL 提取，其次宽松匹配 ``tt`` 编号。"""
+    href_list = list(hrefs)
+    for href in href_list:
+        match = IMDB_URL_PATTERN.search(href)
+        if match:
+            return match.group(1)
+
+    for href in href_list:
+        match = IMDB_ID_PATTERN.search(href)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def build_hde_output_filename(result_item: Dict[str, str]) -> str:
+    """根据发布信息拼装输出文件名。"""
+    file_name = normalize_release_title_for_filename(result_item["title"])
+    file_name = sanitize_filename(file_name)
+    return f"{file_name} - hde ({result_item['size']})[{result_item.get('imdb', '')}].rls"

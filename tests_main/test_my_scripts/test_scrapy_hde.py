@@ -93,6 +93,33 @@ class TestModuleLoad(unittest.TestCase):
         self.assertTrue(str(self.module.OUTPUT_DIR).endswith("downloads"))
 
 
+class TestHdeHelpers(unittest.TestCase):
+    """验证主流程辅助函数。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_hde()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_build_hde_page_url_formats_archive_page_address(self):
+        """分页 URL 应基于配置的站点前缀拼接。"""
+        self.assertEqual(
+            self.module.build_hde_page_url(3),
+            "https://example.com/tag/movies/page/3/",
+        )
+
+    def test_should_stop_scrapy_returns_true_only_when_end_title_is_present(self):
+        """截止标题存在时应停止翻页，否则继续。"""
+        result_list = [
+            {"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"},
+            {"title": "Old Movie – 1.0 GB", "url": "https://example.com/old", "size": "1.0GB"},
+        ]
+
+        self.assertTrue(self.module.should_stop_scrapy(result_list, "Old Movie – 1.0 GB"))
+        self.assertFalse(self.module.should_stop_scrapy(result_list, "Missing Movie"))
+
+
 class TestGetHdeResponse(unittest.TestCase):
     """验证单次请求逻辑。"""
 
@@ -185,6 +212,20 @@ class TestParseHdeResponse(unittest.TestCase):
             ],
         )
 
+    def test_parse_hde_item_returns_none_when_required_nodes_are_missing(self):
+        """单条条目缺少 ``div.data`` 或链接时应返回 ``None``。"""
+        fit_without_data = self.module.BeautifulSoup(
+            '<div class="fit item"><div class="other"></div></div>',
+            "html.parser",
+        ).select_one("div.fit.item")
+        fit_without_link = self.module.BeautifulSoup(
+            '<div class="fit item"><div class="data"><h5>No link</h5></div></div>',
+            "html.parser",
+        ).select_one("div.fit.item")
+
+        self.assertIsNone(self.module.parse_hde_item(fit_without_data))
+        self.assertIsNone(self.module.parse_hde_item(fit_without_link))
+
 
 class TestSplitSize(unittest.TestCase):
     """验证大小提取逻辑。"""
@@ -225,6 +266,11 @@ class TestSplitSize(unittest.TestCase):
                 },
             ],
         )
+
+    def test_extract_release_size_returns_normalized_default_when_size_is_missing(self):
+        """没有体积信息时应返回去空格后的默认值。"""
+        self.assertEqual(self.module.extract_release_size("Movie Three"), "100.0GB")
+        self.assertEqual(self.module.extract_release_size("Movie Three", default_size="1.5 TB"), "1.5TB")
 
 
 class TestProcessAll(unittest.TestCase):
@@ -323,6 +369,40 @@ class TestVisitHdeUrl(unittest.TestCase):
             self.module.visit_hde_url(result_item)
 
         self.assertEqual(result_item["imdb"], "tt7654321")
+
+    def test_extract_imdb_id_from_links_prefers_canonical_imdb_url(self):
+        """同时存在多种链接时，应优先取标准 IMDb 标题页。"""
+        imdb_id = self.module.extract_imdb_id_from_links(
+            [
+                "https://example.com/redirect?target=tt7654321",
+                "https://www.imdb.com/title/tt1234567/",
+            ]
+        )
+
+        self.assertEqual(imdb_id, "tt1234567")
+
+    def test_build_hde_output_filename_uses_sanitized_title_size_and_imdb(self):
+        """输出文件名应基于标题、体积和 IMDb 编号拼接。"""
+        result_item = {
+            "title": "Movie / Title: 2026",
+            "size": "22.4GB",
+            "imdb": "tt1234567",
+        }
+
+        with patch.object(
+            self.module,
+            "normalize_release_title_for_filename",
+            return_value="Normalized / Title: 2026",
+        ) as mock_normalize, patch.object(
+            self.module,
+            "sanitize_filename",
+            return_value="Sanitized Title 2026",
+        ) as mock_sanitize:
+            file_name = self.module.build_hde_output_filename(result_item)
+
+        self.assertEqual(file_name, "Sanitized Title 2026 - hde (22.4GB)[tt1234567].rls")
+        mock_normalize.assert_called_once_with("Movie / Title: 2026")
+        mock_sanitize.assert_called_once_with("Normalized / Title: 2026")
 
 
 class TestScrapyHdeMain(unittest.TestCase):
