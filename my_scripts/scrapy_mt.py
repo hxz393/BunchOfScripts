@@ -22,7 +22,6 @@ from my_module import (
     sanitize_filename,
     update_json_config,
     write_dict_to_json,
-    write_list_to_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,15 +39,25 @@ MT_TIME = CONFIG['mt_time']  # 请求验证加签对应时间戳
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
 QUERY_TIME = CONFIG.get('query_time', '2026-03-25')  # 查询起始日期
+REQUEST_TIMEOUT = 15  # 单次请求超时秒数
 
 REQUEST_HEAD["Authorization"] = MT_AUTH  # 请求头加入认证
 
-retry_strategy = Retry(
-    total=15,  # 总共重试次数
-    status_forcelist=[502],  # 触发重试状态码
-    method_whitelist=["POST", "GET"],  # 允许重试方法
-    backoff_factor=1  # 重试等待间隔（指数增长）
-)
+
+def create_retry_strategy() -> Retry:
+    """兼容 urllib3 1.x / 2.x 的 Retry 初始化参数。"""
+    retry_kwargs = {
+        "total": 15,
+        "status_forcelist": [502],
+        "backoff_factor": 1,
+    }
+    try:
+        return Retry(allowed_methods=["POST", "GET"], **retry_kwargs)
+    except TypeError:
+        return Retry(method_whitelist=["POST", "GET"], **retry_kwargs)
+
+
+retry_strategy = create_retry_strategy()
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=8, pool_maxsize=16)
 session = requests.Session()
 session.proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890", }
@@ -149,7 +158,7 @@ def post_mt_response(s_date: str, e_date: str, page: int) -> requests.Response:
         "_sgin": MT_SIGN,
         "_timestamp": MT_TIME
     }
-    response = session.post(MT_API_URL, headers=REQUEST_HEAD, json=data)
+    response = session.post(MT_API_URL, headers=REQUEST_HEAD, json=data, timeout=REQUEST_TIMEOUT)
     response.encoding = 'utf-8'
     if response.status_code != 200:
         raise Exception(f"请求失败，重试 {response.status_code}：页面 {page}")
