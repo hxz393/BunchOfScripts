@@ -6,6 +6,7 @@
 - ``output_dir``: 生成 ``.rls`` 文件的输出目录。
 - ``foreign_end_titles``: ``foreign-movies`` 流程的截止标题列表。
 - ``movie_end_titles``: ``movies`` 流程的截止标题列表。
+- ``rls_verification_url``: 可选，手动通过 Cloudflare 时使用的验证入口页。
 
 主流程：
 1. 先顺序翻页，把两条列表流程的新帖子统一写入 Redis 队列。
@@ -37,6 +38,7 @@ CONFIG_PATH = 'config/scrapy_rls.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
 
 RLS_URL = CONFIG['rls_url']  # rlsbb 地址
+RLS_VERIFICATION_URL = CONFIG.get('rls_verification_url')  # 手动过 CF 的验证入口页
 RLS_COOKIE = CONFIG['rls_cookie']  # 用户甜甜
 REQUEST_HEAD = CONFIG['request_head']  # 请求头
 OUTPUT_DIR = CONFIG['output_dir']  # 输出目录
@@ -57,9 +59,30 @@ REDIS_MOVIE_NEXT_END_TITLES_KEY = CONFIG.get('redis_movie_next_end_titles_key', 
 REQUEST_HEAD["Cookie"] = RLS_COOKIE  # 请求头加入认证
 
 
+class RlsCloudflareError(RuntimeError):
+    """RLS 请求命中 Cloudflare 验证页，通常意味着 Cookie 已失效。"""
+
+
 def normalize_rls_title(title: str) -> str:
     """统一截止标题和列表页标题的比较格式。"""
     return title.strip().replace(" ⭐", "").replace(" ", ".")
+
+
+def is_rls_cloudflare_challenge(response: requests.Response) -> bool:
+    """判断响应是否为 Cloudflare 验证页。"""
+    text = getattr(response, "text", "")
+    if not isinstance(text, str):
+        text = str(text)
+    text = text.lower()
+    markers = (
+        "<title>just a moment",
+        "challenges.cloudflare.com",
+        "cf_chl",
+        "challenge-platform",
+        "cf-browser-verification",
+        "<title>attention required!",
+    )
+    return any(marker in text for marker in markers)
 
 
 def get_current_end_titles(f_mode: bool = True) -> list[str]:
@@ -201,7 +224,9 @@ def drain_rls_queue(redis_client: redis.Redis | None = None) -> None:
         logger=logger,
         queue_label="RLS",
         identify_item=lambda info: info["url"],
+        abort_on_exception=lambda exc: isinstance(exc, RlsCloudflareError),
         recover_processing_on_start=False,
+        keep_failed_in_processing=True,
     )
 
 
@@ -214,8 +239,14 @@ def finalize_rls_run(redis_client: redis.Redis | None = None) -> None:
         logger.info("RLS 列表扫描尚未完成，暂不回写 end_titles")
         return
 
-    if redis_client.llen(REDIS_PENDING_KEY) or redis_client.llen(REDIS_PROCESSING_KEY):
+    pending_count = redis_client.llen(REDIS_PENDING_KEY)
+    if pending_count:
         logger.info("RLS 队列仍有未完成任务，暂不回写 end_titles")
+        return
+
+    processing_count = redis_client.llen(REDIS_PROCESSING_KEY)
+    if processing_count:
+        logger.warning(f"RLS 待处理已空，但处理中仍有 {processing_count} 条，已保留处理中队列，请直接重跑")
         return
 
     foreign_titles_payload = redis_client.get(REDIS_FOREIGN_NEXT_END_TITLES_KEY)
@@ -249,17 +280,34 @@ def scrapy_rls(start_page: int = 1) -> None:
     """
     logger.info("抓取 rlsbb 站点发布信息")
     redis_client = get_redis_client()
-    recover_rls_processing_when_pending_is_empty(redis_client)
-    enqueue_rls_posts(start_page=start_page, redis_client=redis_client)
-    drain_rls_queue(redis_client=redis_client)
-    finalize_rls_run(redis_client=redis_client)
+    try:
+        recover_rls_processing_when_pending_is_empty(redis_client)
+        enqueue_rls_posts(start_page=start_page, redis_client=redis_client)
+        drain_rls_queue(redis_client=redis_client)
+    finally:
+        finalize_rls_run(redis_client=redis_client)
 
 
-@retry(stop_max_attempt_number=150, wait_random_min=1000, wait_random_max=10000)
+def should_retry_rls_request(exc: Exception) -> bool:
+    """Cloudflare 验证页属于致命状态，不做无意义重试。"""
+    return not isinstance(exc, RlsCloudflareError)
+
+
+@retry(
+    stop_max_attempt_number=150,
+    wait_random_min=1000,
+    wait_random_max=10000,
+    retry_on_exception=should_retry_rls_request,
+)
 def get_rls_response(url: str) -> requests.Response:
     """请求流程"""
     response = requests.get(url, timeout=35, headers=REQUEST_HEAD)
     response.encoding = 'utf-8'
+    if is_rls_cloudflare_challenge(response):
+        verification_url = RLS_VERIFICATION_URL or url
+        raise RlsCloudflareError(
+            f"rls Cookie 已失效或触发 Cloudflare 验证，请先在浏览器手动通过后重跑：{verification_url}"
+        )
     if response.status_code == 403:
         sys.exit(f"被墙了 {response.status_code}：{url}")
     elif response.status_code != 200:
