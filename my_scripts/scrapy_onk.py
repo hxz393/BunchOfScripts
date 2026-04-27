@@ -24,7 +24,7 @@ from my_module import (
     update_json_config,
     write_list_to_file,
 )
-from scrapy_gd_downloader import download_gd_url, extract_drive_urls
+from gd_downloader import download_gd_url, extract_drive_urls
 from scrapy_redis import (
     deserialize_payload,
     drain_queue,
@@ -32,6 +32,7 @@ from scrapy_redis import (
     recover_processing_queue,
     serialize_payload,
 )
+from sort_movie_ops import extract_imdb_ids
 
 CONFIG_PATH = 'config/scrapy_onk.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -215,8 +216,7 @@ def enqueue_onk_posts(stop_date: datetime.datetime, redis_client=None) -> None:
     logger.info("ONK 列表扫描完成")
 def extract_unique_imdb_id(text: str, file_path: str) -> str | None:
     """从帖子正文提取 IMDb 编号。多个编号时取正文中最先出现的一个。"""
-    ids = re.findall(r"\btt\d+\b", text)
-    unique_ids = list(dict.fromkeys(ids))
+    unique_ids = extract_imdb_ids(text)
     if len(unique_ids) == 1:
         return unique_ids[0]
     if len(unique_ids) > 1:

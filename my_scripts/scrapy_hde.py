@@ -37,6 +37,7 @@ from urllib3.util.retry import Retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
 from scrapy_redis import deserialize_payload, drain_queue, get_redis_client, push_items_to_queue, serialize_payload
+from sort_movie_ops import extract_imdb_id_from_links as extract_shared_imdb_id_from_links
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,6 @@ REDIS_NEXT_END_TITLES_KEY = CONFIG.get('redis_next_end_titles_key', 'hde_next_en
 
 SIZE_WITH_DASH_PATTERN = re.compile(r"\s[–-]\s*([\d.]+\s*(?:GB|MB|TB))\s*$")
 TRAILING_SIZE_PATTERN = re.compile(r"([\d.]+\s*(?:GB|MB|TB))\s*$")
-IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)")
-IMDB_ID_PATTERN = re.compile(r"(tt\d+)")
 IMAGE_LINK_PATTERN = re.compile(r"\.(?:png|jpe?g|gif|webp|avif)(?:$|[?#])", re.IGNORECASE)
 SESSION_PROXIES = {
     "http": "http://127.0.0.1:7890",
@@ -461,18 +460,7 @@ def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
     """
     优先从标准 IMDb 标题页 URL 提取，其次回退到宽松 ``tt`` 编号匹配。
     """
-    fallback_imdb_id = ""
-    for href in hrefs:
-        match = IMDB_URL_PATTERN.search(href)
-        if match:
-            return match.group(1)
-
-        if not fallback_imdb_id:
-            match = IMDB_ID_PATTERN.search(href)
-            if match:
-                fallback_imdb_id = match.group(1)
-
-    return fallback_imdb_id
+    return extract_shared_imdb_id_from_links(hrefs) or ""
 
 
 def build_hde_output_filename(result_item: Dict[str, str]) -> str:

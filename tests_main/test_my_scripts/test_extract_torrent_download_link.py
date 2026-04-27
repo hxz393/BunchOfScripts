@@ -1,11 +1,12 @@
 """
-针对 ``my_scripts.sort_movie_ops.extract_torrent_download_link`` 的单元测试。
+针对 ``my_scripts.sort_movie_ops`` 中共享 helper 的单元测试。
 
 这些测试使用真实的临时文件，但不会依赖真实的 YTS 配置或网络。
 重点验证：
 1. JSON 来源会调用共享的 YTS 磁链选择逻辑。
 2. LOG 来源会返回首行并去掉 BOM。
 3. 坏 JSON / 空 LOG 会返回 ``None``。
+4. IMDb 编号提取 helper 的统一行为。
 """
 
 import importlib.util
@@ -180,6 +181,34 @@ class TestExtractTorrentDownloadLink(unittest.TestCase):
                 result = module.extract_torrent_download_link(target, "prefix:")
 
         self.assertIsNone(result)
+
+
+class TestImdbHelpers(unittest.TestCase):
+    def test_extract_imdb_id_prefers_canonical_url(self):
+        module = load_extract_torrent_download_link()
+
+        result = module.extract_imdb_id("https://www.imdb.com/title/tt1234567/?ref_=fn_al_tt_1 and tt7654321")
+
+        self.assertEqual(result, "tt1234567")
+
+    def test_extract_imdb_id_from_links_falls_back_to_loose_match(self):
+        module = load_extract_torrent_download_link()
+
+        result = module.extract_imdb_id_from_links(
+            [
+                "https://example.com/post?id=42",
+                "https://example.com/redirect?target=tt7654321",
+            ]
+        )
+
+        self.assertEqual(result, "tt7654321")
+
+    def test_extract_imdb_ids_preserves_first_seen_order(self):
+        module = load_extract_torrent_download_link()
+
+        result = module.extract_imdb_ids("tt1234567 and TT7654321 and tt1234567 again")
+
+        self.assertEqual(result, ["tt1234567", "tt7654321"])
 
 
 if __name__ == "__main__":

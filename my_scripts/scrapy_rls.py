@@ -30,6 +30,7 @@ from retrying import retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
 from scrapy_redis import deserialize_payload, drain_queue, get_redis_client, push_items_to_queue, serialize_payload
+from sort_movie_ops import extract_imdb_id_from_links
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -324,18 +325,7 @@ def parse_rls_response(response: requests.Response) -> list:
 def extract_rls_imdb_id(soup: BeautifulSoup) -> str:
     """先匹配标准 IMDb 链接，找不到再宽松回退到任意 tt 编号。"""
     href_list = [a['href'] for a in soup.find_all('a', href=True)]
-
-    for href in href_list:
-        match = re.search(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", href)
-        if match:
-            return match.group(1)
-
-    for href in href_list:
-        match = re.search(r"(tt\d+)", href)
-        if match:
-            return match.group(1)
-
-    return ""
+    return extract_imdb_id_from_links(href_list) or ""
 
 
 def visit_rls_url(result_item: dict):

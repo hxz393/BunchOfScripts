@@ -20,6 +20,7 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_dict_to_json, read_file_to_list
+from sort_movie_ops import extract_imdb_id
 from sort_movie_mysql import query_imdb_local_director
 from sort_movie_request import get_tmdb_movie_details
 
@@ -328,8 +329,7 @@ def extract_imdb_id_from_filename(file_name: str) -> str | None:
     :param file_name: 文件名
     :return: IMDb 标识，例如 tt1234567；不存在时返回 None
     """
-    match = re.search(r'(tt\d+)', file_name)
-    return match.group(1) if match else None
+    return extract_imdb_id(file_name)
 
 
 def search_tmdb_director(movie_id: str) -> str:

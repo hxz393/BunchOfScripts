@@ -126,6 +126,21 @@ def load_scrapy_hde(config: dict | None = None):
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
+
+    def fake_extract_imdb_id_from_links(hrefs):
+        fallback = None
+        for href in hrefs:
+            if "imdb.com/title/" in href:
+                return href.split("/title/")[1].split("/")[0].lower()
+            if fallback is None:
+                match = __import__("re").search(r"(tt\d+)", href, __import__("re").IGNORECASE)
+                if match:
+                    fallback = match.group(1).lower()
+        return fallback
+
+    fake_sort_movie_ops.extract_imdb_id_from_links = fake_extract_imdb_id_from_links
+
     fake_scrapy_redis = types.ModuleType("scrapy_redis")
     fake_scrapy_redis.serialize_payload = fake_serialize_payload
     fake_scrapy_redis.deserialize_payload = fake_deserialize_payload
@@ -148,6 +163,7 @@ def load_scrapy_hde(config: dict | None = None):
             "retrying": fake_retrying,
             "scrapy_redis": fake_scrapy_redis,
             "redis": fake_redis,
+            "sort_movie_ops": fake_sort_movie_ops,
         },
     ):
         spec.loader.exec_module(module)

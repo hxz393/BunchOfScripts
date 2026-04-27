@@ -23,7 +23,7 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from sort_movie_mysql import query_imdb_local_director
-from sort_movie_ops import scan_ids, split_director_name, create_aka_director, fix_douban_name
+from sort_movie_ops import scan_ids, split_director_name, create_aka_director, fix_douban_name, extract_imdb_id
 from sort_movie_request import (
     get_tmdb_director_details,
     get_tmdb_search_response,
@@ -49,18 +49,23 @@ def sort_director_auto(path: str, dst_path: str = r'A:\0b.导演别名') -> None
     director_main = os.path.basename(path)
     logger.info(f"开始处理：{director_main}")
     imdb_list = sorted({
-        m.group(1)
+        imdb_id
         for item in Path(path).rglob('*')
-        if (m := re.search(r'(tt\d+)', str(item)))
+        if (imdb_id := extract_imdb_id(str(item)))
     })
     if not imdb_list:
         logger.error(f"目录内没有收集到 IMDB 编号: {director_main}")
         time.sleep(0.5)
         return
+
+    # --- 搜索导演编号 ---
+    logger.info("========== 搜索导演编号 ==========")
     nm_id, tmdb_id, douban_id = get_director_ids(path, director_main, imdb_list)
     if not nm_id:
         return
 
+    # --- 获取导演别名 ---
+    logger.info("========== 获取导演别名 ==========")
     aka = get_director_aliases(director_main, tmdb_id, douban_id)
 
     for director_id, suffix in ((nm_id, 'imdb'), (tmdb_id, 'tmdb'), (douban_id, 'douban')):

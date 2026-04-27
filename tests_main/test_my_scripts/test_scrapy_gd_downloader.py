@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_gd_downloader.py"
+MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "gd_downloader.py"
 
 
 class FakeSession:

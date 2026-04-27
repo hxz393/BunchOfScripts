@@ -69,6 +69,12 @@ def load_scrapy_yts(config: dict | None = None):
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_movie_details = lambda _movie_id: None
 
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
+    fake_sort_movie_ops.extract_imdb_id = lambda text: next(
+        (part.lower() for part in __import__("re").findall(r"tt\d+", str(text), __import__("re").IGNORECASE)),
+        None,
+    )
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_yts_test_{uuid.uuid4().hex}",
         MODULE_PATH,
@@ -80,6 +86,7 @@ def load_scrapy_yts(config: dict | None = None):
             "my_module": fake_my_module,
             "retrying": fake_retrying,
             "sort_movie_mysql": fake_sort_movie_mysql,
+            "sort_movie_ops": fake_sort_movie_ops,
             "sort_movie_request": fake_sort_movie_request,
         },
     ):

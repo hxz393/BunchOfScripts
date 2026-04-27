@@ -200,6 +200,11 @@ def load_scrapy_onk(config: dict | None = None):
     fake_redis_module.recover_processing_queue = fake_recover_processing_queue
     fake_redis_module.drain_queue = fake_drain_queue
 
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
+    fake_sort_movie_ops.extract_imdb_ids = lambda text: list(
+        dict.fromkeys(match.group(0).lower() for match in re.finditer(r"\btt\d+\b", text, re.IGNORECASE))
+    )
+
     spec = importlib.util.spec_from_file_location(f"scrapy_onk_test_{uuid.uuid4().hex}", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     with patch.dict(
@@ -209,6 +214,7 @@ def load_scrapy_onk(config: dict | None = None):
             "retrying": fake_retrying,
             "scrapy_gd_downloader": fake_gd_downloader,
             "scrapy_redis": fake_redis_module,
+            "sort_movie_ops": fake_sort_movie_ops,
         },
     ), patch.object(requests, "Session", FakeSession):
         spec.loader.exec_module(module)

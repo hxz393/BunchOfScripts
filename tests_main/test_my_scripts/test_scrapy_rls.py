@@ -158,6 +158,21 @@ def load_scrapy_rls(config: dict | None = None):
     fake_scrapy_redis.push_items_to_queue = fake_push_items_to_queue
     fake_scrapy_redis.drain_queue = lambda *args, **kwargs: {"processed": 0, "success": 0, "failed": 0}
 
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
+
+    def fake_extract_imdb_id_from_links(hrefs):
+        fallback = None
+        for href in hrefs:
+            if "imdb.com/title/" in href:
+                return href.split("/title/")[1].split("/")[0].lower()
+            if fallback is None:
+                match = __import__("re").search(r"(tt\d+)", href, __import__("re").IGNORECASE)
+                if match:
+                    fallback = match.group(1).lower()
+        return fallback
+
+    fake_sort_movie_ops.extract_imdb_id_from_links = fake_extract_imdb_id_from_links
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_rls_test_{uuid.uuid4().hex}",
         MODULE_PATH,
@@ -170,6 +185,7 @@ def load_scrapy_rls(config: dict | None = None):
             "retrying": fake_retrying,
             "redis": fake_redis,
             "scrapy_redis": fake_scrapy_redis,
+            "sort_movie_ops": fake_sort_movie_ops,
         },
     ):
         spec.loader.exec_module(module)
