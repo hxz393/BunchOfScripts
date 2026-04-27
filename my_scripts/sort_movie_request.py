@@ -363,7 +363,6 @@ def get_douban_response(db_id: str, query_type: str) -> Optional[requests.Respon
     :param query_type: 请求类型
     :return: 成功时返回响应
     """
-    url = ""
     if query_type == "movie_response":
         logger.info(f"查询 DOUBAN：{db_id}")
         url = f"{DOUBAN_MOVIE_URL}/{db_id}/"
