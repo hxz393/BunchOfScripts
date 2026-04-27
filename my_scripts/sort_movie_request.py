@@ -19,7 +19,6 @@ from typing import Optional, cast
 import requests
 import xmltodict as xmltodict
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 from retrying import retry
 from tmdbv3api import TMDb, Movie, TV, Person
 from tmdbv3api.as_obj import AsObj
@@ -39,10 +38,6 @@ TMDB_HEADERS = {"Authorization": f"Bearer {TMDB_AUTH}", "accept": "application/j
 TMDB_IMAGE_URL = CONFIG['tmdb_image_url']  # tmdb 图片地址
 
 IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
-IMDB_PERSON_URL = CONFIG['imdb_person_url']  # imdb 导演地址
-IMDB_HEADER = CONFIG['imdb_header']  # imdb 请求头
-IMDB_COOKIE = CONFIG['imdb_cookie']  # imdbcookie
-IMDB_HEADER['Cookie'] = IMDB_COOKIE  # 请求头加入认证
 
 DOUBAN_HEADER = CONFIG['douban_header']  # 豆瓣请求头
 DOUBAN_COOKIE = CONFIG['douban_cookie']  # 豆瓣cookie
@@ -61,10 +56,6 @@ KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
 
 JACKETT_SEARCH_URL = CONFIG['jackett_search_url']  # jackett 搜索地址
 JACKETT_API_KEY = CONFIG['jackett_api_key']  # jackett api 密钥
-
-# 缓存变量
-_last_cookie_time = 0
-_cached_cookie = None
 
 TMDB = TMDb()
 TMDB.api_key = TMDB_KEY
@@ -169,101 +160,6 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> None:
     else:
         logger.error(f"封面下载失败：状态码 {image_response.status_code}")
         raise Exception(f"封面下载失败 {image_url}")
-
-
-@retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
-def get_imdb_cookie(force=False, hl=False):
-    """用浏览器访问 IMDB 刷新 Cookie"""
-    global _last_cookie_time, _cached_cookie
-    now = time.time()
-
-    if force:
-        _cached_cookie = None
-    elif _cached_cookie is not None and (now - _last_cookie_time) < 300:
-        return _cached_cookie
-
-    logger.warning("更新 IMDB Cookie")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=hl,
-            channel="chrome",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            # 不要再硬写 Chrome/120，直接用浏览器默认 UA 更稳
-        )
-        page = context.new_page()
-        page.goto("https://www.imdb.com/title/tt0759924/", wait_until="domcontentloaded", timeout=60000)
-
-        # cookie 准备往往早于搜索框渲染
-        page.wait_for_timeout(15000 if hl else 30000)
-
-        cookies = context.cookies()
-        cookie_names = {c["name"] for c in cookies}
-
-        if "session-id" not in cookie_names:
-            title = page.title()
-            html = page.content()
-            browser.close()
-
-            if "challenge.js" in html or "challenge-container" in html or "403 Forbidden" in title:
-                raise RuntimeError("IMDb 当前会拦截这个会话，headless 刷 cookie 不可靠")
-            raise RuntimeError(f"IMDb cookie 未就绪，当前只有: {sorted(cookie_names)}")
-
-        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-        browser.close()
-
-    _cached_cookie = cookie_str
-    _last_cookie_time = time.time()
-    return cookie_str
-
-
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000, retry_on_exception=lambda e: isinstance(e, requests.RequestException))
-def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
-    """
-    从 IMDB 获取电影信息，返回结果供解析
-
-    :param movie_id: 电影 imdb 编号
-    :return: 成功时返回响应
-    """
-    logger.info(f"查询 IMDB：{movie_id}")
-    url = f"{IMDB_MOVIE_URL}/{movie_id}/"
-    cookie_dict = get_imdb_cookie()
-    IMDB_HEADER['Cookie'] = cookie_dict  # 请求头加入认证
-    response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
-    if response.status_code != 200:
-        logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
-        sys.exit(f"被墙了 {response.status_code}：{url}")
-    return response
-
-
-def get_imdb_movie_details(movie_id) -> Optional[dict]:
-    """
-    解析 IMDB 页面的 json 数据
-
-    :param movie_id: 电影 imdb 编号
-    :return: 成功时返回解析出来的 json
-    """
-    response = get_imdb_movie_response(movie_id)
-
-    # 先找到 json 字段，找到 id 为 __NEXT_DATA__ 的 script 标签
-    soup = BeautifulSoup(response.text, 'html.parser')
-    script_tag = soup.find("script", id="__NEXT_DATA__")
-    if script_tag:
-        # 提取标签内部的文本内容，并去除首尾可能存在的空白字符
-        json_text = script_tag.string.strip()
-        try:
-            # 将字符串解析为 JSON 对象
-            data = json.loads(json_text)
-            return data
-        except json.JSONDecodeError as e:
-            logger.error("IMDB JSON 解析失败: %s", e)
-            return
-    else:
-        logger.error("IMDB 页面未找到 id 为 __NEXT_DATA__ 的 script 标签")
-        return
 
 
 @retry(

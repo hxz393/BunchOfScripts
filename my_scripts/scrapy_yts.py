@@ -21,7 +21,7 @@ from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_dict_to_json, read_file_to_list
 from sort_movie_ops import extract_imdb_id, select_best_yts_magnet
-from sort_movie_mysql import query_imdb_local_director
+from sort_movie_mysql import query_imdb_title_directors
 from sort_movie_request import get_tmdb_movie_details
 
 logger = logging.getLogger(__name__)
@@ -375,7 +375,7 @@ def search_imdb_local(movie_id: str) -> str:
     :return: 导演名
     """
     logger.info(f"查询本地 IMDb：{movie_id}")
-    directors = query_imdb_local_director(movie_id)
+    directors = query_imdb_title_directors(movie_id)
 
     if directors is None:
         return ""

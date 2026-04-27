@@ -38,9 +38,6 @@ def load_sort_movie_request(config: dict | None = None):
         "tmdb_key": "key",
         "tmdb_image_url": "https://example.com/image",
         "imdb_movie_url": "https://example.com/imdb/title",
-        "imdb_person_url": "https://example.com/imdb/name",
-        "imdb_header": {"User-Agent": "unit-test"},
-        "imdb_cookie": "imdb_cookie=value",
         "douban_header": {"User-Agent": "unit-test"},
         "douban_cookie": "douban_cookie=value",
         "douban_movie_url": "https://example.com/douban/movie",
@@ -104,10 +101,6 @@ def load_sort_movie_request(config: dict | None = None):
     fake_tmdbv3api_exceptions = types.ModuleType("tmdbv3api.exceptions")
     fake_tmdbv3api_exceptions.TMDbException = Exception
 
-    fake_playwright = types.ModuleType("playwright")
-    fake_playwright_sync_api = types.ModuleType("playwright.sync_api")
-    fake_playwright_sync_api.sync_playwright = lambda: None
-
     spec = importlib.util.spec_from_file_location(
         f"sort_movie_request_test_{uuid.uuid4().hex}",
         MODULE_PATH,
@@ -122,8 +115,6 @@ def load_sort_movie_request(config: dict | None = None):
             "tmdbv3api": fake_tmdbv3api,
             "tmdbv3api.as_obj": fake_tmdbv3api_as_obj,
             "tmdbv3api.exceptions": fake_tmdbv3api_exceptions,
-            "playwright": fake_playwright,
-            "playwright.sync_api": fake_playwright_sync_api,
         },
     ):
         spec.loader.exec_module(module)

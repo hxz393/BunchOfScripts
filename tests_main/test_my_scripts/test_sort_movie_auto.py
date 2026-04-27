@@ -143,7 +143,6 @@ def load_sort_movie_auto():
     fake_sort_movie_request.get_douban_response = lambda _query, _mode: None
     fake_sort_movie_request.get_douban_search_details = lambda _response: None
     fake_sort_movie_request.get_tmdb_movie_details = lambda _movie_id, _tv=False: {}
-    fake_sort_movie_request.get_imdb_movie_details = lambda _movie_id: {}
     fake_sort_movie_request.get_tmdb_movie_cover = lambda _poster_path, _image_path: None
 
     spec = importlib.util.spec_from_file_location(
