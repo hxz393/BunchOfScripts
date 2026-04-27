@@ -1,15 +1,17 @@
 """
-针对 ``my_scripts.scrapy_redis`` 的单元测试。
+针对 ``my_scripts.scrapy_redis`` 的测试。
 
-这里不依赖真实 Redis 服务，也不会读取本地真实 ``my_module`` 实现。
-目标是只验证共享 Redis helper 的核心行为：
-1. 配置注入与客户端构造参数。
-2. payload 序列化、去重入队、processing 恢复。
-3. 队列消费时的成功、失败、致命异常分支。
+默认使用 ``fakeredis[lua]`` 运行单元测试，直接覆盖真实 ``EVAL`` 路径，
+不依赖外部 Redis 服务。
+
+如需额外运行真实 Redis 冒烟测试，设置环境变量
+``SCRAPY_REDIS_RUN_REAL=1``。
 """
 
 import copy
 import importlib.util
+import json
+import os
 import sys
 import types
 import unittest
@@ -17,7 +19,16 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import redis
+
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
+
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "scrapy_redis.json"
+RUN_REAL_REDIS_ENV = "SCRAPY_REDIS_RUN_REAL"
 
 
 class DummyRedis:
@@ -29,105 +40,7 @@ class DummyRedis:
         self.connection_pool = types.SimpleNamespace(connection_kwargs=kwargs)
 
 
-class FakeRedisPipeline:
-    """最小 Redis pipeline 实现。"""
-
-    def __init__(self, client):
-        self.client = client
-        self.commands = []
-
-    def sadd(self, key: str, value: str):
-        self.commands.append(("sadd", key, value))
-        return self
-
-    def rpush(self, key: str, value: str):
-        self.commands.append(("rpush", key, value))
-        return self
-
-    def execute(self):
-        results = []
-        for command, key, value in self.commands:
-            results.append(getattr(self.client, command)(key, value))
-        self.commands.clear()
-        return results
-
-
-class FakeRedis:
-    """用于测试队列行为的内存版 Redis。"""
-
-    def __init__(self):
-        self.sets = {}
-        self.lists = {}
-        self.eval_calls = []
-
-    def pipeline(self):
-        return FakeRedisPipeline(self)
-
-    def sadd(self, key: str, value: str) -> int:
-        members = self.sets.setdefault(key, set())
-        if value in members:
-            return 0
-        members.add(value)
-        return 1
-
-    def smembers(self, key: str) -> set[str]:
-        return self.sets.get(key, set()).copy()
-
-    def rpush(self, key: str, value: str) -> int:
-        items = self.lists.setdefault(key, [])
-        items.append(value)
-        return len(items)
-
-    def rpoplpush(self, source: str, destination: str):
-        source_items = self.lists.setdefault(source, [])
-        if not source_items:
-            return None
-        value = source_items.pop()
-        self.lists.setdefault(destination, []).insert(0, value)
-        return value
-
-    def lrem(self, key: str, count: int, value: str) -> int:
-        items = self.lists.setdefault(key, [])
-        removed = 0
-        kept = []
-        for item in items:
-            if item == value and removed < count:
-                removed += 1
-                continue
-            kept.append(item)
-        self.lists[key] = kept
-        return removed
-
-    def llen(self, key: str) -> int:
-        return len(self.lists.get(key, []))
-
-    def lrange(self, key: str, start: int, end: int) -> list[str]:
-        items = self.lists.get(key, [])
-        if end == -1:
-            end = len(items) - 1
-        return items[start:end + 1]
-
-    def eval(self, script: str, numkeys: int, *keys_and_args):
-        self.eval_calls.append((script, numkeys, keys_and_args))
-        keys = keys_and_args[:numkeys]
-        args = keys_and_args[numkeys:]
-        if len(keys) != 2:
-            raise AssertionError("expected seen_key and pending_key")
-        if len(args) % 2 != 0:
-            raise AssertionError("expected alternating unique_value/payload args")
-
-        seen_key, pending_key = keys
-        enqueued = 0
-        for index in range(0, len(args), 2):
-            unique_value = args[index]
-            payload = args[index + 1]
-            if self.sadd(seen_key, unique_value):
-                self.rpush(pending_key, payload)
-                enqueued += 1
-        return enqueued
-
-
-def load_scrapy_redis(config: dict | None = None):
+def load_scrapy_redis(config: dict | None = None, *, redis_module=None):
     """在隔离依赖环境中加载 ``scrapy_redis`` 模块。"""
     helper_config = {
         "redis_host": "127.0.0.1",
@@ -140,19 +53,25 @@ def load_scrapy_redis(config: dict | None = None):
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(helper_config)
 
-    fake_redis = types.ModuleType("redis")
-    fake_redis.Redis = DummyRedis
+    if redis_module is None:
+        redis_module = types.ModuleType("redis")
+        redis_module.Redis = DummyRedis
 
     spec = importlib.util.spec_from_file_location(
         f"scrapy_redis_test_{uuid.uuid4().hex}",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
+    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": redis_module}):
         spec.loader.exec_module(module)
 
     module._test_config = helper_config
     return module
+
+
+def load_real_redis_config() -> dict:
+    """读取真实 Redis 集成测试所需的配置。"""
+    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
 class TestModuleLoad(unittest.TestCase):
@@ -181,19 +100,36 @@ class TestModuleLoad(unittest.TestCase):
         self.assertEqual(restored, payload)
 
 
-class TestQueueHelpers(unittest.TestCase):
-    """验证入队、恢复和出队辅助逻辑。"""
+@unittest.skipIf(fakeredis is None, "fakeredis[lua] is not installed")
+class FakeredisTestCase(unittest.TestCase):
+    """为默认单元测试提供真实 Lua 的 fakeredis 客户端。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_scrapy_redis()
 
     def setUp(self):
-        self.module = load_scrapy_redis()
-        self.redis_client = FakeRedis()
-        self.seen_key = "test:seen"
-        self.pending_key = "test:pending"
-        self.processing_key = "test:processing"
-        self.failed_key = "test:failed"
+        self.redis_client = fakeredis.FakeRedis(decode_responses=True)
+        prefix = f"codex:test:scrapy_redis:{uuid.uuid4().hex}"
+        self.seen_key = f"{prefix}:seen"
+        self.pending_key = f"{prefix}:pending"
+        self.processing_key = f"{prefix}:processing"
+        self.failed_key = f"{prefix}:failed"
+
+    def tearDown(self):
+        self.redis_client.delete(
+            self.seen_key,
+            self.pending_key,
+            self.processing_key,
+            self.failed_key,
+        )
+
+
+class TestQueueHelpers(FakeredisTestCase):
+    """验证入队、恢复和出队辅助逻辑。"""
 
     def test_push_items_to_queue_deduplicates_items_and_serializes_payloads(self):
-        """重复任务不应重复入队，真实入队内容应经过序列化。"""
+        """重复任务不应重复入队，真实入队内容应经过 Lua 序列化入队。"""
         items = [
             {"id": "1", "url": "u1"},
             {"id": "1", "url": "u1"},
@@ -216,7 +152,6 @@ class TestQueueHelpers(unittest.TestCase):
             ["1", "2"],
         )
         self.assertEqual(self.redis_client.smembers(self.seen_key), {"1", "2"})
-        self.assertEqual(len(self.redis_client.eval_calls), 1)
 
     def test_push_items_to_queue_returns_zero_when_items_are_empty(self):
         """空任务列表不应写入任何 Redis 数据。"""
@@ -286,15 +221,8 @@ class TestQueueHelpers(unittest.TestCase):
         self.assertEqual(self.redis_client.lrange(self.processing_key, 0, -1), ["payload-b"])
 
 
-class TestDrainQueue(unittest.TestCase):
+class TestDrainQueue(FakeredisTestCase):
     """验证消费队列时的成功、失败与停止策略。"""
-
-    def setUp(self):
-        self.module = load_scrapy_redis()
-        self.redis_client = FakeRedis()
-        self.pending_key = "test:pending"
-        self.processing_key = "test:processing"
-        self.failed_key = "test:failed"
 
     def test_drain_queue_raises_when_failed_key_is_missing(self):
         """默认失败分流模式下，必须提供 ``failed_key``。"""
@@ -513,6 +441,91 @@ class TestDrainQueue(unittest.TestCase):
         self.assertEqual(self.redis_client.llen(self.failed_key), 0)
         logger.error.assert_called_once()
         self.assertIn("TEST 检测到致命错误，停止继续处理：fatal，错误：fatal boom", logger.error.call_args[0][0])
+
+
+@unittest.skipUnless(
+    os.environ.get(RUN_REAL_REDIS_ENV) == "1",
+    f"set {RUN_REAL_REDIS_ENV}=1 to run real Redis integration tests",
+)
+class TestRealRedisIntegration(unittest.TestCase):
+    """显式开启时才运行的真实 Redis 冒烟测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.real_config = load_real_redis_config()
+        cls.module = load_scrapy_redis(config=cls.real_config, redis_module=redis)
+        cls.redis_client = cls.module.get_redis_client()
+        try:
+            cls.redis_client.ping()
+        except redis.RedisError as exc:  # pragma: no cover - 仅在真实环境不可用时触发
+            raise unittest.SkipTest(f"Redis 不可达，跳过真实集成测试：{exc}")
+
+    def setUp(self):
+        prefix = f"codex:itest:scrapy_redis:{uuid.uuid4().hex}"
+        self.seen_key = f"{prefix}:seen"
+        self.pending_key = f"{prefix}:pending"
+        self.processing_key = f"{prefix}:processing"
+        self.failed_key = f"{prefix}:failed"
+
+    def tearDown(self):
+        self.redis_client.delete(
+            self.seen_key,
+            self.pending_key,
+            self.processing_key,
+            self.failed_key,
+        )
+
+    def test_push_items_to_queue_executes_lua_on_real_redis(self):
+        """真实 Redis 下应通过 Lua 原子完成去重与入队。"""
+        items = [
+            {"id": "1", "url": "u1"},
+            {"id": "1", "url": "u1"},
+            {"id": "2", "url": "u2"},
+        ]
+
+        enqueued_count = self.module.push_items_to_queue(
+            self.redis_client,
+            items,
+            seen_key=self.seen_key,
+            pending_key=self.pending_key,
+            unique_value=lambda item: item["id"],
+            serializer=self.module.serialize_payload,
+        )
+
+        self.assertEqual(enqueued_count, 2)
+        self.assertEqual(self.redis_client.smembers(self.seen_key), {"1", "2"})
+        self.assertEqual(
+            [self.module.deserialize_payload(payload)["id"] for payload in self.redis_client.lrange(self.pending_key, 0, -1)],
+            ["1", "2"],
+        )
+
+    def test_drain_queue_smoke_runs_against_real_redis(self):
+        """真实 Redis 下的基本消费流程应保持可用。"""
+        logger = Mock()
+        processed_ids = []
+        self.redis_client.rpush(self.pending_key, self.module.serialize_payload({"id": "1"}))
+        self.redis_client.rpush(self.pending_key, self.module.serialize_payload({"id": "2"}))
+
+        def fake_worker(info: dict) -> None:
+            processed_ids.append(info["id"])
+
+        result = self.module.drain_queue(
+            self.redis_client,
+            pending_key=self.pending_key,
+            processing_key=self.processing_key,
+            failed_key=self.failed_key,
+            max_workers=2,
+            worker=fake_worker,
+            logger=logger,
+            queue_label="TEST",
+            identify_item=lambda info: info["id"],
+        )
+
+        self.assertEqual(result, {"processed": 2, "success": 2, "failed": 0})
+        self.assertEqual(set(processed_ids), {"1", "2"})
+        self.assertEqual(self.redis_client.llen(self.pending_key), 0)
+        self.assertEqual(self.redis_client.llen(self.processing_key), 0)
+        self.assertEqual(self.redis_client.llen(self.failed_key), 0)
 
 
 if __name__ == "__main__":
