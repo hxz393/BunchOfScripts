@@ -1,12 +1,15 @@
 """
-针对 ``my_scripts.scrapy_redis`` 的集成测试。
+针对 ``my_scripts.scrapy_redis`` 的单元测试。
 
-这里使用真实 ``redis`` 客户端连接 ``config/scrapy_redis.json`` 指向的 Redis，
-用唯一 key 前缀隔离测试数据；Redis 不可达时整组跳过。
+这里不依赖真实 Redis 服务，也不会读取本地真实 ``my_module`` 实现。
+目标是只验证共享 Redis helper 的核心行为：
+1. 配置注入与客户端构造参数。
+2. payload 序列化、去重入队、processing 恢复。
+3. 队列消费时的成功、失败、致命异常分支。
 """
 
+import copy
 import importlib.util
-import json
 import sys
 import types
 import unittest
@@ -14,56 +17,149 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import redis
-
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "scrapy_redis.json"
 
 
-def load_scrapy_redis():
-    """在最小依赖环境中加载 ``scrapy_redis`` 模块。"""
-    helper_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+class DummyRedis:
+    """最小 ``redis.Redis`` 替身，只记录构造参数。"""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.connection_pool = types.SimpleNamespace(connection_kwargs=kwargs)
+
+
+class FakeRedisPipeline:
+    """最小 Redis pipeline 实现。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.commands = []
+
+    def sadd(self, key: str, value: str):
+        self.commands.append(("sadd", key, value))
+        return self
+
+    def rpush(self, key: str, value: str):
+        self.commands.append(("rpush", key, value))
+        return self
+
+    def execute(self):
+        results = []
+        for command, key, value in self.commands:
+            results.append(getattr(self.client, command)(key, value))
+        self.commands.clear()
+        return results
+
+
+class FakeRedis:
+    """用于测试队列行为的内存版 Redis。"""
+
+    def __init__(self):
+        self.sets = {}
+        self.lists = {}
+        self.eval_calls = []
+
+    def pipeline(self):
+        return FakeRedisPipeline(self)
+
+    def sadd(self, key: str, value: str) -> int:
+        members = self.sets.setdefault(key, set())
+        if value in members:
+            return 0
+        members.add(value)
+        return 1
+
+    def smembers(self, key: str) -> set[str]:
+        return self.sets.get(key, set()).copy()
+
+    def rpush(self, key: str, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        items.append(value)
+        return len(items)
+
+    def rpoplpush(self, source: str, destination: str):
+        source_items = self.lists.setdefault(source, [])
+        if not source_items:
+            return None
+        value = source_items.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def lrem(self, key: str, count: int, value: str) -> int:
+        items = self.lists.setdefault(key, [])
+        removed = 0
+        kept = []
+        for item in items:
+            if item == value and removed < count:
+                removed += 1
+                continue
+            kept.append(item)
+        self.lists[key] = kept
+        return removed
+
+    def llen(self, key: str) -> int:
+        return len(self.lists.get(key, []))
+
+    def lrange(self, key: str, start: int, end: int) -> list[str]:
+        items = self.lists.get(key, [])
+        if end == -1:
+            end = len(items) - 1
+        return items[start:end + 1]
+
+    def eval(self, script: str, numkeys: int, *keys_and_args):
+        self.eval_calls.append((script, numkeys, keys_and_args))
+        keys = keys_and_args[:numkeys]
+        args = keys_and_args[numkeys:]
+        if len(keys) != 2:
+            raise AssertionError("expected seen_key and pending_key")
+        if len(args) % 2 != 0:
+            raise AssertionError("expected alternating unique_value/payload args")
+
+        seen_key, pending_key = keys
+        enqueued = 0
+        for index in range(0, len(args), 2):
+            unique_value = args[index]
+            payload = args[index + 1]
+            if self.sadd(seen_key, unique_value):
+                self.rpush(pending_key, payload)
+                enqueued += 1
+        return enqueued
+
+
+def load_scrapy_redis(config: dict | None = None):
+    """在隔离依赖环境中加载 ``scrapy_redis`` 模块。"""
+    helper_config = {
+        "redis_host": "127.0.0.1",
+        "redis_port": 6379,
+        "redis_db": 0,
+    }
+    if config:
+        helper_config.update(config)
+
     fake_my_module = types.ModuleType("my_module")
-    fake_my_module.read_json_to_dict = lambda _path: dict(helper_config)
+    fake_my_module.read_json_to_dict = lambda _path: copy.deepcopy(helper_config)
+
+    fake_redis = types.ModuleType("redis")
+    fake_redis.Redis = DummyRedis
 
     spec = importlib.util.spec_from_file_location(
         f"scrapy_redis_test_{uuid.uuid4().hex}",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"my_module": fake_my_module}):
+    with patch.dict(sys.modules, {"my_module": fake_my_module, "redis": fake_redis}):
         spec.loader.exec_module(module)
 
     module._test_config = helper_config
     return module
 
 
-class TestScrapyRedis(unittest.TestCase):
-    """验证共享 Redis helper 与真实 Redis 的交互。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.module = load_scrapy_redis()
-        cls.redis_client = cls.module.get_redis_client()
-        try:
-            cls.redis_client.ping()
-        except redis.RedisError as exc:  # pragma: no cover - 仅在环境不可用时触发
-            raise unittest.SkipTest(f"Redis 不可达，跳过 scrapy_redis 集成测试：{exc}")
+class TestModuleLoad(unittest.TestCase):
+    """验证模块导入与客户端构造。"""
 
     def setUp(self):
-        prefix = f"codex:test:scrapy_redis:{uuid.uuid4().hex}"
-        self.seen_key = f"{prefix}:seen"
-        self.pending_key = f"{prefix}:pending"
-        self.processing_key = f"{prefix}:processing"
-        self.failed_key = f"{prefix}:failed"
-
-    def tearDown(self):
-        self.redis_client.delete(
-            self.seen_key,
-            self.pending_key,
-            self.processing_key,
-            self.failed_key,
-        )
+        self.module = load_scrapy_redis()
 
     def test_get_redis_client_uses_shared_config_connection(self):
         """应按共享配置创建 Redis 客户端。"""
@@ -83,6 +179,18 @@ class TestScrapyRedis(unittest.TestCase):
         restored = self.module.deserialize_payload(serialized)
 
         self.assertEqual(restored, payload)
+
+
+class TestQueueHelpers(unittest.TestCase):
+    """验证入队、恢复和出队辅助逻辑。"""
+
+    def setUp(self):
+        self.module = load_scrapy_redis()
+        self.redis_client = FakeRedis()
+        self.seen_key = "test:seen"
+        self.pending_key = "test:pending"
+        self.processing_key = "test:processing"
+        self.failed_key = "test:failed"
 
     def test_push_items_to_queue_deduplicates_items_and_serializes_payloads(self):
         """重复任务不应重复入队，真实入队内容应经过序列化。"""
@@ -108,6 +216,7 @@ class TestScrapyRedis(unittest.TestCase):
             ["1", "2"],
         )
         self.assertEqual(self.redis_client.smembers(self.seen_key), {"1", "2"})
+        self.assertEqual(len(self.redis_client.eval_calls), 1)
 
     def test_push_items_to_queue_returns_zero_when_items_are_empty(self):
         """空任务列表不应写入任何 Redis 数据。"""
@@ -175,6 +284,31 @@ class TestScrapyRedis(unittest.TestCase):
         self.assertEqual(payload, "payload-b")
         self.assertEqual(self.redis_client.lrange(self.pending_key, 0, -1), ["payload-a"])
         self.assertEqual(self.redis_client.lrange(self.processing_key, 0, -1), ["payload-b"])
+
+
+class TestDrainQueue(unittest.TestCase):
+    """验证消费队列时的成功、失败与停止策略。"""
+
+    def setUp(self):
+        self.module = load_scrapy_redis()
+        self.redis_client = FakeRedis()
+        self.pending_key = "test:pending"
+        self.processing_key = "test:processing"
+        self.failed_key = "test:failed"
+
+    def test_drain_queue_raises_when_failed_key_is_missing(self):
+        """默认失败分流模式下，必须提供 ``failed_key``。"""
+        with self.assertRaisesRegex(ValueError, "failed_key 不能为空"):
+            self.module.drain_queue(
+                self.redis_client,
+                pending_key=self.pending_key,
+                processing_key=self.processing_key,
+                max_workers=1,
+                worker=lambda _info: None,
+                logger=Mock(),
+                queue_label="TEST",
+                identify_item=lambda info: info["id"],
+            )
 
     def test_drain_queue_returns_zero_counts_when_pending_is_empty(self):
         """没有待处理任务时，应直接返回零统计并输出提示。"""
@@ -350,6 +484,35 @@ class TestScrapyRedis(unittest.TestCase):
         logger.exception.assert_called_once()
         logger.error.assert_not_called()
         self.assertIn("抓取出错：9，错误：boom", logger.exception.call_args[0][0])
+
+    def test_drain_queue_requeues_fatal_item_and_raises(self):
+        """致命异常应停止继续处理，并把当前任务放回 pending。"""
+        logger = Mock()
+        payload_fail = self.module.serialize_payload({"id": "fatal"})
+        self.redis_client.rpush(self.pending_key, payload_fail)
+
+        def fake_worker(_info: dict) -> None:
+            raise RuntimeError("fatal boom")
+
+        with self.assertRaisesRegex(RuntimeError, "fatal boom"):
+            self.module.drain_queue(
+                self.redis_client,
+                pending_key=self.pending_key,
+                processing_key=self.processing_key,
+                failed_key=self.failed_key,
+                max_workers=1,
+                worker=fake_worker,
+                logger=logger,
+                queue_label="TEST",
+                identify_item=lambda info: info["id"],
+                abort_on_exception=lambda exc: isinstance(exc, RuntimeError),
+            )
+
+        self.assertEqual(self.redis_client.lrange(self.pending_key, 0, -1), [payload_fail])
+        self.assertEqual(self.redis_client.llen(self.processing_key), 0)
+        self.assertEqual(self.redis_client.llen(self.failed_key), 0)
+        logger.error.assert_called_once()
+        self.assertIn("TEST 检测到致命错误，停止继续处理：fatal，错误：fatal boom", logger.error.call_args[0][0])
 
 
 if __name__ == "__main__":

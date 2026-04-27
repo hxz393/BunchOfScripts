@@ -228,6 +228,24 @@ class FakeRedis:
             end = len(items) - 1
         return items[start:end + 1]
 
+    def eval(self, _script: str, numkeys: int, *keys_and_args):
+        keys = keys_and_args[:numkeys]
+        args = keys_and_args[numkeys:]
+        if len(keys) != 2:
+            raise AssertionError("expected seen_key and pending_key")
+        if len(args) % 2 != 0:
+            raise AssertionError("expected alternating unique_value/payload args")
+
+        seen_key, pending_key = keys
+        enqueued = 0
+        for index in range(0, len(args), 2):
+            unique_value = args[index]
+            payload = args[index + 1]
+            if self.sadd(seen_key, unique_value):
+                self.rpush(pending_key, payload)
+                enqueued += 1
+        return enqueued
+
     def get(self, key: str):
         return self.values.get(key)
 

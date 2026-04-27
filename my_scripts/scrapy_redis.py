@@ -19,6 +19,19 @@ REDIS_HOST = CONFIG['redis_host']  # Redis 主机
 REDIS_PORT = CONFIG.get('redis_port', 6379)  # Redis 端口
 REDIS_DB = CONFIG.get('redis_db', 0)  # Redis DB
 
+PUSH_ITEMS_TO_QUEUE_LUA = """
+local enqueued = 0
+for i = 1, #ARGV, 2 do
+    local unique_value = ARGV[i]
+    local payload = ARGV[i + 1]
+    if redis.call('SADD', KEYS[1], unique_value) == 1 then
+        redis.call('RPUSH', KEYS[2], payload)
+        enqueued = enqueued + 1
+    end
+end
+return enqueued
+"""
+
 
 def get_redis_client() -> redis.Redis:
     """按统一配置创建 Redis 客户端。"""
@@ -56,22 +69,19 @@ def push_items_to_queue(
     if not items:
         return 0
 
-    pipe = redis_client.pipeline()
+    args: list[str] = []
     for item in items:
-        pipe.sadd(seen_key, unique_value(item))
-    added_results = pipe.execute()
+        args.extend((unique_value(item), serializer(item)))
 
-    queue_pipe = redis_client.pipeline()
-    enqueued_count = 0
-    for added, item in zip(added_results, items):
-        if added:
-            queue_pipe.rpush(pending_key, serializer(item))
-            enqueued_count += 1
-
-    if enqueued_count:
-        queue_pipe.execute()
-
-    return enqueued_count
+    return int(
+        redis_client.eval(
+            PUSH_ITEMS_TO_QUEUE_LUA,
+            2,
+            seen_key,
+            pending_key,
+            *args,
+        )
+    )
 
 
 def recover_processing_queue(
