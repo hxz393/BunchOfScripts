@@ -10,110 +10,17 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import List
 
-from my_module import read_json_to_dict, read_file_to_list
+from my_module import read_json_to_dict, extract_torrent_download_link
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("config/add_to_pikpak.json")
-SUPPORTED_SUFFIXES = {".json", ".log"}
+CONFIG = read_json_to_dict("config/add_to_pikpak.json")
+PIKPAK_PATH = CONFIG["pikpak_path"]
+PIKPAK_CONFIG = CONFIG["pikpak_config"]
+MAGNET_PATH = CONFIG["magnet_path"]
 MAX_TASK_NAME_LENGTH = 100
-
-
-def load_config() -> Tuple[str, str, str]:
-    """读取并校验配置。"""
-    config = read_json_to_dict(CONFIG_PATH)
-    if not config:
-        raise ValueError(f"读取配置失败: {CONFIG_PATH}")
-
-    pikpak_path = config.get("pikpak_path")
-    pikpak_config = config.get("pikpak_config")
-    magnet_path = config.get("magnet_path")
-    if not pikpak_path or not pikpak_config or not magnet_path:
-        raise KeyError(f"配置缺少必要字段: {CONFIG_PATH}")
-
-    return pikpak_path, pikpak_config, magnet_path
-
-
-def iter_source_files(source: str) -> Iterator[Path]:
-    """遍历来源目录中的可处理文件。"""
-    for root, _, files in os.walk(source):
-        root_path = Path(root)
-        for file_name in files:
-            file_path = root_path / file_name
-            if file_path.suffix.lower() in SUPPORTED_SUFFIXES:
-                yield file_path
-
-
-def build_task_name(file_path: Path) -> str:
-    """根据文件名生成 PikPak 任务名。"""
-    return file_path.stem[:MAX_TASK_NAME_LENGTH]
-
-
-def build_remote_path(source_root: Path, file_path: Path) -> str:
-    """根据来源目录生成 PikPak 远程目录。"""
-    relative_parent = file_path.parent.relative_to(source_root)
-    if relative_parent == Path("."):
-        return "/"
-    return f"/{relative_parent.as_posix()}"
-
-
-def filter_torrents(torrents: List[Dict[str, Any]], key: str, priority_list: List[str]) -> List[Dict[str, Any]]:
-    """按优先级过滤种子，如果出现意外字段值则抛错。"""
-    unique_values = {torrent[key] for torrent in torrents}
-    unexpected_values = unique_values - set(priority_list)
-    if unexpected_values:
-        raise ValueError(f"Unexpected value for {key}: {unexpected_values}")
-
-    for value in priority_list:
-        filtered = [torrent for torrent in torrents if torrent[key] == value]
-        if filtered:
-            return filtered
-    return torrents
-
-
-def select_best_yts_magnet(json_data: Dict[str, Any], magnet_path: str) -> str:
-    """从 yts JSON 中选择最佳种子并生成磁链。"""
-    torrents = json_data["data"]["movie"]["torrents"]
-    torrents = filter_torrents(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "video_codec", ["x265", "x264"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "bit_depth", ["10", "8"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "type", ["bluray", "web"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
-    return f"{magnet_path}{best_torrent['hash']}"
-
-
-def extract_download_link(file_path: Path, magnet_path: str) -> Optional[str]:
-    """从 JSON 或 LOG 文件中提取下载链接。"""
-    if file_path.suffix.lower() == ".json":
-        json_data = read_json_to_dict(file_path)
-        if not json_data:
-            logger.error(f"读取 JSON 失败: {file_path}")
-            return None
-        try:
-            return select_best_yts_magnet(json_data, magnet_path)
-        except Exception:
-            logger.exception(f"从 JSON 提取下载链接失败: {file_path}")
-            return None
-
-    lines = read_file_to_list(file_path)
-    if not lines:
-        logger.error(f"读取 LOG 失败或内容为空: {file_path}")
-        return None
-    return lines[0].lstrip("\ufeff")
 
 
 def run_pikpak_command(pikpak_path: str, pikpak_config: str, args: List[str]) -> subprocess.CompletedProcess:
@@ -129,14 +36,14 @@ def run_pikpak_command(pikpak_path: str, pikpak_config: str, args: List[str]) ->
     )
 
 
-def ensure_remote_folder(pikpak_path: str, pikpak_config: str, remote_path: str) -> bool:
-    """确保远程目录存在。根目录不需要创建。"""
+def create_pikpak_folder(remote_path: str) -> bool:
+    """创建 PikPak 目录；根目录不需要创建。"""
     if remote_path == "/":
         return True
 
     result = run_pikpak_command(
-        pikpak_path,
-        pikpak_config,
+        PIKPAK_PATH,
+        PIKPAK_CONFIG,
         ["new", "folder", "-p", remote_path],
     )
     stdout = (result.stdout or "").strip()
@@ -152,17 +59,11 @@ def ensure_remote_folder(pikpak_path: str, pikpak_config: str, remote_path: str)
     return False
 
 
-def submit_url(
-        pikpak_path: str,
-        pikpak_config: str,
-        remote_path: str,
-        task_name: str,
-        download_link: str,
-) -> bool:
-    """提交单个 PikPak 离线任务。"""
+def add_pikpak_url(remote_path: str, task_name: str, download_link: str) -> bool:
+    """添加单个 PikPak 离线 URL 任务。"""
     result = run_pikpak_command(
-        pikpak_path,
-        pikpak_config,
+        PIKPAK_PATH,
+        PIKPAK_CONFIG,
         ["new", "url", "-p", remote_path, "-n", task_name, "-i", download_link],
     )
     stdout = (result.stdout or "").strip()
@@ -189,30 +90,35 @@ def add_to_pikpak(source: str) -> None:
         logger.error(f"来源目录不存在: {source_path}")
         return
 
-    pikpak_path, pikpak_config, magnet_path = load_config()
-
     done = 0
     failed = 0
     skipped = 0
     folder_failed = 0
     attempted_paths = set()
 
-    for file_path in iter_source_files(source):
-        remote_path = build_remote_path(source_path, file_path)
-        if remote_path not in attempted_paths:
-            attempted_paths.add(remote_path)
-            if not ensure_remote_folder(pikpak_path, pikpak_config, remote_path):
-                folder_failed += 1
+    for root, _, files in os.walk(source):
+        root_path = Path(root)
+        for file_name in files:
+            file_path = root_path / file_name
+            if file_path.suffix.lower() not in {".json", ".log"}:
+                continue
 
-        download_link = extract_download_link(file_path, magnet_path)
-        if not download_link:
-            skipped += 1
-            continue
+            relative_parent = file_path.parent.relative_to(source_path)
+            remote_path = "/" if relative_parent == Path(".") else f"/{relative_parent.as_posix()}"
+            if remote_path not in attempted_paths:
+                attempted_paths.add(remote_path)
+                if not create_pikpak_folder(remote_path):
+                    folder_failed += 1
 
-        task_name = build_task_name(file_path)
-        if submit_url(pikpak_path, pikpak_config, remote_path, task_name, download_link):
-            done += 1
-        else:
-            failed += 1
+            download_link = extract_torrent_download_link(file_path, MAGNET_PATH)
+            if not download_link:
+                skipped += 1
+                continue
+
+            task_name = file_path.stem[:MAX_TASK_NAME_LENGTH]
+            if add_pikpak_url(remote_path, task_name, download_link):
+                done += 1
+            else:
+                failed += 1
 
     logger.info(f"共添加 {done} 个任务，失败 {failed} 个，跳过 {skipped} 个无效文件，目录失败 {folder_failed} 个。")
