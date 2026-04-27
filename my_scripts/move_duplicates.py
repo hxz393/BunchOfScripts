@@ -1,28 +1,18 @@
 """
-此 Python 文件包含一个名为 `move_duplicates` 的函数，用于在目录中寻找重复的文件夹，并将其移动到另一个目录。
+按艺人目录名中的合作标记识别“重复候选”目录，并移动到单独目录。
 
-`move_duplicates` 函数接收两个参数，`source_path` 和 `target_path`。`source_path` 是包含可能重复文件夹的源目录，
-而 `target_path` 是重复文件夹移动的目标目录。
+这个脚本用于整理艺人目录。典型场景是源目录下同时存在：
+- ``artist a``
+- ``artist a feat. artist b``
 
-函数首先会检查 `source_path` 和 `target_path` 的有效性，如果无效，则记录错误日志并返回 None。然后，它将在 `source_path` 中寻找具有相似名称的文件夹。
-这些文件夹的名称通过全局变量 `SEPARATORS` 中定义的分隔符分割，得到新文件夹名列表。如果新文件夹名列表中文件名在 `source_path` 中存在，函数会将其移动到 `target_path` 中。
+当目录名包含 ``feat`` / ``vs`` / ``x`` / ``with`` 等合作分隔符，并且拆分出的某一侧
+艺人名已经作为独立目录存在于同一层级时，当前目录会被视为重复候选并移动到目标目录。
 
-最后，函数返回一个字典，字典的键是原始文件夹的路径，值是文件夹移动后的新路径。如果在执行过程中发生任何错误或异常，函数将记录错误日志并返回 None。
-
-在调试和排查问题时，可以参考此文件生成的日志信息。
-
-函数的典型用法如下：
-
-```python
-duplicates_moved = move_duplicates("/source/directory/path", "/target/directory/path")
-if duplicates_moved:
-    for original_path, new_path in duplicates_moved.items():
-        print(f"Moved '{original_path}' to '{new_path}'")
-```
+匹配过程使用小写名做比较，因此大小写不会影响识别结果。
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2023, hxz393。保留所有权利。
+:copyright: Copyright 2026, hxz393。保留所有权利。
 """
 import logging
 
@@ -39,13 +29,16 @@ SEPARATORS = [" feat. ", " feat.", " feat ", " pres. ", " feating ",
 
 def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str, os.PathLike]) -> Optional[Dict[str, str]]:
     """
-    检查并移动源目录中的重复文件夹。
+    检查源目录中的合作艺人目录，并把命中的重复候选移动到目标目录。
 
-    :param source_path: 需要检查重复文件夹的源目录路径。
+    这里的“重复候选”指目录名可被 ``SEPARATORS`` 中的合作分隔符拆开，
+    且拆出的某个艺人名已经作为独立条目存在于 ``source_path`` 中。
+
+    :param source_path: 需要检查的艺人目录根路径。
     :type source_path: Union[str, os.PathLike]
-    :param target_path: 发现重复文件夹后，将其移动到的目标目录路径。
+    :param target_path: 命中重复候选后，目录移动到的目标根路径。
     :type target_path: Union[str, os.PathLike]
-    :return: 一个字典，键为原文件夹路径，值为移动后的新文件夹路径，如果过程中有错误发生，返回 None。
+    :return: 一个字典，键为原路径，值为移动后的新路径；如果没有移动任何目录则返回 None。
     :rtype: Optional[Dict[str, str]]
     """
     if not os.path.exists(source_path):
@@ -58,13 +51,15 @@ def move_duplicates(source_path: Union[str, os.PathLike], target_path: Union[str
         logger.error(f"目标目录不存在：{target_path}")
         return None
     if not os.path.isdir(target_path):
-        logger.error(f"目标目录不正确：{target_path}'")
+        logger.error(f"目标目录不正确：{target_path}")
         return None
 
+    # 仅检查 source_path 第一层条目，匹配时统一转成小写，避免大小写差异影响识别。
     file_dict = {i.lower(): os.path.normpath(os.path.join(source_path, i)) for i in os.listdir(source_path)}
     final_path_dict = {}
 
     for file_name, file_path in file_dict.items():
+        # 例如 "artist a feat. artist b" 会被拆成 ["artist a", "artist b"]。
         split_word_list = [i for separator in SEPARATORS if separator in file_name for i in file_name.split(separator)]
         if not split_word_list:
             continue

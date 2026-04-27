@@ -392,6 +392,68 @@ class TestGetBestQuality(unittest.TestCase):
         self.assertEqual(self.module.get_best_quality(result), "")
 
 
+class TestSelectBestYtsMagnet(unittest.TestCase):
+    """验证公共 YTS 磁链选择逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_yts()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_select_best_yts_magnet_prefers_higher_quality_first(self):
+        result = build_movie_detail(
+            torrents=[
+                {
+                    "quality": "720p",
+                    "video_codec": "x265",
+                    "bit_depth": "10",
+                    "type": "bluray",
+                    "size_bytes": 700,
+                    "hash": "HASH720",
+                },
+                {
+                    "quality": "1080p",
+                    "video_codec": "x264",
+                    "bit_depth": "8",
+                    "type": "web",
+                    "size_bytes": 600,
+                    "hash": "HASH1080",
+                },
+            ]
+        )
+
+        magnet = self.module.select_best_yts_magnet(result, "magnet:?xt=urn:btih:")
+
+        self.assertEqual(magnet, "magnet:?xt=urn:btih:HASH1080")
+
+    def test_select_best_yts_magnet_falls_back_to_largest_size(self):
+        result = build_movie_detail(
+            torrents=[
+                {
+                    "quality": "1080p",
+                    "video_codec": "x265",
+                    "bit_depth": "10",
+                    "type": "bluray",
+                    "size_bytes": 700,
+                    "hash": "HASH_SMALL",
+                },
+                {
+                    "quality": "1080p",
+                    "video_codec": "x265",
+                    "bit_depth": "10",
+                    "type": "bluray",
+                    "size_bytes": 900,
+                    "hash": "HASH_LARGE",
+                },
+            ]
+        )
+
+        magnet = self.module.select_best_yts_magnet(result, "custom-prefix:")
+
+        self.assertEqual(magnet, "custom-prefix:HASH_LARGE")
+
+
 class TestHandleResult(unittest.TestCase):
     """验证结果落盘逻辑。"""
 

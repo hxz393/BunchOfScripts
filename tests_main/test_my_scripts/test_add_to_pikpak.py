@@ -84,6 +84,40 @@ class TestHelpers(unittest.TestCase):
             shell=False,
         )
 
+    def test_create_pikpak_folder_skips_root(self):
+        module = load_add_to_pikpak()
+
+        with patch.object(module, "run_pikpak_command") as mock_run:
+            self.assertTrue(module.create_pikpak_folder("/"))
+
+        mock_run.assert_not_called()
+
+    def test_create_pikpak_folder_treats_existing_folder_as_success(self):
+        module = load_add_to_pikpak()
+        completed = subprocess.CompletedProcess(args=["pikpak"], returncode=1, stdout="", stderr="folder already exists")
+
+        with patch.object(module, "run_pikpak_command", return_value=completed) as mock_run:
+            self.assertTrue(module.create_pikpak_folder("/Director"))
+
+        mock_run.assert_called_once_with(
+            module.PIKPAK_PATH,
+            module.PIKPAK_CONFIG,
+            ["new", "folder", "-p", "/Director"],
+        )
+
+    def test_add_pikpak_url_returns_false_on_failure(self):
+        module = load_add_to_pikpak()
+        completed = subprocess.CompletedProcess(args=["pikpak"], returncode=1, stdout="", stderr="quota exceeded")
+
+        with patch.object(module, "run_pikpak_command", return_value=completed) as mock_run:
+            self.assertFalse(module.add_pikpak_url("/Director", "movie", "magnet:?xt=urn:btih:HASH"))
+
+        mock_run.assert_called_once_with(
+            module.PIKPAK_PATH,
+            module.PIKPAK_CONFIG,
+            ["new", "url", "-p", "/Director", "-n", "movie", "-i", "magnet:?xt=urn:btih:HASH"],
+        )
+
 
 class TestAddToPikPakMain(unittest.TestCase):
     def test_add_to_pikpak_submits_valid_files_and_skips_invalid_entries(self):
@@ -106,24 +140,19 @@ class TestAddToPikPakMain(unittest.TestCase):
                 }
                 return mapping[Path(file_path).name]
 
-            run_results = [
-                subprocess.CompletedProcess(args=["pikpak"], returncode=0, stdout="folder ok", stderr=""),
-                subprocess.CompletedProcess(args=["pikpak"], returncode=0, stdout="url ok", stderr=""),
-                subprocess.CompletedProcess(args=["pikpak"], returncode=0, stdout="url ok", stderr=""),
-            ]
-
             with patch.object(module, "extract_torrent_download_link", side_effect=fake_extract) as mock_extract, \
-                    patch.object(module, "run_pikpak_command", side_effect=run_results) as mock_run, \
+                    patch.object(module, "create_pikpak_folder", return_value=True) as mock_create_folder, \
+                    patch.object(module, "add_pikpak_url", return_value=True) as mock_add_url, \
                     patch.object(module.logger, "error"):
                 module.add_to_pikpak(temp_dir)
 
         self.assertEqual(mock_extract.call_count, 3)
+        mock_create_folder.assert_called_once_with("/Director")
         self.assertEqual(
-            mock_run.call_args_list,
+            mock_add_url.call_args_list,
             [
-                call(module.PIKPAK_PATH, module.PIKPAK_CONFIG, ["new", "folder", "-p", "/Director"]),
-                call(module.PIKPAK_PATH, module.PIKPAK_CONFIG, ["new", "url", "-p", "/Director", "-n", "movie", "-i", "magnet:?xt=urn:btih:JSON_HASH"]),
-                call(module.PIKPAK_PATH, module.PIKPAK_CONFIG, ["new", "url", "-p", "/Director", "-n", "movie", "-i", "magnet:?xt=urn:btih:LOG_HASH"]),
+                call("/Director", "movie", "magnet:?xt=urn:btih:JSON_HASH"),
+                call("/Director", "movie", "magnet:?xt=urn:btih:LOG_HASH"),
             ],
         )
 
@@ -139,17 +168,13 @@ class TestAddToPikPakMain(unittest.TestCase):
             def fake_extract(file_path, _magnet_path):
                 return f"magnet:?xt=urn:btih:{Path(file_path).stem.upper()}"
 
-            run_results = [
-                subprocess.CompletedProcess(args=["pikpak"], returncode=0, stdout="folder ok", stderr=""),
-                subprocess.CompletedProcess(args=["pikpak"], returncode=1, stdout="", stderr="failed"),
-                subprocess.CompletedProcess(args=["pikpak"], returncode=0, stdout="url ok", stderr=""),
-            ]
-
             with patch.object(module, "extract_torrent_download_link", side_effect=fake_extract), \
-                    patch.object(module, "run_pikpak_command", side_effect=run_results) as mock_run:
+                    patch.object(module, "create_pikpak_folder", return_value=True) as mock_create_folder, \
+                    patch.object(module, "add_pikpak_url", side_effect=[False, True]) as mock_add_url:
                 module.add_to_pikpak(temp_dir)
 
-        self.assertEqual(mock_run.call_count, 3)
+        mock_create_folder.assert_called_once_with("/Director")
+        self.assertEqual(mock_add_url.call_count, 2)
 
 
 if __name__ == "__main__":

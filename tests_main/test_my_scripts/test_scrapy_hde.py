@@ -1,12 +1,13 @@
 """
 针对 ``my_scripts.scrapy_hde`` 的单元测试。
 
-这里在隔离环境中加载模块，不依赖真实配置，也不会发出真实网络请求。
-主要验证请求、列表页解析、大小提取、详情页落盘和分页停止条件。
+这里在隔离环境中加载模块，不依赖真实配置、Redis 或网络请求。
+主要验证请求、列表页解析、内容保护解锁、详情页落盘，以及 Redis 两段式调度与 ``end_titles`` 回写。
 """
 
 import copy
 import importlib.util
+import json
 import sys
 import tempfile
 import types
@@ -18,6 +19,77 @@ from unittest.mock import ANY, Mock, call, patch
 import requests
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_hde.py"
+
+
+class FakeRedis:
+    """最小 Redis 替身，覆盖当前测试需要的键、列表和集合操作。"""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+        self.lists: dict[str, list[str]] = {}
+        self.sets: dict[str, set[str]] = {}
+
+    def get(self, key: str):
+        return self.values.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+    def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.values.pop(key, None)
+            self.lists.pop(key, None)
+            self.sets.pop(key, None)
+
+    def llen(self, key: str) -> int:
+        return len(self.lists.get(key, []))
+
+    def rpush(self, key: str, *values: str) -> int:
+        self.lists.setdefault(key, []).extend(values)
+        return len(self.lists[key])
+
+    def rpoplpush(self, source: str, destination: str):
+        source_list = self.lists.get(source, [])
+        if not source_list:
+            return None
+        value = source_list.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def sadd(self, key: str, value: str) -> int:
+        value_set = self.sets.setdefault(key, set())
+        if value in value_set:
+            return 0
+        value_set.add(value)
+        return 1
+
+
+def fake_serialize_payload(payload: dict) -> str:
+    """与真实 helper 保持一致的 JSON 序列化。"""
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def fake_deserialize_payload(payload: str) -> dict:
+    """与真实 helper 保持一致的 JSON 反序列化。"""
+    return json.loads(payload)
+
+
+def fake_push_items_to_queue(
+        redis_client: FakeRedis,
+        items: list[dict],
+        *,
+        seen_key: str,
+        pending_key: str,
+        unique_value,
+        serializer,
+) -> int:
+    """最小入队实现，使用 set 去重后写入列表。"""
+    enqueued_count = 0
+    for item in items:
+        if redis_client.sadd(seen_key, unique_value(item)):
+            redis_client.rpush(pending_key, serializer(item))
+            enqueued_count += 1
+    return enqueued_count
 
 
 def load_scrapy_hde(config: dict | None = None):
@@ -54,12 +126,30 @@ def load_scrapy_hde(config: dict | None = None):
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
+    fake_scrapy_redis = types.ModuleType("scrapy_redis")
+    fake_scrapy_redis.serialize_payload = fake_serialize_payload
+    fake_scrapy_redis.deserialize_payload = fake_deserialize_payload
+    fake_scrapy_redis.push_items_to_queue = fake_push_items_to_queue
+    fake_scrapy_redis.get_redis_client = lambda: FakeRedis()
+    fake_scrapy_redis.drain_queue = lambda *args, **kwargs: {"processed": 0, "success": 0, "failed": 0}
+
+    fake_redis = types.ModuleType("redis")
+    fake_redis.Redis = FakeRedis
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_hde_test_{uuid.uuid4().hex}",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"my_module": fake_my_module, "retrying": fake_retrying}):
+    with patch.dict(
+        sys.modules,
+        {
+            "my_module": fake_my_module,
+            "retrying": fake_retrying,
+            "scrapy_redis": fake_scrapy_redis,
+            "redis": fake_redis,
+        },
+    ):
         spec.loader.exec_module(module)
 
     return module, temp_dir
@@ -170,6 +260,13 @@ class TestHdeHelpers(unittest.TestCase):
         self.assertEqual(
             self.module.select_next_end_titles(result_list),
             ["Newest Movie – 2.0 GB", "Second Movie – 1.8 GB"],
+        )
+
+    def test_get_current_end_titles_returns_configured_titles(self):
+        """当前截止标题列表应来自配置。"""
+        self.assertEqual(
+            self.module.get_current_end_titles(),
+            ["Old Movie – 1.0 GB", "Older Movie – 0.9 GB"],
         )
 
     def test_find_hde_protected_form_returns_matching_form(self):
@@ -291,24 +388,24 @@ class TestGetHdeResponse(unittest.TestCase):
         """请求成功时应返回响应对象，并统一设置 UTF-8 编码。"""
         response = Mock(status_code=200)
 
-        with patch.object(self.module.requests, "get", return_value=response) as mock_get:
+        with patch.object(self.module.session, "get", return_value=response) as mock_get:
             result = self.module.get_hde_response("https://example.com/post")
 
         self.assertIs(result, response)
         self.assertEqual(response.encoding, "utf-8")
-        mock_get.assert_called_once_with("https://example.com/post", timeout=30)
+        mock_get.assert_called_once_with("https://example.com/post", timeout=30, verify=False)
 
     def test_get_hde_response_raises_when_status_code_is_not_200(self):
         """请求返回非 200 状态码时应抛出异常。"""
         response = Mock(status_code=503)
 
-        with patch.object(self.module.requests, "get", return_value=response):
+        with patch.object(self.module.session, "get", return_value=response):
             with self.assertRaisesRegex(Exception, "503"):
                 self.module.get_hde_response("https://example.com/post")
 
     def test_get_hde_response_propagates_request_exception(self):
         """底层请求异常时应直接抛出，交给重试装饰器处理。"""
-        with patch.object(self.module.requests, "get", side_effect=requests.Timeout("timed out")):
+        with patch.object(self.module.session, "get", side_effect=requests.Timeout("timed out")):
             with self.assertRaisesRegex(requests.Timeout, "timed out"):
                 self.module.get_hde_response("https://example.com/post")
 
@@ -407,43 +504,6 @@ class TestReleaseSize(unittest.TestCase):
         self.assertEqual(self.module.extract_release_size("Movie Three", default_size="1.5 TB"), "1.5TB")
 
 
-class TestProcessAll(unittest.TestCase):
-    """验证批量多线程编排逻辑。"""
-
-    def setUp(self):
-        self.module, self.temp_dir = load_scrapy_hde()
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def test_process_all_returns_true_when_all_tasks_succeed(self):
-        """批处理全部成功时应返回 ``True``。"""
-        items = [{"title": "A"}, {"title": "B"}]
-
-        with patch.object(self.module, "visit_hde_url", side_effect=lambda item: f"done:{item['title']}"):
-            result = self.module.process_all(items, max_workers=1)
-
-        self.assertTrue(result)
-
-    def test_process_all_logs_errors_without_raising(self):
-        """单个任务失败时，应记录错误并返回 ``False``。"""
-        items = [{"title": "good"}, {"title": "bad"}]
-
-        def fake_visit(item: dict):
-            if item["title"] == "bad":
-                raise RuntimeError("boom")
-            return f"done:{item['title']}"
-
-        with patch.object(self.module, "visit_hde_url", side_effect=fake_visit), self.assertLogs(
-            self.module.logger.name,
-            level="ERROR",
-        ) as logs:
-            result = self.module.process_all(items, max_workers=1)
-
-        self.assertFalse(result)
-        self.assertIn("[ERROR] {'title': 'bad'} -> RuntimeError('boom')", logs.output[0])
-
-
 class TestVisitHdeUrl(unittest.TestCase):
     """验证详情页访问和写盘逻辑。"""
 
@@ -460,6 +520,7 @@ class TestVisitHdeUrl(unittest.TestCase):
             "url": "https://example.com/post",
             "size": "22.4GB",
         }
+        detail_session = Mock()
         response = Mock(text=build_detail_page("https://www.imdb.com/title/tt1234567/"))
         unlocked_soup = self.module.BeautifulSoup(
             build_unlocked_detail_page(
@@ -469,7 +530,11 @@ class TestVisitHdeUrl(unittest.TestCase):
             "html.parser",
         )
 
-        with patch.object(self.module, "get_hde_response", return_value=response) as mock_get, patch.object(
+        with patch.object(self.module, "build_hde_session", return_value=detail_session) as mock_session, patch.object(
+            self.module,
+            "get_hde_response",
+            return_value=response,
+        ) as mock_get, patch.object(
             self.module,
             "unlock_hde_protected_soup",
             return_value=unlocked_soup,
@@ -489,8 +554,9 @@ class TestVisitHdeUrl(unittest.TestCase):
             self.module.visit_hde_url(result_item)
 
         self.assertEqual(result_item["imdb"], "tt1234567")
-        mock_get.assert_called_once_with("https://example.com/post", session=ANY)
-        mock_unlock.assert_called_once()
+        mock_session.assert_called_once_with()
+        mock_get.assert_called_once_with("https://example.com/post", session=detail_session)
+        mock_unlock.assert_called_once_with("https://example.com/post", ANY, detail_session)
         mock_normalize.assert_called_once_with("Movie / Title: 2026")
         mock_sanitize.assert_called_once_with("Normalized / Title: 2026")
         mock_write.assert_called_once_with(
@@ -509,9 +575,14 @@ class TestVisitHdeUrl(unittest.TestCase):
             "url": "https://example.com/post",
             "size": "1.0GB",
         }
+        detail_session = Mock()
         response = Mock(text=build_detail_page("https://example.com/redirect?target=tt7654321"))
 
-        with patch.object(self.module, "get_hde_response", return_value=response), patch.object(
+        with patch.object(self.module, "build_hde_session", return_value=detail_session), patch.object(
+            self.module,
+            "get_hde_response",
+            return_value=response,
+        ), patch.object(
             self.module,
             "unlock_hde_protected_soup",
             return_value=self.module.BeautifulSoup("<div></div>", "html.parser"),
@@ -559,39 +630,47 @@ class TestVisitHdeUrl(unittest.TestCase):
         mock_sanitize.assert_called_once_with("Normalized / Title: 2026")
 
 
-class TestScrapyHdeMain(unittest.TestCase):
-    """验证主流程编排逻辑。"""
+class TestEnqueueHdePosts(unittest.TestCase):
+    """验证列表扫描入队和断点逻辑。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_hde()
+        self.redis_client = FakeRedis()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_scrapy_hde_stops_when_end_title_is_found_on_first_page(self):
-        """第一页命中截止标题时应停止翻页。"""
+    def test_enqueue_hde_posts_stops_when_end_title_is_found_on_first_page(self):
+        """第一页命中截止标题时应完成扫描、写入下一轮标题并把条目入队。"""
         response = Mock()
-        result_list = [{"title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1", "size": "1.0GB"}]
+        result_list = [
+            {"title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1", "size": "1.0GB"},
+            {"title": "Older Movie – 0.9 GB", "url": "https://example.com/post-2", "size": "0.9GB"},
+        ]
 
         with patch.object(self.module, "get_hde_response", return_value=response) as mock_get, patch.object(
             self.module,
             "parse_hde_response",
             return_value=result_list,
-        ) as mock_parse, patch.object(
-            self.module,
-            "process_all",
-            return_value=True,
-        ) as mock_process:
-            with patch.object(self.module, "update_json_config") as mock_update:
-                self.module.scrapy_hde(start_page=2)
+        ) as mock_parse:
+            self.module.enqueue_hde_posts(start_page=3, redis_client=self.redis_client)
 
-        mock_get.assert_called_once_with("https://example.com/tag/movies/page/2/")
+        mock_get.assert_called_once_with("https://example.com/tag/movies/page/3/")
         mock_parse.assert_called_once_with(response)
-        mock_process.assert_called_once_with(result_list, max_workers=self.module.DEFAULT_MAX_WORKERS)
-        mock_update.assert_called_once_with(self.module.CONFIG_PATH, "end_titles", ["Old Movie – 1.0 GB"])
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "4")
+        self.assertEqual(
+            self.module.deserialize_payload(self.redis_client.get(self.module.REDIS_NEXT_END_TITLES_KEY))["titles"],
+            ["Old Movie – 1.0 GB", "Older Movie – 0.9 GB"],
+        )
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 2)
+        self.assertEqual(
+            self.module.deserialize_payload(self.redis_client.lists[self.module.REDIS_PENDING_KEY][0]),
+            {"size": "1.0GB", "title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1"},
+        )
 
-    def test_scrapy_hde_moves_to_next_page_until_end_title_is_found(self):
-        """未命中截止标题时应继续抓取下一页。"""
+    def test_enqueue_hde_posts_moves_to_next_page_until_end_title_is_found(self):
+        """未命中截止标题时应继续抓取下一页，且下一轮标题只记录第一页。"""
         first_response = Mock()
         second_response = Mock()
         first_result_list = [
@@ -608,53 +687,166 @@ class TestScrapyHdeMain(unittest.TestCase):
             self.module,
             "parse_hde_response",
             side_effect=[first_result_list, second_result_list],
-        ) as mock_parse, patch.object(
-            self.module,
-            "process_all",
-            return_value=True,
-        ) as mock_process:
-            with patch.object(self.module, "update_json_config") as mock_update:
-                self.module.scrapy_hde(start_page=2)
+        ) as mock_parse:
+            self.module.enqueue_hde_posts(start_page=3, redis_client=self.redis_client)
 
         self.assertEqual(
             mock_get.call_args_list,
             [
-                call("https://example.com/tag/movies/page/2/"),
                 call("https://example.com/tag/movies/page/3/"),
+                call("https://example.com/tag/movies/page/4/"),
             ],
         )
         self.assertEqual(mock_parse.call_args_list, [call(first_response), call(second_response)])
         self.assertEqual(
-            mock_process.call_args_list,
-            [
-                call(first_result_list, max_workers=self.module.DEFAULT_MAX_WORKERS),
-                call(second_result_list, max_workers=self.module.DEFAULT_MAX_WORKERS),
-            ],
+            self.module.deserialize_payload(self.redis_client.get(self.module.REDIS_NEXT_END_TITLES_KEY))["titles"],
+            ["New Movie – 2.0 GB", "Second Movie – 1.8 GB"],
         )
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY), "1")
+        self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "5")
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 3)
+
+
+class TestRecoverAndDrainHdeQueue(unittest.TestCase):
+    """验证 Redis 队列恢复与消费编排。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_hde()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_recover_hde_processing_when_pending_is_empty_moves_payloads_back(self):
+        """待处理为空且处理中有残留时，应回退到待处理队列。"""
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, "task-1", "task-2")
+
+        recovered = self.module.recover_hde_processing_when_pending_is_empty(self.redis_client)
+
+        self.assertEqual(recovered, 2)
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
+        self.assertEqual(self.redis_client.lists[self.module.REDIS_PENDING_KEY], ["task-1", "task-2"])
+
+    def test_drain_hde_queue_delegates_to_shared_drain_queue_helper(self):
+        """消费阶段应把队列参数和 worker 函数交给共享 helper。"""
+        with patch.object(self.module, "drain_queue") as mock_drain:
+            self.module.drain_hde_queue(redis_client=self.redis_client)
+
+        mock_drain.assert_called_once_with(
+            self.redis_client,
+            pending_key=self.module.REDIS_PENDING_KEY,
+            processing_key=self.module.REDIS_PROCESSING_KEY,
+            max_workers=self.module.DEFAULT_MAX_WORKERS,
+            worker=self.module.visit_hde_url,
+            deserialize=self.module.deserialize_payload,
+            logger=self.module.logger,
+            queue_label="HDE",
+            identify_item=ANY,
+            recover_processing_on_start=False,
+            keep_failed_in_processing=True,
+        )
+
+
+class TestFinalizeHdeRun(unittest.TestCase):
+    """验证回写截止标题和清理状态的逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_hde()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_finalize_hde_run_updates_end_titles_after_scan_and_queue_finish(self):
+        """列表扫描完成且队列清空后，应回写新的截止标题并清理运行状态。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(
+            self.module.REDIS_NEXT_END_TITLES_KEY,
+            self.module.serialize_payload({"titles": ["Newest Movie", "Second Movie"]}),
+        )
+        self.redis_client.set(self.module.REDIS_SCAN_PAGE_KEY, "8")
+
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_hde_run(redis_client=self.redis_client)
+
         mock_update.assert_called_once_with(
             self.module.CONFIG_PATH,
             "end_titles",
-            ["New Movie – 2.0 GB", "Second Movie – 1.8 GB"],
+            ["Newest Movie", "Second Movie"],
         )
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY))
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY))
+        self.assertIsNone(self.redis_client.get(self.module.REDIS_NEXT_END_TITLES_KEY))
 
-    def test_scrapy_hde_does_not_update_config_when_process_all_reports_failure(self):
-        """详情页处理失败时应直接终止，并保留原截止标题配置。"""
-        response = Mock()
-        result_list = [{"title": "New Movie – 2.0 GB", "url": "https://example.com/new", "size": "2.0GB"}]
+    def test_finalize_hde_run_skips_update_when_processing_queue_is_not_empty(self):
+        """处理中仍有残留时，不应回写截止标题。"""
+        self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.set(
+            self.module.REDIS_NEXT_END_TITLES_KEY,
+            self.module.serialize_payload({"titles": ["Newest Movie", "Second Movie"]}),
+        )
+        self.redis_client.rpush(self.module.REDIS_PROCESSING_KEY, "task-1")
 
-        with patch.object(self.module, "get_hde_response", return_value=response), patch.object(
-            self.module,
-            "parse_hde_response",
-            return_value=result_list,
-        ), patch.object(
-            self.module,
-            "process_all",
-            return_value=False,
-        ), patch.object(self.module, "update_json_config") as mock_update:
-            with self.assertRaisesRegex(RuntimeError, "未更新截止标题配置"):
-                self.module.scrapy_hde(start_page=2)
+        with patch.object(self.module, "update_json_config") as mock_update:
+            self.module.finalize_hde_run(redis_client=self.redis_client)
 
         mock_update.assert_not_called()
+        self.assertIsNotNone(self.redis_client.get(self.module.REDIS_NEXT_END_TITLES_KEY))
+
+
+class TestScrapyHdeMain(unittest.TestCase):
+    """验证主入口调度逻辑。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_scrapy_hde()
+        self.redis_client = FakeRedis()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_scrapy_hde_runs_recover_enqueue_drain_and_finalize_in_order(self):
+        """主入口应先恢复，再入队、消费，并在 finally 中执行收尾。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client) as mock_get_redis, patch.object(
+            self.module,
+            "recover_hde_processing_when_pending_is_empty",
+        ) as mock_recover, patch.object(
+            self.module,
+            "enqueue_hde_posts",
+        ) as mock_enqueue, patch.object(
+            self.module,
+            "drain_hde_queue",
+        ) as mock_drain, patch.object(
+            self.module,
+            "finalize_hde_run",
+        ) as mock_finalize:
+            self.module.scrapy_hde(start_page=5)
+
+        mock_get_redis.assert_called_once_with()
+        mock_recover.assert_called_once_with(self.redis_client)
+        mock_enqueue.assert_called_once_with(start_page=5, redis_client=self.redis_client)
+        mock_drain.assert_called_once_with(redis_client=self.redis_client)
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
+
+    def test_scrapy_hde_still_finalizes_when_drain_queue_raises(self):
+        """消费阶段异常时，收尾逻辑仍应执行。"""
+        with patch.object(self.module, "get_redis_client", return_value=self.redis_client), patch.object(
+            self.module,
+            "recover_hde_processing_when_pending_is_empty",
+        ), patch.object(
+            self.module,
+            "enqueue_hde_posts",
+        ), patch.object(
+            self.module,
+            "drain_hde_queue",
+            side_effect=RuntimeError("boom"),
+        ), patch.object(
+            self.module,
+            "finalize_hde_run",
+        ) as mock_finalize:
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                self.module.scrapy_hde(start_page=5)
+
+        mock_finalize.assert_called_once_with(redis_client=self.redis_client)
 
 
 if __name__ == "__main__":
