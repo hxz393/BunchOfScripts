@@ -32,7 +32,7 @@ from scrapy_redis import (
     recover_processing_queue,
     serialize_payload,
 )
-from sort_movie_ops import extract_imdb_ids
+from sort_movie_ops import extract_imdb_id
 
 CONFIG_PATH = 'config/scrapy_onk.json'
 CONFIG = read_json_to_dict(CONFIG_PATH)  # 配置文件
@@ -214,16 +214,6 @@ def enqueue_onk_posts(stop_date: datetime.datetime, redis_client=None) -> None:
 
     redis_client.set(REDIS_SCAN_COMPLETE_KEY, "1")
     logger.info("ONK 列表扫描完成")
-def extract_unique_imdb_id(text: str, file_path: str) -> str | None:
-    """从帖子正文提取 IMDb 编号。多个编号时取正文中最先出现的一个。"""
-    unique_ids = extract_imdb_ids(text)
-    if len(unique_ids) == 1:
-        return unique_ids[0]
-    if len(unique_ids) > 1:
-        return unique_ids[0]
-
-    logger.warning(f"未找到 {os.path.basename(file_path)} 的 IMDB ID")
-    return ""
 
 
 def rename_onk_file(file_path: str, imdb_id: str | None) -> str:
@@ -504,7 +494,7 @@ def visit_onk_url(result_item: dict):
     imdb_id = result_item.get("imdb_id", "")
     if not imdb_id:
         text = main_div.get_text("\n", strip=True)
-        imdb_id = extract_unique_imdb_id(text, file_path)
+        imdb_id = extract_imdb_id(text) or ""
     new_file_path = rename_onk_file(file_path, imdb_id)
 
     drive_urls = extract_drive_urls(str(main_div))
