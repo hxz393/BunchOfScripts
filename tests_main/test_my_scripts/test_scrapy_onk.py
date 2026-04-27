@@ -201,8 +201,9 @@ def load_scrapy_onk(config: dict | None = None):
     fake_redis_module.drain_queue = fake_drain_queue
 
     fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
-    fake_sort_movie_ops.extract_imdb_ids = lambda text: list(
-        dict.fromkeys(match.group(0).lower() for match in re.finditer(r"\btt\d+\b", text, re.IGNORECASE))
+    fake_sort_movie_ops.extract_imdb_id = lambda text: next(
+        (match.group(0).lower() for match in re.finditer(r"\btt\d+\b", text, re.IGNORECASE)),
+        None,
     )
 
     spec = importlib.util.spec_from_file_location(f"scrapy_onk_test_{uuid.uuid4().hex}", MODULE_PATH)
@@ -640,7 +641,7 @@ class TestVisitAndDownload(unittest.TestCase):
             self.module,
             "download_drive_artifact",
             return_value=str(Path(self.module.OUTPUT_DIR) / "Movie(NZB)[tt7654321].nzb"),
-        ) as mock_download, patch.object(self.module, "extract_unique_imdb_id") as mock_extract:
+        ) as mock_download, patch.object(self.module, "extract_imdb_id") as mock_extract:
             result = self.module.visit_onk_url(
                 {
                     "title": "Movie",

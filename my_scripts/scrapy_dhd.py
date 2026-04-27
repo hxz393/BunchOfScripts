@@ -6,14 +6,11 @@
 :copyright: Copyright 2025, hxz393. 保留所有权利。
 """
 import concurrent.futures
-import hashlib
 import logging
 import os
 import re
 import time
-import urllib.parse
 
-import bencodepy
 import redis
 import requests
 from bs4 import BeautifulSoup
@@ -27,6 +24,7 @@ from scrapy_redis import (
     push_items_to_queue,
     serialize_payload,
 )
+from torrent_to_magnet import torrent_to_magnet
 
 requests.packages.urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
@@ -384,65 +382,3 @@ def get_dhd_torrent(session: requests.Session, url: str, torrent_path: str) -> N
     # 将文件内容保存为 torrent 文件
     with open(torrent_path, "wb") as file:
         file.write(response.content)
-
-
-def torrent_to_magnet(torrent_file_path: str) -> str:
-    """
-    将 torrent 文件转换为磁链
-    """
-    # 读取 torrent 文件二进制内容
-    with open(torrent_file_path, 'rb') as f:
-        torrent_data = f.read()
-
-    # 解析 bencoded 数据
-    decoded_data = bencodepy.decode(torrent_data)
-    if not isinstance(decoded_data, dict):
-        raise ValueError("无效 torrent：顶层 bencode 结果不是字典")
-    torrent_dict = decoded_data
-
-    # 提取 info 字典，它包含了实际内容信息
-    info = torrent_dict.get(b'info')
-    if not isinstance(info, dict):
-        raise ValueError("无效 torrent：缺少 info 字典")
-
-    # 重新对 info 字典进行 bencode 编码，并计算 SHA1 哈希值作为 info hash
-    info_bencoded = bencodepy.encode(info)
-    info_hash = hashlib.sha1(info_bencoded).hexdigest()
-
-    # 可选：提取 torrent 的显示名称（如果存在）
-    display_name = ""
-    if b'name' in info:
-        try:
-            display_name = info[b'name'].decode('utf-8')
-        except UnicodeDecodeError:
-            display_name = info[b'name'].decode('latin1')
-    display_name_encoded = urllib.parse.quote(display_name) if display_name else ""
-
-    # 可选：提取 tracker 信息，优先使用 announce-list 中的全部 tracker，如果没有则使用 announce 字段
-    tracker_urls = []
-    if b'announce-list' in torrent_dict:
-        # announce-list 通常是个嵌套列表，按顺序保留全部 tracker，并去重
-        for tracker_group in torrent_dict[b'announce-list']:
-            candidates = tracker_group if isinstance(tracker_group, (list, tuple)) else [tracker_group]
-            for tracker in candidates:
-                try:
-                    tracker_url = tracker.decode('utf-8')
-                except Exception:
-                    continue
-                if tracker_url and tracker_url not in tracker_urls:
-                    tracker_urls.append(tracker_url)
-    elif b'announce' in torrent_dict:
-        tracker_urls.append(torrent_dict[b'announce'].decode('utf-8'))
-
-    # 构造磁链，至少包含 xt 参数（info hash）
-    magnet_link = f"magnet:?xt=urn:btih:{info_hash}"
-
-    # 如果有名称，则添加 dn 参数
-    if display_name_encoded:
-        magnet_link += f"&dn={display_name_encoded}"
-
-    # 如果有 tracker 则添加 tr 参数
-    for tracker_url in tracker_urls:
-        magnet_link += f"&tr={urllib.parse.quote(tracker_url)}"
-
-    return magnet_link
