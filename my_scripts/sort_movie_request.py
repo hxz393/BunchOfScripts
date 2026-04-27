@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.parse
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, cast
 
 import requests
 import xmltodict as xmltodict
@@ -101,8 +101,9 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
     :return: 信息字典
     """
     logger.info(f"查询 TMDB：{movie_id}")
+    movie = TV() if tv else Movie()
+
     try:
-        movie = TV() if tv else Movie()
         result = dict(movie.details(movie_id)) | dict(movie.alternative_titles(movie_id))
         if not result:
             logger.info(f"获取 {movie_id} 电影信息失败，重试")
@@ -117,8 +118,6 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
         # 其他 TMDB 错误交给 retry 处理
         logger.warning(f"TMDB 查询失败 {movie_id}: {error_msg}")
         raise
-    except Exception as e:
-        raise Exception(f"查询 TMDB 失败：{e}")
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000)
@@ -145,7 +144,7 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
     return person.movie_credits(director_id)
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=5330, wait_random_max=15800)
+@retry(stop_max_attempt_number=5, wait_random_min=5330, wait_random_max=15800)
 def get_tmdb_movie_cover(poster_path: str, target_path: str) -> None:
     """
     从 TMDB 获取电影海报地址
@@ -240,24 +239,6 @@ def get_imdb_movie_response(movie_id: str) -> Optional[requests.Response]:
     return response
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=3000, retry_on_exception=lambda e: isinstance(e, requests.RequestException))
-def get_imdb_director_response(director_id: str) -> Optional[requests.Response]:
-    """
-    从 IMDB 获取导演信息，返回结果供解析
-
-    :param director_id: 导演 imdb 编号
-    :return: 成功时返回响应
-    """
-    url = f"{IMDB_PERSON_URL}/{director_id}/"
-    cookie_dict = get_imdb_cookie(force=True, hl=False)
-    IMDB_HEADER['Cookie'] = cookie_dict  # 请求头加入认证
-    response = requests.get(url, timeout=15, verify=False, allow_redirects=False, headers=IMDB_HEADER)
-    if response.status_code != 200:
-        logger.error(f"IMDB 访问失败！状态码：{response.status_code}")
-        sys.exit(f"被墙了 {response.status_code}：{url}")
-    return response
-
-
 def get_imdb_movie_details(movie_id) -> Optional[dict]:
     """
     解析 IMDB 页面的 json 数据
@@ -266,8 +247,6 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
     :return: 成功时返回解析出来的 json
     """
     response = get_imdb_movie_response(movie_id)
-    if not response:
-        return
 
     # 先找到 json 字段，找到 id 为 __NEXT_DATA__ 的 script 标签
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -287,8 +266,13 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
         return
 
 
-@retry(stop_max_attempt_number=50, wait_random_min=1000, wait_random_max=3000)
-def get_csfd_response(url: str) -> Optional[requests.Response]:
+@retry(
+    stop_max_attempt_number=5,
+    wait_random_min=1000,
+    wait_random_max=3000,
+    retry_on_exception=lambda e: isinstance(e, requests.RequestException),
+)
+def get_csfd_response(url: str) -> requests.Response:
     """
     从 CSFD 获取电影信息，返回结果供解析
 
@@ -305,8 +289,12 @@ def get_csfd_response(url: str) -> Optional[requests.Response]:
         )
         if response.status_code == 403:
             sys.exit(f"CSFD 拒绝访问，状态码：{response.status_code}，退出程序")
-        # 如果不是 2xx，会抛出 requests.exceptions.HTTPError -> 触发重试
-        response.raise_for_status()
+        # 429 和 5xx 视为暂时性错误，交给 retry 重试
+        if response.status_code == 429 or 500 <= response.status_code < 600:
+            response.raise_for_status()
+        # 其他 4xx 一般是链接本身有问题，直接失败，不重试
+        if response.status_code >= 400:
+            raise RuntimeError(f"CSFD 访问失败：{response.status_code}  url={url}")
         return response
 
     except requests.exceptions.RequestException as e:
@@ -327,7 +315,7 @@ def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
     # 1) 国家、年份、时长
     origin_div = soup.find('div', class_='origin')
     parts = [s.rstrip(',') for s in origin_div.stripped_strings]
-    origin = parts[0] if parts else ""
+    origin = " ".join(part for part in parts if part).strip()
 
     # 2) 导演
     director = ""
@@ -336,7 +324,7 @@ def get_csfd_movie_details(r: requests.Response) -> Optional[dict]:
     for block in creators.find_all('div'):
         h4 = block.find('h4')
         if not h4:
-            break
+            continue
         h4_text = h4.get_text()
         if 'Režie' in h4_text or 'Directed' in h4_text:
             a = block.find('a', href=True)
@@ -387,6 +375,8 @@ def get_douban_response(db_id: str, query_type: str) -> Optional[requests.Respon
     elif query_type == "movie_search":
         logger.info(f"搜索 DOUBAN：{db_id}")
         url = f"{DOUBAN_SEARCH_URL}?cat=1002&q={db_id}"
+    else:
+        raise ValueError(f"未知的豆瓣请求类型：{query_type}")
 
     response = requests.get(url, timeout=10, verify=False, headers=DOUBAN_HEADER)
     logger.debug(response.text)
@@ -402,10 +392,14 @@ def get_douban_response(db_id: str, query_type: str) -> Optional[requests.Respon
 
 def get_douban_search_details(r: requests.Response) -> Optional[str]:
     """
-    解析 DOUBAN 搜索结果
+    解析 DOUBAN 搜索结果，返回唯一可信目标的链接。
+
+    这个函数不是通用的“搜索结果列表解析器”，而是保守筛选器：
+    只有在结果足够明确时才返回一条目标 URL；结果为 0、结果过多、
+    或页面结构不符合预期时返回 ``None``。如果遇到豆瓣验证页，则直接退出。
 
     :param r: 搜索请求原始响应
-    :return: 解析成功时返回 url 结果
+    :return: 解析成功时返回唯一目标 URL，无法唯一确定时返回 None
     """
     # 解析内容
     soup = BeautifulSoup(r.text, 'html.parser')
@@ -420,11 +414,14 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
         logger.warning("豆瓣搜索结果为 0")
         return
 
-    # 获取所有 result 元素，根据搜索结果数量做不同处理
+    # 获取所有 result 元素。这里只接受“唯一结果”或“一个已知噪声项 + 一个真实结果”
+    # 两种情况，其他多结果场景一律放弃判断，交给上层按未命中处理。
     results = result_list.find_all("div", class_="result")
     count = len(results)
     if count == 1:
         result_div = results[0]
+    # 兼容历史上遇到的一个特例：搜索结果会先出现一个固定噪声项
+    # “It's Hard to be Nice”，此时真实目标在第二条。
     elif count == 2 and results[0].find("div", class_="pic").find("a").get("title", "").strip() == "It's Hard to be Nice":
         result_div = results[1]
     else:
@@ -435,9 +432,12 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
     a_tag = result_div.find('a', class_='nbg')
     # 获取 href 属性
     href = a_tag.get('href')
+    if not isinstance(href, str):
+        logger.error("未找到有效 href")
+        return
     # 解析 href 获取内部的 URL（需要先解析 query 部分）
     parsed_href = urllib.parse.urlparse(href)
-    query_dict = urllib.parse.parse_qs(parsed_href.query)
+    query_dict = cast(dict[str, list[str]], urllib.parse.parse_qs(parsed_href.query))
     # 从 query 中提取 'url' 参数，并解码
     if 'url' in query_dict:
         return urllib.parse.unquote(query_dict['url'][0])
@@ -447,9 +447,9 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=6000)
-def get_jackett_search_response(search_id: str) -> Optional[list]:
+def get_jackett_search_response(search_id: str) -> list:
     """
-    从 kpk 搜索 imdb 编号，返回响应
+    从捷克三搜索 imdb 编号，返回响应。只搜索孤品 id
 
     :param search_id: 搜索 id
     :return: 成功时返回响应
@@ -485,7 +485,7 @@ def get_jackett_search_response(search_id: str) -> Optional[list]:
 @retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=9000)
 def get_kpk_search_response(search_id: str) -> Optional[list]:
     """
-    从 kpk 搜索 imdb 编号，返回页面 id
+    在 kpk 搜索 imdb 编号，返回结果页面 id
 
     :param search_id: 搜索 id
     :return: 成功时返回响应网页 id 列表
@@ -524,9 +524,9 @@ def get_kpk_search_response(search_id: str) -> Optional[list]:
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=1300, wait_random_max=3000)
-def get_kpk_page_details(page_id: str) -> Optional[dict]:
+def get_kpk_page_details(page_id: str) -> dict:
     """
-    访问 kpk 获取下载信息
+    访问 kpk 详情页，获取下载信息
 
     :param page_id: 页面 id
     :return: 成功时返回下载信息字典
@@ -556,7 +556,7 @@ def get_kpk_page_details(page_id: str) -> Optional[dict]:
                     a = td.find('a')
 
                     # 拼接内容
-                    full_text = f"{span.get_text(strip=True)} {td.find('a').get_text(strip=True)}" if span else a.get_text(strip=True)
+                    full_text = f"{span.get_text(strip=True)} {a.get_text(strip=True)}" if span else a.get_text(strip=True)
                     full_text = full_text.replace('复制链接', '').replace('详情', '').strip()
                     result_dict[h2_tag.get_text(strip=True)].append(full_text)
     return dict(result_dict)

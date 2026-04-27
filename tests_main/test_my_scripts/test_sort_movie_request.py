@@ -4,6 +4,7 @@
 这里只验证当前修复点：
 1. ``get_csfd_movie_details`` 只应在导演标题块中提取导演。
 2. 既支持捷克语 ``Režie``，也支持英语 ``Directed`` 标题。
+3. ``get_douban_search_details`` 只在结果足够明确时返回唯一目标链接。
 """
 
 import copy
@@ -11,6 +12,7 @@ import importlib.util
 import sys
 import tempfile
 import types
+import urllib.parse
 import unittest
 import uuid
 from pathlib import Path
@@ -150,6 +152,23 @@ def build_csfd_html(
     )
 
 
+def build_douban_search_html(results: list[tuple[str, str]]) -> str:
+    """构造最小可用的豆瓣搜索结果 HTML。"""
+    items_html = "".join(
+        (
+            '<div class="result">'
+            f'<div class="pic"><a title="{title}">Poster</a></div>'
+            f'<a class="nbg" href="https://search.douban.com/movie/subject_search?url={urllib.parse.quote(target_url, safe="")}">Link</a>'
+            '</div>'
+        )
+        for title, target_url in results
+    )
+    return (
+        '<div class="search-result"></div>'
+        f'<div class="result-list">{items_html}</div>'
+    )
+
+
 class TestGetCsfdMovieDetails(unittest.TestCase):
     """验证 CSFD 页面解析逻辑中的导演块匹配。"""
 
@@ -205,6 +224,31 @@ class TestGetCsfdMovieDetails(unittest.TestCase):
                 "id": "csfd654321",
             },
         )
+
+
+class TestGetDoubanSearchDetails(unittest.TestCase):
+    """验证豆瓣搜索结果只在足够明确时返回唯一链接。"""
+
+    def setUp(self):
+        self.module, self.temp_dir = load_sort_movie_request()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_get_douban_search_details_skips_known_noise_first_result(self):
+        """遇到已知噪声项时，应返回第二条真实目标链接。"""
+        response = Mock(
+            text=build_douban_search_html(
+                [
+                    ("It's Hard to be Nice", "https://movie.douban.com/subject/1111111/"),
+                    ("Real Movie", "https://movie.douban.com/subject/2222222/"),
+                ]
+            )
+        )
+
+        result = self.module.get_douban_search_details(response)
+
+        self.assertEqual(result, "https://movie.douban.com/subject/2222222/")
 
 
 if __name__ == "__main__":
