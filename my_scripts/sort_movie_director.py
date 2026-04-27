@@ -1,5 +1,12 @@
 """
-从 TMDB，IMDB，豆瓣 获取导演别名，并以空文件储存名字。
+自动整理导演目录。
+
+主流程是：
+1. 从导演目录下的文件名中收集影片 IMDb 编号 `tt...`
+2. 结合本地 IMDb 镜像、TMDB、豆瓣，解析导演编号
+3. 抓取导演别名
+4. 在导演目录中写入 `.imdb/.tmdb/.douban` 编号空文件和别名空文件
+5. 如果拿到了 TMDB 编号，则将目录移动到目标位置
 
 :author: assassing
 :contact: https://github.com/hxz393
@@ -30,7 +37,10 @@ logger = logging.getLogger(__name__)
 
 def sort_director_auto(path: str, dst_path: str = r'A:\0b.导演别名') -> None:
     """
-    自动整理导演目录，生成导演别名空文件
+    自动整理单个导演目录。
+
+    这个函数只负责流程编排：收集 `tt...`、解析导演编号、汇总别名、
+    写入空文件，并在满足条件时移动目录。
 
     :param path: 导演目录
     :param dst_path: 目标目录
@@ -47,9 +57,36 @@ def sort_director_auto(path: str, dst_path: str = r'A:\0b.导演别名') -> None
         logger.error(f"目录内没有收集到 IMDB 编号: {director_main}")
         time.sleep(0.5)
         return
+    nm_id, tmdb_id, douban_id = get_director_ids(path, director_main, imdb_list)
+    if not nm_id:
+        return
+
+    aka = get_director_aliases(director_main, tmdb_id, douban_id)
+
+    for director_id, suffix in ((nm_id, 'imdb'), (tmdb_id, 'tmdb'), (douban_id, 'douban')):
+        if director_id:
+            Path(path, f"{director_id}.{suffix}").touch()
+
+    create_aka_director(path, aka)
+    if tmdb_id:
+        shutil.move(path, os.path.join(dst_path, director_main))
+
+
+def get_director_ids(path: str, director_main: str, imdb_list: list[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    获取导演的 IMDb、TMDB、豆瓣编号。
+
+    IMDb 导演编号是必需项；TMDB 和豆瓣编号在当前流程中是可选补充项，
+    找不到时会记日志，但不会在这里中断流程。
+
+    :param path: 导演目录
+    :param director_main: 当前导演目录名
+    :param imdb_list: 从目录内容中收集到的影片 IMDb 编号列表
+    :return: `(nm_id, tmdb_id, douban_id)`，其中任意项都可能为 `None`
+    """
     director_ids = scan_ids(path)
 
-    # 搜索 imdb，获取导演编号
+    # 先确定 IMDb 导演编号，后面的 TMDB 和豆瓣搜索都依赖它。
     nm_id = director_ids['imdb']
     if not nm_id:
         for imdb_id in imdb_list:
@@ -60,38 +97,63 @@ def sort_director_auto(path: str, dst_path: str = r'A:\0b.导演别名') -> None
         logger.info(f"IMDB 编号：{nm_id}")
     if not nm_id:
         logger.error(f"IMDB 电影导演不匹配或没有导演 {director_main}")
-        return
+        return None, None, None
 
-    # 搜索 tmdb，获取导演编号
     tmdb_id = director_ids['tmdb']
     if not tmdb_id:
-        tmdb_id = get_tmdb_director(nm_id, director_main, imdb_list)
+        tmdb_id = get_tmdb_director_id(nm_id, director_main, imdb_list)
     else:
         logger.info(f"TMDB 编号：{tmdb_id}")
     if not tmdb_id:
         logger.error(f"没有在 tmdb 找到导演链接 {director_main}")
 
-    # 搜索 douban，获取导演编号
     douban_id = director_ids['douban']
     if not douban_id:
-        douban_id = get_douban_director(nm_id)
+        douban_id = get_douban_director_id(nm_id)
     else:
         logger.info(f"DOUBAN 编号：{douban_id}")
     if not douban_id:
         logger.error(f"没有在 douban 找到导演链接 {director_main}")
 
-    for director_id, suffix in ((nm_id, 'imdb'), (tmdb_id, 'tmdb'), (douban_id, 'douban')):
-        if director_id:
-            Path(path, f"{director_id}.{suffix}").touch()
+    return nm_id, tmdb_id, douban_id
 
-    sort_movie_director(path)
+
+def get_director_aliases(director_main: str, tmdb_id: Optional[str], douban_id: Optional[str]) -> list[str]:
+    """
+    汇总导演别名列表。
+
+    列表总是先放当前目录名，再按顺序追加 TMDB 和豆瓣返回的别名。
+
+    :param director_main: 当前导演目录名
+    :param tmdb_id: 导演 TMDB 编号
+    :param douban_id: 导演豆瓣编号
+    :return: 去重前的别名列表
+    """
+    aka = [director_main]
+
     if tmdb_id:
-        shutil.move(path, os.path.join(dst_path, director_main))
+        tmdb_aka = get_tmdb_director_aliases(tmdb_id)
+        aka.extend(tmdb_aka)
+        logger.info(f"TMDB 名字：{tmdb_aka[0]}")
+    else:
+        logger.warning("没有 TMDB 编号。")
+
+    if douban_id:
+        douban_aka = get_douban_director_aliases(douban_id)
+        aka.extend(douban_aka)
+        logger.info(f"DOUBAN 名字：{douban_aka[0]}")
+    else:
+        logger.warning("没有 DOUBAN 编号。")
+
+    return aka
 
 
 def get_imdb_local_director(movie_id: str, director_main: str) -> Optional[str]:
     """
-    搜索本地 imdb 库，获取导演信息
+    根据影片 IMDb 编号，从本地 IMDb 镜像中查导演编号。
+
+    这里不是按导演名直接查人物表，而是先用影片 `tt...` 查该片导演，
+    再拿当前目录名做一次名字匹配。
 
     :param movie_id: imdb 编号
     :param director_main: 导演主要名字
@@ -114,31 +176,17 @@ def get_imdb_local_director(movie_id: str, director_main: str) -> Optional[str]:
     return None
 
 
-def get_tmdb_director_aka(tmdb_id: str, director_main: str) -> Optional[str]:
-    """获取导演详细信息，得到别名列表，然后匹配
-
-    :param tmdb_id: tmdb 编号
-    :param director_main: 导演主要名字
-    :return: 匹配，成功则返回导演编号，失败返回 None
+def get_tmdb_director_id(nm_id: str, director_main: str, imdb_list: list) -> Optional[str]:
     """
-    p = get_tmdb_director_details(tmdb_id)
-    aka_org = list(p["also_known_as"])
-    aka_org.append(p['name'])
-    aka = [i.lower().replace(" ", "") for i in aka_org]
-    if director_main.lower().replace(" ", "") in aka:
-        return tmdb_id
-    else:
-        logger.warning(f"没有匹配到导演，查询到导演名字：{aka_org} {tmdb_id}")
-        return None
+    从 TMDB 获取导演编号。
 
-
-def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Optional[str]:
-    """
-    两种方式搜索 tmdb，获取导演信息
+    先直接用 IMDb 导演编号 `nm...` 搜 TMDB 人物结果；
+    如果没有结果，再退回到影片维度，用影片 `tt...` 找到 TMDB 电影，
+    再从电影主创里反推导演。
 
     :param nm_id: nm 导演编号
     :param director_main: 导演主要名字
-    :param imdb_list: 通过 imdb 列表搜索电影获取导演信息，备用方式
+    :param imdb_list: 用于备用查询的影片 IMDb 编号列表
     :return: 搜索结果，成功则返回导演编号，失败返回 None
     """
     # 搜索导演，获取导演信息
@@ -178,16 +226,20 @@ def get_tmdb_director(nm_id: str, director_main: str, imdb_list: list) -> Option
             for d in directors:
                 if d["name"] and d["name"].lower() == director_main.lower():
                     return str(d["name_id"]) if d["name_id"] else None
-                else:
-                    result = get_tmdb_director_aka(d["name_id"], director_main)
-                    if result:
-                        return result
+                tmdb_id = str(d["name_id"]) if d["name_id"] else None
+                # 名字不完全相等时，再查一次导演详情，用 TMDB 的 alias 判断是不是同一个人。
+                aliases = get_tmdb_director_aliases(tmdb_id) if tmdb_id else ()
+                director_main_normalized = director_main.lower().replace(" ", "")
+                aliases_normalized = {name.lower().replace(" ", "") for name in aliases}
+                if tmdb_id and director_main_normalized in aliases_normalized:
+                    return tmdb_id
+                logger.warning(f"没有匹配到导演，查询到导演名字：{list(aliases)} {tmdb_id}")
     return
 
 
-def get_douban_director(nm_id: str) -> Optional[str]:
+def get_douban_director_id(nm_id: str) -> Optional[str]:
     """
-    搜索 douban，获取导演信息
+    根据 IMDb 导演编号搜索豆瓣导演编号。
 
     :param nm_id: imdb 导演编号
     :return: 搜索结果，成功则返回导演编号，失败返回 None
@@ -210,62 +262,26 @@ def get_douban_director(nm_id: str) -> Optional[str]:
     return None
 
 
-def sort_movie_director(path: str) -> None:
+def get_tmdb_director_aliases(director_id: str) -> tuple[str, ...]:
     """
-    从 TMDB，IMDB，豆瓣 抓取导演信息，生成别名文件
+    从 TMDB 获取导演别名。
 
-    :param path: 导演目录
-    :return: 无
-    """
-    logger.info("开始抓取导演信息")
-    path = path.strip()
-    director_ids = scan_ids(path)
-    aka = [os.path.basename(path)]
-
-    # IMDB 流程
-    imdb = director_ids['imdb']
-    if imdb:
-        logger.info(f"IMDB 编号：{imdb}")
-    else:
-        logger.warning("没有 IMDB 编号。")
-
-    # TMDB 流程
-    tmdb = director_ids['tmdb']
-    if tmdb:
-        tmdb_aka = get_tmdb_director_info(tmdb)
-        aka.extend(tmdb_aka)
-        logger.info(f"TMDB 名字：{tmdb_aka[0]}")
-    else:
-        logger.warning("没有 TMDB 编号。")
-
-    # DOUBAN 流程
-    douban = director_ids['douban']
-    if douban:
-        douban_aka = get_douban_director_info(douban)
-        aka.extend(douban_aka)
-        logger.info(f"DOUBAN 名字：{douban_aka[0]}")
-    else:
-        logger.warning("没有 DOUBAN 编号。")
-
-    # 将别名写入到空文件
-    if aka:
-        create_aka_director(path, aka)
-
-
-def get_tmdb_director_info(director_id: str) -> list:
-    """
-    从 TMDB 获取导演信息
+    返回值第一个元素是 TMDB 主名字，后面依次是 `also_known_as`
+    中的别名。
 
     :param director_id: 导演 tmdb 编号
-    :return: 返回别名列表
+    :return: 返回别名序列
     """
     p = get_tmdb_director_details(director_id)
-    return [p["name"], *list(p["also_known_as"])]
+    return (p["name"], *list(p["also_known_as"]))
 
 
-def get_douban_director_info(director_id: str) -> list:
+def get_douban_director_aliases(director_id: str) -> list:
     """
-    从 DOUBAN 获取导演信息
+    从豆瓣人物页提取导演别名。
+
+    返回值先放豆瓣页面主标题拆出来的名字，再追加“更多外文名/更多中文名”
+    里的条目。
 
     :param director_id: 导演 douban 编号
     :return: 返回别名列表
