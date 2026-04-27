@@ -511,19 +511,22 @@ class TestLookupHelpers(unittest.TestCase):
         self.assertTrue(conn.cursors[0].closed)
         self.assertTrue(conn.closed)
 
-    def test_query_imdb_local_director_returns_director_rows(self):
+    def test_query_imdb_title_directors_returns_director_rows(self):
         cursor = CursorStub(fetchall_results=[[{"director_id": "nm1", "director_name": "A"}]])
         conn = ConnectionStub([cursor])
 
         with patch.object(self.module, "create_conn", return_value=conn):
-            result = self.module.query_imdb_local_director("tt1234567")
+            result = self.module.query_imdb_title_directors("tt1234567")
 
         self.assertEqual(result, [{"director_id": "nm1", "director_name": "A"}])
-        self.assertEqual(cursor.execute_calls[0], (self.module.IMDB_QUERY_SQL, ("tt1234567",)))
+        self.assertEqual(
+            cursor.execute_calls[0],
+            (self.module.IMDB_TITLE_DIRECTOR_NAMES_QUERY_SQL, ("tt1234567",)),
+        )
         self.assertTrue(cursor.closed)
         self.assertTrue(conn.closed)
 
-    def test_query_imdb_local_director_returns_none_on_mysql_error(self):
+    def test_query_imdb_title_directors_returns_none_on_mysql_error(self):
         def execute_hook(_sql, _params):
             raise self.module.mysql.connector.Error("query failed")
 
@@ -533,10 +536,85 @@ class TestLookupHelpers(unittest.TestCase):
         with patch.object(self.module, "create_conn", return_value=conn), patch.object(
             self.module.logger, "error"
         ) as mock_error:
-            result = self.module.query_imdb_local_director("tt7654321")
+            result = self.module.query_imdb_title_directors("tt7654321")
 
         self.assertIsNone(result)
         mock_error.assert_called_with("IMDb 本地库查询失败！tt7654321 query failed")
+        self.assertTrue(conn.closed)
+
+    def test_query_imdb_title_metadata_returns_titles_genres_and_directors(self):
+        cursor = CursorStub(
+            fetchone_results=[
+                {
+                    "imdb_id": "tt1234567",
+                    "primary_title": "Primary Title",
+                    "original_title": "Original Title",
+                    "start_year": 1999,
+                    "runtime_minutes": 123,
+                    "title_type": "movie",
+                    "genres": "Drama,Mystery,Drama",
+                }
+            ],
+            fetchall_results=[
+                [
+                    {"director_order": 1, "director_id": "nm1", "director_name": "Director One"},
+                    {"director_order": 2, "director_id": "nm2", "director_name": "Director Two"},
+                    {"director_order": 3, "director_id": "nm2", "director_name": "Director Two"},
+                ],
+                [
+                    {"ordering": 1, "title": "Original Title", "region": "US", "language": "en", "types": "original", "attributes": None, "is_original_title": 1},
+                    {"ordering": 2, "title": "Alias A", "region": "JP", "language": "ja", "types": "imdbDisplay", "attributes": None, "is_original_title": 0},
+                    {"ordering": 3, "title": "Alias B", "region": None, "language": None, "types": None, "attributes": None, "is_original_title": 0},
+                    {"ordering": 4, "title": "Alias A", "region": None, "language": None, "types": None, "attributes": None, "is_original_title": 0},
+                ],
+            ],
+        )
+        conn = ConnectionStub([cursor])
+
+        with patch.object(self.module, "create_conn", return_value=conn):
+            result = self.module.query_imdb_title_metadata("tt1234567")
+
+        self.assertEqual(
+            result,
+            {
+                "imdb_id": "tt1234567",
+                "primary_title": "Primary Title",
+                "original_title": "Original Title",
+                "start_year": 1999,
+                "runtime_minutes": 123,
+                "title_type": "movie",
+                "genres": ["Drama", "Mystery"],
+                "titles": ["Original Title", "Primary Title", "Alias A", "Alias B"],
+                "directors": ["Director One", "Director Two"],
+            },
+        )
+        self.assertEqual(
+            cursor.execute_calls,
+            [
+                (self.module.IMDB_TITLE_BASICS_QUERY_SQL, ("tt1234567",)),
+                (self.module.IMDB_TITLE_DIRECTORS_QUERY_SQL, ("tt1234567",)),
+                (self.module.IMDB_TITLE_AKAS_QUERY_SQL, ("tt1234567",)),
+            ],
+        )
+        self.assertEqual(conn.cursor_calls, [{"dictionary": True}])
+        self.assertTrue(cursor.closed)
+        self.assertTrue(conn.closed)
+
+    def test_query_imdb_title_metadata_returns_none_on_mysql_error(self):
+        def execute_hook(_sql, _params):
+            raise self.module.mysql.connector.Error("query failed")
+
+        cursor = CursorStub(execute_hook=execute_hook)
+        conn = ConnectionStub([cursor])
+
+        with patch.object(self.module, "create_conn", return_value=conn), patch.object(
+            self.module.logger, "error"
+        ) as mock_error:
+            result = self.module.query_imdb_title_metadata("tt7654321")
+
+        self.assertIsNone(result)
+        mock_error.assert_called_with("IMDb 本地库查询影片失败！tt7654321 query failed")
+        self.assertTrue(cursor.closed)
         self.assertTrue(conn.closed)
 
     def test_get_record_id_by_priority_prefers_imdb_match(self):

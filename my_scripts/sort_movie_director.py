@@ -24,7 +24,7 @@ from typing import List, Optional
 
 from bs4 import BeautifulSoup
 
-from sort_movie_mysql import query_imdb_local_director, insert_movie_wanted, remove_existing_tmdb_ids
+from sort_movie_mysql import query_imdb_title_directors, insert_movie_wanted, remove_existing_tmdb_ids
 from sort_movie_ops import (
     scan_ids,
     split_director_name,
@@ -178,7 +178,7 @@ def get_imdb_local_director(movie_id: str, director_main: str) -> Optional[str]:
     :param director_main: 导演主要名字
     :return: 搜索结果，成功则返回导演编号，失败返回 None
     """
-    directors = query_imdb_local_director(movie_id)
+    directors = query_imdb_title_directors(movie_id)
 
     if not directors:
         logger.error(f"IMDb 本地库没有找到导演！{movie_id} {director_main}")

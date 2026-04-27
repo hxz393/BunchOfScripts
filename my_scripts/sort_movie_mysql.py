@@ -86,16 +86,57 @@ WANTED_INSERT_SQL = """
         INSERT INTO wanted (director, year, imdb, tmdb, runtime, titles)
         VALUES (%s, %s, %s, %s, %s, %s)
     """
-IMDB_QUERY_SQL = """
+# IMDb 标题查询统一走本地镜像库：
+# - ``title_basics`` 提供标题主信息、年份、时长和类型
+# - ``title_directors`` + ``name_basics`` 提供按顺序展开的导演名字
+# - ``title_akas`` 提供影片别名和地区标题
+IMDB_TITLE_DIRECTOR_NAMES_QUERY_SQL = """
     SELECT
         d.director_nconst AS director_id,
         n.primary_name AS director_name
-    FROM imdb_datasets.title_directors d
-    LEFT JOIN imdb_datasets.name_basics n
+    FROM {imdb_db}.title_directors d
+    LEFT JOIN {imdb_db}.name_basics n
         ON n.nconst = d.director_nconst
     WHERE d.tconst = %s
     ORDER BY d.director_order
-"""
+""".format(imdb_db=MYSQL_DB_IMDB)
+IMDB_TITLE_BASICS_QUERY_SQL = """
+    SELECT
+        b.tconst AS imdb_id,
+        b.primary_title,
+        b.original_title,
+        b.start_year,
+        b.runtime_minutes,
+        b.title_type,
+        b.genres
+    FROM {imdb_db}.title_basics b
+    WHERE b.tconst = %s
+    LIMIT 1
+""".format(imdb_db=MYSQL_DB_IMDB)
+IMDB_TITLE_DIRECTORS_QUERY_SQL = """
+    SELECT
+        d.director_order,
+        d.director_nconst AS director_id,
+        n.primary_name AS director_name
+    FROM {imdb_db}.title_directors d
+    LEFT JOIN {imdb_db}.name_basics n
+        ON n.nconst = d.director_nconst
+    WHERE d.tconst = %s
+    ORDER BY d.director_order
+""".format(imdb_db=MYSQL_DB_IMDB)
+IMDB_TITLE_AKAS_QUERY_SQL = """
+    SELECT
+        ordering,
+        title,
+        region,
+        language,
+        types,
+        attributes,
+        is_original_title
+    FROM {imdb_db}.title_akas
+    WHERE title_id = %s
+    ORDER BY ordering
+""".format(imdb_db=MYSQL_DB_IMDB)
 
 
 def fetch_existing_values(cursor: Any, table_name: str, column_name: str, values: set) -> set:
@@ -399,7 +440,7 @@ def check_movie_ids(ids: list) -> list:
             conn.close()
 
 
-def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
+def query_imdb_title_directors(movie_id: str) -> Optional[list[dict]]:
     """
     根据 IMDb 影片编号查询本地镜像库里的导演列表。
 
@@ -412,11 +453,86 @@ def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
         # 建立数据库连接
         conn = create_conn(MYSQL_DB_IMDB)
         cursor = conn.cursor(dictionary=True)
-        cursor.execute(IMDB_QUERY_SQL, (movie_id,))
+        cursor.execute(IMDB_TITLE_DIRECTOR_NAMES_QUERY_SQL, (movie_id,))
         directors = cursor.fetchall()
         return directors
     except mysql.connector.Error as e:
         logger.error(f"IMDb 本地库查询失败！{movie_id} {e}")
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def normalize_imdb_text_list(values: list[Any]) -> list[str]:
+    """
+    规范化并去重本地 IMDb 查询得到的文本列表。
+
+    :param values: 原始文本值列表
+    :return: 去空、去重、保序后的字符串列表
+    """
+    seen = set()
+    result = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def query_imdb_title_metadata(movie_id: str) -> Optional[dict]:
+    """
+    根据 IMDb 影片编号查询本地镜像库里的影片基础元数据。
+
+    :param movie_id: imdb 编号
+    :return: 成功时返回影片信息字典；未命中或查询失败时返回 ``None``
+    """
+    conn = None
+    cursor = None
+    try:
+        conn = create_conn(MYSQL_DB_IMDB)
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute(IMDB_TITLE_BASICS_QUERY_SQL, (movie_id,))
+        movie_row = cursor.fetchone()
+        if not movie_row:
+            return None
+
+        cursor.execute(IMDB_TITLE_DIRECTORS_QUERY_SQL, (movie_id,))
+        director_rows = cursor.fetchall()
+
+        cursor.execute(IMDB_TITLE_AKAS_QUERY_SQL, (movie_id,))
+        aka_rows = cursor.fetchall()
+
+        titles = normalize_imdb_text_list(
+            [
+                movie_row.get("original_title"),
+                movie_row.get("primary_title"),
+                *[row.get("title") for row in aka_rows],
+            ]
+        )
+        directors = normalize_imdb_text_list([row.get("director_name") for row in director_rows])
+        genres = normalize_imdb_text_list((movie_row.get("genres") or "").split(","))
+
+        return {
+            "imdb_id": movie_row.get("imdb_id") or movie_id,
+            "primary_title": movie_row.get("primary_title") or "",
+            "original_title": movie_row.get("original_title") or "",
+            "start_year": movie_row.get("start_year"),
+            "runtime_minutes": movie_row.get("runtime_minutes"),
+            "title_type": movie_row.get("title_type") or "",
+            "genres": genres,
+            "titles": titles,
+            "directors": directors,
+        }
+    except mysql.connector.Error as e:
+        logger.error(f"IMDb 本地库查询影片失败！{movie_id} {e}")
         return None
     finally:
         if cursor:

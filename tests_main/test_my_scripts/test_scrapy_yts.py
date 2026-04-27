@@ -64,7 +64,7 @@ def load_scrapy_yts(config: dict | None = None):
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
     fake_sort_movie_mysql = types.ModuleType("sort_movie_mysql")
-    fake_sort_movie_mysql.query_imdb_local_director = lambda _movie_id: []
+    fake_sort_movie_mysql.query_imdb_title_directors = lambda _movie_id: []
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_movie_details = lambda _movie_id: None
@@ -575,7 +575,7 @@ class TestSearchImdbLocal(unittest.TestCase):
         """应返回去空白后的第一个有效导演名。"""
         with patch.object(
                 self.module,
-                "query_imdb_local_director",
+                "query_imdb_title_directors",
                 return_value=[{"director_name": "   "}, {"director_name": "  Jane Doe  "}],
         ):
             result = self.module.search_imdb_local("tt1234567")
@@ -584,7 +584,7 @@ class TestSearchImdbLocal(unittest.TestCase):
 
     def test_search_imdb_local_returns_empty_string_when_query_fails(self):
         """本地 IMDb 查询返回 ``None`` 时应回空字符串。"""
-        with patch.object(self.module, "query_imdb_local_director", return_value=None):
+        with patch.object(self.module, "query_imdb_title_directors", return_value=None):
             result = self.module.search_imdb_local("tt1234567")
 
         self.assertEqual(result, "")

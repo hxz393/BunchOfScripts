@@ -52,7 +52,7 @@ def fake_extract_imdb_id(text: str) -> str | None:
 def load_sort_movie_director():
     """在隔离依赖的环境中加载 ``sort_movie_director`` 模块。"""
     fake_sort_movie_mysql = types.ModuleType("sort_movie_mysql")
-    fake_sort_movie_mysql.query_imdb_local_director = lambda _movie_id: []
+    fake_sort_movie_mysql.query_imdb_title_directors = lambda _movie_id: []
     fake_sort_movie_mysql.insert_movie_wanted = lambda _wanted_list: None
     fake_sort_movie_mysql.remove_existing_tmdb_ids = lambda ids: ids
 

@@ -120,6 +120,7 @@ def load_sort_movie_auto():
 
     fake_sort_movie_mysql = types.ModuleType("sort_movie_mysql")
     fake_sort_movie_mysql.insert_movie_record_to_mysql = lambda _path: None
+    fake_sort_movie_mysql.query_imdb_title_metadata = lambda _movie_id: None
 
     fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
     fake_sort_movie_ops.get_ids = lambda _source_path: None
@@ -324,6 +325,100 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
 
         self.assertEqual(handled_paths, [str(first_movie), str(second_movie)])
         mock_sort_movie.assert_called_once_with(str(second_movie))
+
+
+class TestSortMovieAutoCurrentRules(unittest.TestCase):
+    """验证当前已生效的整理准入规则。"""
+
+    def setUp(self):
+        self.module = load_sort_movie_auto()
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_sort_movie_rejects_directory_without_any_ids_even_if_movie_info_exists(self):
+        """只要没有编号文件，就不应继续处理或入库。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+        (movie_dir / "movie_info.json5").write_text("{}", encoding="utf-8")
+
+        with patch.object(
+            self.module,
+            "scan_ids",
+            return_value={"tmdb": None, "douban": None, "imdb": None},
+        ), patch.object(
+            self.module,
+            "get_tmdb_movie_info",
+        ) as mock_tmdb, patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ) as mock_imdb, patch.object(
+            self.module,
+            "get_douban_movie_info",
+        ) as mock_douban, patch.object(
+            self.module,
+            "get_video_info",
+        ) as mock_video_info, patch.object(
+            self.module,
+            "insert_movie_record_to_mysql",
+        ) as mock_insert:
+            self.module.sort_movie(str(movie_dir))
+
+        mock_tmdb.assert_not_called()
+        mock_imdb.assert_not_called()
+        mock_douban.assert_not_called()
+        mock_video_info.assert_not_called()
+        mock_insert.assert_not_called()
+
+
+class TestImdbLocalMerge(unittest.TestCase):
+    """验证 IMDb 本地镜像结果如何合并到 ``movie_info``。"""
+
+    def setUp(self):
+        self.module = load_sort_movie_auto()
+
+    def test_get_imdb_movie_info_uses_local_aliases_and_keeps_country_language_untouched(self):
+        """本地 IMDb 应补充全量标题、类型和导演，但不覆盖其他站点提供的国家和语言。"""
+        movie_info = {
+            "year": 0,
+            "runtime": 0,
+            "runtime_imdb": 0,
+            "original_title": "",
+            "chinese_title": "",
+            "titles": [],
+            "genres": [],
+            "country": ["Japan"],
+            "language": ["Japanese"],
+            "directors": [],
+        }
+        imdb_row = {
+            "imdb_id": "tt1234567",
+            "primary_title": "Primary Title",
+            "original_title": "Original Title",
+            "start_year": 1998,
+            "runtime_minutes": 123,
+            "title_type": "movie",
+            "genres": ["Drama", "Mystery"],
+            "titles": ["Original Title", "Primary Title", "Alias A", "Alias B"],
+            "directors": ["Director One", "Director Two"],
+        }
+
+        with patch.object(self.module, "query_imdb_title_metadata", return_value=imdb_row):
+            self.module.get_imdb_movie_info("tt1234567", movie_info)
+
+        self.assertEqual(movie_info["year"], 1998)
+        self.assertEqual(movie_info["runtime"], 123)
+        self.assertEqual(movie_info["runtime_imdb"], 123)
+        self.assertEqual(movie_info["original_title"], "Original Title")
+        self.assertEqual(
+            movie_info["titles"],
+            ["Original Title", "Primary Title", "Alias A", "Alias B"],
+        )
+        self.assertEqual(movie_info["genres"], ["Drama", "Mystery"])
+        self.assertEqual(movie_info["directors"], ["Director One", "Director Two"])
+        self.assertEqual(movie_info["country"], ["Japan"])
+        self.assertEqual(movie_info["language"], ["Japanese"])
 
 
 if __name__ == "__main__":
