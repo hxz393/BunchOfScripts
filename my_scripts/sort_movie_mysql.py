@@ -9,7 +9,6 @@
 import json
 import logging
 import os.path
-import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -127,7 +126,7 @@ def serialize_movie_field_value(field_name: str, value: Any) -> Any:
     :return: 转换后的值
     """
     if field_name in MOVIE_JSON_FIELDS:
-        return json.dumps(value)
+        return json.dumps(value, ensure_ascii=False)
     return value
 
 
@@ -139,6 +138,10 @@ def build_movie_insert_data(merged_dict: dict, current_time: str) -> tuple:
     :param current_time: 当前时间
     :return: 与 MOVIES_INSERT_COLUMNS 对齐的插入数据
     """
+    missing_fields = [field_name for field_name in MOVIE_INSERT_FIELDS if field_name not in merged_dict]
+    if missing_fields:
+        raise KeyError(f"movie_info.json5 缺少必要字段: {', '.join(missing_fields)}")
+
     # 按字段清单顺序统一取值，这样以后增删字段只需要维护字段表本身。
     data_values = [
         serialize_movie_field_value(field_name, merged_dict[field_name])
@@ -189,7 +192,7 @@ def insert_movie_wanted(wanted_list: list) -> None:
                 record.get('imdb') if record.get('imdb') else None,
                 tmdb,
                 record.get('runtime'),
-                json.dumps(record.get('titles')),
+                json.dumps(record.get('titles'), ensure_ascii=False),
             ))
 
         if data:
@@ -218,7 +221,6 @@ def insert_movie_record_to_mysql(path: str) -> None:
     :param path: 电影目录
     :return: 无
     """
-    time.sleep(0.1)
     logger.info("-" * 25 + "步骤：写入数据库" + "-" * 25)
     merged_dict = read_json_to_dict(os.path.join(path, "movie_info.json5"))
     if not merged_dict:
@@ -256,6 +258,9 @@ def insert_movie_record_to_mysql(path: str) -> None:
             logger.info(f"已插入数据库！DOUBAN: {merged_dict['douban']}")
         else:
             logger.info(f"已插入数据库！ID: {inserted_rowid}")
+    except KeyError as err:
+        logger.error(f"电影信息字段缺失：{err.args[0]}")
+        raise
     except mysql.connector.Error as err:
         if conn:
             conn.rollback()
@@ -424,29 +429,19 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
     """
     按 ``imdb -> tmdb -> douban`` 的顺序查找 movies 表中是否已有对应记录。
 
-    这里先复用批量外部 id 查询逻辑判断哪一类编号命中了现有记录，再只对命中的那一项回查数据库主键。
+    单条入库路径直接按优先级回查数据库主键，避免先做存在性判断再多一次往返。
 
     :param cursor: 数据库游标
     :param merged_dict: 完整电影信息字典
     :return: 找到则返回对应的 id，否则返回 None
     """
-    candidate_ids = []
-    if merged_dict.get('imdb'):
-        candidate_ids.append(merged_dict['imdb'])
-    if merged_dict.get('tmdb'):
-        candidate_ids.append(f"tmdb{merged_dict['tmdb']}")
-    if merged_dict.get('douban'):
-        candidate_ids.append(f"db{merged_dict['douban']}")
-
-    parsed_ids = build_parsed_movie_ids(candidate_ids)
-    existing_ids = fetch_existing_movie_external_ids(cursor, parsed_ids)
-
-    for _, parsed in parsed_ids:
-        if not parsed or parsed[1] not in existing_ids[parsed[0]]:
+    for field_name in ("imdb", "tmdb", "douban"):
+        field_value = merged_dict.get(field_name)
+        if not field_value:
             continue
 
-        select_sql = f"SELECT id FROM movies WHERE {parsed[0]} = %s"
-        cursor.execute(select_sql, (parsed[1],))
+        select_sql = f"SELECT id FROM movies WHERE {field_name} = %s"
+        cursor.execute(select_sql, (field_value,))
         result = cursor.fetchone()
         if result:
             return result[0]
@@ -514,6 +509,7 @@ def delete_records(id_list: list, id_type: str, table_name: str) -> None:
         if conn:
             conn.rollback()
         logger.error(f'操作异常：{err}')
+        raise
     finally:
         if cursor:
             cursor.close()

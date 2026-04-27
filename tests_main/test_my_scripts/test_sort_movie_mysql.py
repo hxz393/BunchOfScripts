@@ -217,7 +217,7 @@ class TestConnectionsAndBatchHelpers(unittest.TestCase):
         )
 
     def test_build_movie_insert_data_follows_field_list_and_serializes_json_fields(self):
-        movie_info = build_movie_info()
+        movie_info = build_movie_info(titles=["原始标题", "Alias Title"])
         current_time = "2026-04-27 18:00:00"
 
         result = self.module.build_movie_insert_data(movie_info, current_time)
@@ -230,9 +230,22 @@ class TestConnectionsAndBatchHelpers(unittest.TestCase):
         )
         self.assertEqual(
             result[self.module.MOVIE_INSERT_FIELDS.index("titles")],
-            '["Original Title", "Alias Title"]',
+            '["原始标题", "Alias Title"]',
         )
         self.assertEqual(result[-2:], (current_time, current_time))
+
+    def test_build_movie_insert_data_raises_clear_key_error_for_missing_fields(self):
+        movie_info = build_movie_info()
+        del movie_info["director"]
+        del movie_info["quality"]
+
+        with self.assertRaises(KeyError) as cm:
+            self.module.build_movie_insert_data(movie_info, "2026-04-27 18:00:00")
+
+        self.assertEqual(
+            cm.exception.args[0],
+            "movie_info.json5 缺少必要字段: director, quality",
+        )
 
     def test_create_conn_uses_main_database_config(self):
         sentinel = object()
@@ -335,7 +348,7 @@ class TestInsertMovieWanted(unittest.TestCase):
             {"director": "B", "year": 2002, "imdb": "tt0000002", "tmdb": "202", "runtime": 102, "titles": ["B"]},
             {"director": "C", "year": 2003, "imdb": "tt0000003", "tmdb": "303", "runtime": 103, "titles": ["C"]},
             {"director": "D", "year": 2004, "imdb": "tt0000004", "tmdb": "303", "runtime": 104, "titles": ["D"]},
-            {"director": "E", "year": "", "imdb": "", "tmdb": None, "runtime": 105, "titles": ["E"]},
+            {"director": "E", "year": "", "imdb": "", "tmdb": None, "runtime": 105, "titles": ["片名"]},
         ]
 
         with patch.object(self.module, "create_conn", return_value=conn):
@@ -351,7 +364,7 @@ class TestInsertMovieWanted(unittest.TestCase):
             rows,
             [
                 ("C", 2003, "tt0000003", "303", 103, '["C"]'),
-                ("E", 0, None, None, 105, '["E"]'),
+                ("E", 0, None, None, 105, '["片名"]'),
             ],
         )
 
@@ -380,7 +393,7 @@ class TestSortMovieMysqlMain(unittest.TestCase):
     def test_sort_movie_mysql_returns_early_when_movie_info_missing(self):
         with patch.object(self.module, "read_json_to_dict", return_value=None), patch.object(
             self.module, "create_conn"
-        ) as mock_create_conn, patch.object(self.module.time, "sleep"), patch.object(self.module.logger, "error") as mock_error:
+        ) as mock_create_conn, patch.object(self.module.logger, "error") as mock_error:
             self.module.insert_movie_record_to_mysql("D:\\movies\\Example")
 
         mock_create_conn.assert_not_called()
@@ -393,8 +406,8 @@ class TestSortMovieMysqlMain(unittest.TestCase):
         with patch.object(self.module, "read_json_to_dict", return_value=build_movie_info()), patch.object(
             self.module, "create_conn", return_value=conn
         ), patch.object(self.module, "get_record_id_by_priority", return_value=55), patch.object(
-            self.module.time, "sleep"
-        ), patch.object(self.module.logger, "error") as mock_error:
+            self.module.logger, "error"
+        ) as mock_error:
             self.module.insert_movie_record_to_mysql("D:\\movies\\Existing")
 
         self.assertEqual(conn.commit_calls, 0)
@@ -414,8 +427,6 @@ class TestSortMovieMysqlMain(unittest.TestCase):
             self.module, "create_conn", return_value=conn
         ), patch.object(
             self.module, "get_record_id_by_priority", return_value=None
-        ), patch.object(
-            self.module.time, "sleep"
         ), patch.object(
             self.module.logger, "info"
         ) as mock_info:
@@ -444,12 +455,34 @@ class TestSortMovieMysqlMain(unittest.TestCase):
             self.module, "create_conn", return_value=conn
         ), patch.object(
             self.module, "get_record_id_by_priority", return_value=None
-        ), patch.object(self.module.time, "sleep"), self.assertRaises(self.module.mysql.connector.Error):
+        ), self.assertRaises(self.module.mysql.connector.Error):
             self.module.insert_movie_record_to_mysql("D:\\movies\\Broken")
 
         self.assertEqual(conn.commit_calls, 0)
         self.assertEqual(conn.rollback_calls, 1)
         self.assertTrue(conn.closed)
+
+    def test_sort_movie_mysql_logs_and_reraises_when_movie_info_missing_required_fields(self):
+        cursor = CursorStub()
+        conn = ConnectionStub([cursor])
+        movie_info = build_movie_info()
+        del movie_info["director"]
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info), patch.object(
+            self.module, "create_conn", return_value=conn
+        ), patch.object(
+            self.module, "get_record_id_by_priority", return_value=None
+        ), patch.object(
+            self.module.logger, "error"
+        ) as mock_error, self.assertRaises(KeyError):
+            self.module.insert_movie_record_to_mysql("D:\\movies\\Broken")
+
+        self.assertEqual(conn.commit_calls, 0)
+        self.assertEqual(conn.rollback_calls, 0)
+        self.assertEqual(cursor.execute_calls, [])
+        self.assertTrue(cursor.closed)
+        self.assertTrue(conn.closed)
+        mock_error.assert_called_with("电影信息字段缺失：movie_info.json5 缺少必要字段: director")
 
 
 class TestLookupHelpers(unittest.TestCase):
@@ -507,37 +540,29 @@ class TestLookupHelpers(unittest.TestCase):
         self.assertTrue(conn.closed)
 
     def test_get_record_id_by_priority_prefers_imdb_match(self):
-        cursor = CursorStub(fetchone_results=[(7,)], fetchall_results=[[("tt1111111",)], [], []])
+        cursor = CursorStub(fetchone_results=[(7,)])
         merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
 
         result = self.module.get_record_id_by_priority(cursor, merged_dict)
 
         self.assertEqual(result, 7)
-        self.assertEqual(
-            [call[1] for call in cursor.execute_calls],
-            [
-                ("tt1111111",),
-                ("22",),
-                ("33",),
-                ("tt1111111",),
-            ],
-        )
+        self.assertEqual(cursor.execute_calls, [("SELECT id FROM movies WHERE imdb = %s", ("tt1111111",))])
 
-    def test_get_record_id_by_priority_falls_back_to_tmdb_when_imdb_missing(self):
-        cursor = CursorStub(fetchone_results=[(9,)], fetchall_results=[[], [("22",)], []])
+    def test_get_record_id_by_priority_falls_back_to_tmdb_when_imdb_not_found(self):
+        cursor = CursorStub(fetchone_results=[None, (9,)])
         merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
 
         result = self.module.get_record_id_by_priority(cursor, merged_dict)
 
         self.assertEqual(result, 9)
-        self.assertEqual(len(cursor.execute_calls), 4)
+        self.assertEqual(len(cursor.execute_calls), 2)
         self.assertEqual(
             cursor.execute_calls[-1],
             ("SELECT id FROM movies WHERE tmdb = %s", ("22",)),
         )
 
     def test_get_record_id_by_priority_returns_none_when_no_external_id_matches(self):
-        cursor = CursorStub(fetchall_results=[[], [], []])
+        cursor = CursorStub(fetchone_results=[None, None, None])
         merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
 
         result = self.module.get_record_id_by_priority(cursor, merged_dict)
@@ -619,7 +644,7 @@ class TestDeleteHelpers(unittest.TestCase):
 
         with patch.object(self.module, "create_conn", return_value=conn), patch.object(
             self.module.logger, "error"
-        ) as mock_error:
+        ) as mock_error, self.assertRaises(self.module.mysql.connector.Error):
             self.module.delete_records(["tt1"], "imdb", "movies")
 
         self.assertEqual(conn.rollback_calls, 1)
