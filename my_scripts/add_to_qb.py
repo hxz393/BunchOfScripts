@@ -11,8 +11,7 @@ import os
 import requests
 from retrying import retry
 
-from my_module import read_json_to_dict, read_file_to_list
-from sort_movie_ops import select_yts_best_torrent
+from my_module import read_json_to_dict, extract_torrent_download_link
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -53,16 +52,16 @@ def add_to_qb(source: str) -> None:
                 file_name_no_ext = file_name_no_ext[:111]
             # json 文件来自 ytf
             if file_name.endswith('.json'):
-                # 读取 json 文件，获取下载链接
-                dl_link = select_yts_best_torrent(read_json_to_dict(file_path))
-                # 添加到 qb
+                dl_link = extract_torrent_download_link(file_path, MAGNET_PATH)
+                if not dl_link:
+                    continue
                 add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ytf')
                 done += 1
             # log 文件来自 ru
             elif file_name.endswith('.log'):
-                # 读取 log 文件，获取下载链接
-                dl_link = read_file_to_list(file_path)[0]
-                dl_link = dl_link.replace('\ufeff', '')
+                dl_link = extract_torrent_download_link(file_path, MAGNET_PATH)
+                if not dl_link:
+                    continue
                 add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
                 done += 1
             # 添加种子文件，已经不常用了
