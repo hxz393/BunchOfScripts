@@ -111,7 +111,6 @@ def finalize_onk_run(redis_client=None) -> None:
     redis_client.delete(
         REDIS_PENDING_KEY,
         REDIS_PROCESSING_KEY,
-        REDIS_SEEN_KEY,
         REDIS_SCAN_COMPLETE_KEY,
     )
     logger.info(f"ONK 已更新 end_time 为 {next_end_time}")
