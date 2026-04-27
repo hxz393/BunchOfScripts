@@ -11,8 +11,8 @@ import os
 import requests
 from retrying import retry
 
-from extract_torrent_download_link import extract_torrent_download_link
 from my_module import read_json_to_dict
+from sort_movie_ops import extract_torrent_download_link
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -24,6 +24,7 @@ QB_USER = CONFIG['qb_user']  # qb 用户
 QB_PASS = CONFIG['qb_pass']  # qb 密码
 QB_SAVE_DIR = CONFIG['qb_save_dir']  # qb 保存目录
 MAGNET_PATH = CONFIG['magnet_path']  # 输出目录
+REQUEST_TIMEOUT = 30
 
 
 def add_to_qb(source: str) -> None:
@@ -56,19 +57,30 @@ def add_to_qb(source: str) -> None:
                 dl_link = extract_torrent_download_link(file_path, MAGNET_PATH)
                 if not dl_link:
                     continue
-                add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ytf')
+                try:
+                    add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ytf')
+                except Exception:
+                    logger.exception(f"添加磁力链接失败 {director}: {dl_link}")
+                    continue
                 done += 1
             # log 文件来自 ru
             elif file_name.endswith('.log'):
                 dl_link = extract_torrent_download_link(file_path, MAGNET_PATH)
                 if not dl_link:
                     continue
-                add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
+                try:
+                    add_magnet_link(session, dl_link, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
+                except Exception:
+                    logger.exception(f"添加磁力链接失败 {director}: {dl_link}")
+                    continue
                 done += 1
             # 添加种子文件，已经不常用了
             elif file_name.endswith('.torrent'):
-                # 添加种子文件
-                add_torrent_file(session, file_path, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
+                try:
+                    add_torrent_file(session, file_path, save_path=os.path.join(QB_SAVE_DIR, director, file_name_no_ext).replace("\\", "/"), tags=director, category='ru')
+                except Exception:
+                    logger.exception(f"添加种子文件失败 {director}: {file_path}")
+                    continue
                 done += 1
     logger.info(f"共添加 {done} 个任务。")
 
@@ -85,7 +97,11 @@ def qb_login(session: requests.Session) -> bool:
         "username": QB_USER,
         "password": QB_PASS
     }
-    response = session.post(login_endpoint, data=data)
+    try:
+        response = session.post(login_endpoint, data=data, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as e:
+        logger.error(f"qBittorrent: 登录失败，异常: {e}")
+        return False
     # 登录成功时，返回内容通常为 "Ok."
     if response.text == "Ok.":
         logger.info("qBittorrent: 登录成功。")
@@ -120,14 +136,16 @@ def add_magnet_link(session: requests.Session, magnet_link: str, save_path: str 
         data['category'] = category
         data['tags'] = tags
 
-    r = session.post(add_endpoint, data=data)
+    r = session.post(add_endpoint, data=data, timeout=REQUEST_TIMEOUT)
     if r.status_code == 200:
         if r.text == "Ok.":
             logger.info(f"已添加磁力链接 {tags}: {magnet_link}")
         else:
             logger.error(f"添加磁力链接失败 {tags}: {magnet_link}, status={r.status_code}, resp={r.text}")
+            raise RuntimeError(f"添加磁力链接失败 {tags}: {magnet_link}")
     else:
         logger.error(f"添加磁力链接失败 {tags}: {magnet_link}, status={r.status_code}, resp={r.text}")
+        raise RuntimeError(f"添加磁力链接失败 {tags}: {magnet_link}")
 
 
 def add_torrent_file(session: requests.Session, torrent_path: str, save_path: str = None, tags: str = None, category: str = None) -> None:
@@ -144,19 +162,22 @@ def add_torrent_file(session: requests.Session, torrent_path: str, save_path: st
     """
     add_endpoint = f"{QB_URL}/api/v2/torrents/add"
 
-    # 以 multipart/form-data 格式上传种子
-    files = {'torrents': open(torrent_path, 'rb')}
     data = {}
     if save_path:
         data['savepath'] = save_path
         data['category'] = category
         data['tags'] = tags
 
-    r = session.post(add_endpoint, files=files, data=data)
+    # 使用上下文管理器，确保上传失败时文件句柄也会关闭。
+    with open(torrent_path, 'rb') as torrent_file:
+        files = {'torrents': torrent_file}
+        r = session.post(add_endpoint, files=files, data=data, timeout=REQUEST_TIMEOUT)
     if r.status_code == 200:
         if r.text == "Ok.":
             logger.info(f"已添加种子文件 {tags}: {torrent_path}")
         else:
             logger.error(f"添加种子文件失败: {tags}, status={r.status_code}, resp={r.text}")
+            raise RuntimeError(f"添加种子文件失败: {tags}")
     else:
         logger.error(f"添加种子文件失败: {tags}, status={r.status_code}, resp={r.text}")
+        raise RuntimeError(f"添加种子文件失败: {tags}")

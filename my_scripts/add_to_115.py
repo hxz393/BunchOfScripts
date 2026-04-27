@@ -13,8 +13,8 @@ from typing import Any
 from p115client import P115Client
 from retrying import retry
 
-from extract_torrent_download_link import extract_torrent_download_link
 from my_module import read_json_to_dict
+from sort_movie_ops import extract_torrent_download_link
 
 logger = logging.getLogger(__name__)
 

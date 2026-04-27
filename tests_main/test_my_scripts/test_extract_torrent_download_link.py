@@ -1,5 +1,5 @@
 """
-针对 ``my_scripts.extract_torrent_download_link`` 的单元测试。
+针对 ``my_scripts.sort_movie_ops.extract_torrent_download_link`` 的单元测试。
 
 这些测试使用真实的临时文件，但不会依赖真实的 YTS 配置或网络。
 重点验证：
@@ -18,19 +18,47 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "extract_torrent_download_link.py"
+MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "sort_movie_ops.py"
 
 
 def load_extract_torrent_download_link(select_best_yts_magnet=None):
-    """在隔离环境中加载 helper 模块。"""
+    """在隔离环境中加载 ``sort_movie_ops`` 模块。"""
     fake_scrapy_yts = types.ModuleType("scrapy_yts")
     fake_scrapy_yts.select_best_yts_magnet = select_best_yts_magnet or (
         lambda json_data, magnet_path: f"{magnet_path}{json_data['data']['movie']['torrents'][0]['hash']}"
     )
 
+    fake_config = {
+        "trash_list": [],
+        "source_list": [],
+        "video_extensions": [".mkv", ".mp4", ".avi"],
+        "max_bitrate": 1000,
+        "magnet_path": "magnet:?xt=urn:btih:",
+        "rarbg_source": "",
+        "ttg_source": "",
+        "dhd_source": "",
+        "sk_source": "",
+        "rare_source": "",
+        "rls_source": "",
+        "check_target": "",
+        "everything_path": "",
+        "ffprobe_path": "",
+        "mtm_path": "",
+        "mediainfo_path": "",
+        "mirror_path": "",
+        "ru_path": "",
+        "yts_path": "",
+        "dhd_path": "",
+        "ttg_path": "",
+        "sk_path": "",
+        "rare_path": "",
+    }
+
     fake_my_module = types.ModuleType("my_module")
 
     def fake_read_json_to_dict(target_path):
+        if str(target_path).replace("\\", "/").endswith("config/sort_movie_ops.json"):
+            return dict(fake_config)
         try:
             return json.loads(Path(target_path).read_text(encoding="utf-8"))
         except Exception:
@@ -42,9 +70,22 @@ def load_extract_torrent_download_link(select_best_yts_magnet=None):
         for line in Path(target_path).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    fake_my_module.sanitize_filename = lambda text: text
+    fake_my_module.get_file_paths = lambda _path: []
+    fake_my_module.remove_target = lambda _path: None
+    fake_my_module.get_folder_paths = lambda _path: []
+
+    fake_scrapy_kpk = types.ModuleType("scrapy_kpk")
+    fake_scrapy_kpk.scrapy_kpk = lambda *_args, **_kwargs: None
+
+    fake_pil = types.ModuleType("PIL")
+    fake_pil.Image = object()
+
+    fake_moviepy = types.ModuleType("moviepy")
+    fake_moviepy.VideoFileClip = object
 
     spec = importlib.util.spec_from_file_location(
-        "extract_torrent_download_link",
+        "sort_movie_ops",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
@@ -53,6 +94,9 @@ def load_extract_torrent_download_link(select_best_yts_magnet=None):
         {
             "scrapy_yts": fake_scrapy_yts,
             "my_module": fake_my_module,
+            "scrapy_kpk": fake_scrapy_kpk,
+            "PIL": fake_pil,
+            "moviepy": fake_moviepy,
         },
     ):
         spec.loader.exec_module(module)

@@ -41,11 +41,11 @@ def load_add_to_qb(config: dict | None = None, select_yts_best_torrent=None):
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: dict(module_config)
 
-    fake_extract_module = types.ModuleType("extract_torrent_download_link")
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
     if select_yts_best_torrent is None:
-        fake_extract_module.extract_torrent_download_link = lambda _path, _magnet_path: "magnet:?xt=urn:btih:FAKEHASH"
+        fake_sort_movie_ops.extract_torrent_download_link = lambda _path, _magnet_path: "magnet:?xt=urn:btih:FAKEHASH"
     else:
-        fake_extract_module.extract_torrent_download_link = lambda _path, _magnet_path: select_yts_best_torrent(build_movie_json())
+        fake_sort_movie_ops.extract_torrent_download_link = lambda _path, _magnet_path: select_yts_best_torrent(build_movie_json())
 
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
@@ -59,7 +59,7 @@ def load_add_to_qb(config: dict | None = None, select_yts_best_torrent=None):
         sys.modules,
         {
             "my_module": fake_my_module,
-            "extract_torrent_download_link": fake_extract_module,
+            "sort_movie_ops": fake_sort_movie_ops,
             "retrying": fake_retrying,
         },
     ):
