@@ -560,3 +560,92 @@ def get_kpk_page_details(page_id: str) -> dict:
                     full_text = full_text.replace('复制链接', '').replace('详情', '').strip()
                     result_dict[h2_tag.get_text(strip=True)].append(full_text)
     return dict(result_dict)
+
+
+def check_kpk_for_better_quality(imdb: str, quality: str) -> bool:
+    """
+    通过 IMDB 编号搜索科普库，判断是否存在更高质量版本。
+
+    :param imdb: IMDB 编号
+    :param quality: 当前视频质量
+    :return: 有更好质量时返回 True
+    """
+    logger.info(f"搜索科普库：{imdb}")
+    ids = get_kpk_search_response(imdb)
+    if not ids:
+        logger.info(f"科普库没有结果：{imdb}")
+        return False
+    logger.debug(ids)
+
+    merged_dict = defaultdict(list)
+    for page_id in ids:
+        result = get_kpk_page_details(page_id)
+        if result:
+            for key, value in result.items():
+                merged_dict[key].extend(value)
+    merged_dict = dict(merged_dict)
+    if not merged_dict:
+        logger.info(f"科普库没有结果：{imdb}")
+        return False
+    logger.debug(merged_dict)
+
+    quality_mapping = {
+        "720p": ['4K/2160P', "1080P"],
+        "480p": ['4K/2160P', "1080P", "720P"],
+        "240p": [],
+    }
+    if quality == "240p" or any(merged_dict.get(q) for q in quality_mapping.get(quality, [])):
+        logger.warning(f"{imdb} 有更高质量 {ids}：{merged_dict}")
+        return True
+
+    logger.info(f"{imdb} 无更高质量：{merged_dict}")
+    return False
+
+
+def log_jackett_search_results(imdb: str) -> None:
+    """
+    通过 IMDB 编号搜索 Jackett 并输出前几条结果。
+
+    :param imdb: IMDB 编号
+    :return: 无
+    """
+    logger.info(f"搜索夹克衫：{imdb}")
+    response_list = get_jackett_search_response(imdb)
+    if not response_list:
+        return
+
+    logger.warning(f"Jackett 搜索结果为：{len(response_list)}")
+    time.sleep(0.1)
+    log_top_jackett_items(response_list)
+
+
+def log_top_jackett_items(data: list) -> None:
+    """
+    解析 Jackett 返回列表，按体积排序并记录结果。
+
+    :param data: 结果列表
+    :return: 无
+    """
+    from sort_movie_ops import format_bytes
+
+    extracted_data = []
+
+    for item in data:
+        title = item.get('title', 'No Title')
+        jackettindexer = item.get('jackettindexer', {})
+        source_id = jackettindexer.get('@id', 'Unknown')
+        size = item.get('size', '0')
+
+        readable_size = format_bytes(size)
+
+        extracted_data.append({
+            'title': title,
+            'source_id': source_id,
+            'size_bytes': int(size),
+            'readable_size': readable_size,
+        })
+
+    extracted_data.sort(key=lambda x: x['size_bytes'], reverse=True)
+
+    for item in extracted_data[:5]:
+        logger.info(f"{item['title']} | 来源: {item['source_id']} | 大小: {item['readable_size']}")
