@@ -17,12 +17,16 @@ from pathlib import Path
 from unittest.mock import ANY, Mock, call, patch
 
 import requests
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_hde.py"
 
 
-class FakeRedis:
-    """最小 Redis 替身，覆盖当前测试需要的键、列表和集合操作。"""
+class _FallbackFakeRedis:
+    """fakeredis 不可用时使用的最小 Redis 替身。"""
 
     def __init__(self):
         self.values: dict[str, str] = {}
@@ -63,6 +67,21 @@ class FakeRedis:
         value_set.add(value)
         return 1
 
+    def smembers(self, key: str):
+        return self.sets.get(key, set()).copy()
+
+
+if fakeredis is None:
+    class FakeRedis(_FallbackFakeRedis):
+        """回退到手写内存 Redis。"""
+
+else:
+    class FakeRedis(fakeredis.FakeRedis):
+        """优先使用带真实命令语义的 fakeredis。"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(decode_responses=True)
+
 
 def fake_serialize_payload(payload: dict) -> str:
     """与真实 helper 保持一致的 JSON 序列化。"""
@@ -75,7 +94,7 @@ def fake_deserialize_payload(payload: str) -> dict:
 
 
 def fake_push_items_to_queue(
-        redis_client: FakeRedis,
+        redis_client,
         items: list[dict],
         *,
         seen_key: str,
@@ -681,7 +700,7 @@ class TestEnqueueHdePosts(unittest.TestCase):
         )
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 2)
         self.assertEqual(
-            self.module.deserialize_payload(self.redis_client.lists[self.module.REDIS_PENDING_KEY][0]),
+            self.module.deserialize_payload(self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, 0)[0]),
             {"size": "1.0GB", "title": "Old Movie – 1.0 GB", "url": "https://example.com/post-1"},
         )
 
@@ -741,7 +760,7 @@ class TestRecoverAndDrainHdeQueue(unittest.TestCase):
 
         self.assertEqual(recovered, 2)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
-        self.assertEqual(self.redis_client.lists[self.module.REDIS_PENDING_KEY], ["task-1", "task-2"])
+        self.assertEqual(self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1), ["task-1", "task-2"])
 
     def test_drain_hde_queue_delegates_to_shared_drain_queue_helper(self):
         """消费阶段应把队列参数和 worker 函数交给共享 helper。"""

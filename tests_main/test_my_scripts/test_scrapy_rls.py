@@ -20,14 +20,18 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import requests
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
 
 requests.packages.urllib3.disable_warnings()
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_rls.py"
 
 
-class FakeRedis:
-    """用于测试 RLS Redis 队列流程的内存实现。"""
+class _FallbackFakeRedis:
+    """fakeredis 不可用时使用的最小内存 Redis 实现。"""
 
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -97,6 +101,23 @@ class FakeRedis:
                 del self.sets[key]
                 deleted += 1
         return deleted
+
+    def smembers(self, key: str):
+        return self.sets.get(key, set()).copy()
+
+
+if fakeredis is None:
+    class FakeRedis(_FallbackFakeRedis):
+        """回退到手写内存 Redis。"""
+
+else:
+    class FakeRedis(fakeredis.FakeRedis):
+        """优先使用带真实命令语义的 fakeredis。"""
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            super().__init__(decode_responses=True)
 
 
 def load_scrapy_rls(config: dict | None = None):
@@ -584,7 +605,7 @@ class TestFinalizeRlsRun(unittest.TestCase):
         )
         self.assertIsNone(self.redis_client.get(self.module.REDIS_FOREIGN_SCAN_COMPLETE_KEY))
         self.assertIsNone(self.redis_client.get(self.module.REDIS_MOVIE_SCAN_COMPLETE_KEY))
-        self.assertEqual(self.redis_client.sets[self.module.REDIS_SEEN_KEY], {"u1"})
+        self.assertEqual(self.redis_client.smembers(self.module.REDIS_SEEN_KEY), {"u1"})
 
     def test_finalize_rls_run_skips_update_when_scan_is_incomplete(self):
         """任一列表流程未完成时，不应提前回写配置。"""

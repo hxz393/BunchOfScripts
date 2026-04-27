@@ -19,6 +19,10 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import requests
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
 
 requests.packages.urllib3.disable_warnings()
 
@@ -169,7 +173,7 @@ def build_page_html(*topics: str) -> str:
     return f"<html><body>{''.join(topics)}</body></html>"
 
 
-class FakeRedisPipeline:
+class _FallbackFakeRedisPipeline:
     """最小 Redis pipeline 实现。"""
 
     def __init__(self, client):
@@ -192,8 +196,8 @@ class FakeRedisPipeline:
         return results
 
 
-class FakeRedis:
-    """用于测试 DHD Redis 队列流程的内存实现。"""
+class _FallbackFakeRedis:
+    """fakeredis 不可用时使用的最小内存 Redis 实现。"""
 
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -202,7 +206,7 @@ class FakeRedis:
         self.lists = {}
 
     def pipeline(self):
-        return FakeRedisPipeline(self)
+        return _FallbackFakeRedisPipeline(self)
 
     def sadd(self, key: str, value: str) -> int:
         members = self.sets.setdefault(key, set())
@@ -262,6 +266,20 @@ class FakeRedis:
                 self.rpush(pending_key, payload)
                 enqueued += 1
         return enqueued
+
+
+if fakeredis is None:
+    class FakeRedis(_FallbackFakeRedis):
+        """回退到手写内存 Redis。"""
+
+else:
+    class FakeRedis(fakeredis.FakeRedis):
+        """优先使用带真实命令语义的 fakeredis。"""
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            super().__init__(decode_responses=True)
 
 
 class TestModuleLoad(unittest.TestCase):
