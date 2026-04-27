@@ -278,7 +278,7 @@ def get_tmdb_director_aliases(director_id: str) -> tuple[str, ...]:
     :return: 返回别名序列
     """
     p = get_tmdb_director_details(director_id)
-    return (p["name"], *list(p["also_known_as"]))
+    return p["name"], *list(p["also_known_as"])
 
 
 def get_douban_director_aliases(director_id: str) -> list:
