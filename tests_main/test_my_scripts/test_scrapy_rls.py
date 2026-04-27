@@ -262,22 +262,16 @@ class TestRlsHelpers(unittest.TestCase):
             ],
         )
 
-    def test_extract_rls_imdb_id_prefers_canonical_link_then_falls_back_to_loose_tt(self):
+    def test_extract_imdb_id_from_links_prefers_canonical_link_then_falls_back_to_loose_tt(self):
         """应优先使用标准 IMDb 链接，缺失时再回退到宽松 ``tt`` 提取。"""
-        soup = self.module.BeautifulSoup(
-            build_detail_page_html(
-                "https://example.com/jump?target=tt1234567",
-                "https://www.imdb.com/title/tt7654321/",
-            ),
-            "lxml",
-        )
-        self.assertEqual(self.module.extract_rls_imdb_id(soup), "tt7654321")
+        hrefs = [
+            "https://example.com/jump?target=tt1234567",
+            "https://www.imdb.com/title/tt7654321/",
+        ]
+        self.assertEqual(self.module.extract_imdb_id_from_links(hrefs), "tt7654321")
 
-        soup = self.module.BeautifulSoup(
-            build_detail_page_html("https://example.com/jump?target=tt1234567"),
-            "lxml",
-        )
-        self.assertEqual(self.module.extract_rls_imdb_id(soup), "tt1234567")
+        hrefs = ["https://example.com/jump?target=tt1234567"]
+        self.assertEqual(self.module.extract_imdb_id_from_links(hrefs), "tt1234567")
 
 
 class TestGetRlsResponse(unittest.TestCase):

@@ -75,6 +75,40 @@ def load_scrapy_yts(config: dict | None = None):
         None,
     )
 
+    def fake_filter_torrents(torrents, key, priority_list):
+        unique_values = {torrent[key] for torrent in torrents}
+        unexpected_values = unique_values - set(priority_list)
+        if unexpected_values:
+            raise ValueError(f"Unexpected value for {key}: {unexpected_values}")
+        for value in priority_list:
+            filtered = [torrent for torrent in torrents if torrent[key] == value]
+            if filtered:
+                return filtered
+        return torrents
+
+    def fake_select_best_yts_magnet(json_data, magnet_path):
+        torrents = json_data["data"]["movie"]["torrents"]
+        torrents = fake_filter_torrents(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
+        if len(torrents) == 1:
+            return f"{magnet_path}{torrents[0]['hash']}"
+
+        torrents = fake_filter_torrents(torrents, "video_codec", ["x265", "x264"])
+        if len(torrents) == 1:
+            return f"{magnet_path}{torrents[0]['hash']}"
+
+        torrents = fake_filter_torrents(torrents, "bit_depth", ["10", "8"])
+        if len(torrents) == 1:
+            return f"{magnet_path}{torrents[0]['hash']}"
+
+        torrents = fake_filter_torrents(torrents, "type", ["bluray", "web"])
+        if len(torrents) == 1:
+            return f"{magnet_path}{torrents[0]['hash']}"
+
+        best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
+        return f"{magnet_path}{best_torrent['hash']}"
+
+    fake_sort_movie_ops.select_best_yts_magnet = fake_select_best_yts_magnet
+
     spec = importlib.util.spec_from_file_location(
         f"scrapy_yts_test_{uuid.uuid4().hex}",
         MODULE_PATH,
@@ -556,8 +590,8 @@ class TestSearchImdbLocal(unittest.TestCase):
         self.assertEqual(result, "")
 
 
-class TestExtractImdbIdFromFilename(unittest.TestCase):
-    """验证从文件名提取 IMDb 编号的逻辑。"""
+class TestExtractImdbId(unittest.TestCase):
+    """验证模块直接使用共享的 IMDb 编号提取 helper。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_yts()
@@ -565,15 +599,15 @@ class TestExtractImdbIdFromFilename(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_extract_imdb_id_from_filename_returns_matched_id(self):
+    def test_extract_imdb_id_returns_matched_id(self):
         """文件名中存在 ``tt`` 编号时应正确提取。"""
-        result = self.module.extract_imdb_id_from_filename("Movie Name {tt1234567}.json")
+        result = self.module.extract_imdb_id("Movie Name {tt1234567}.json")
 
         self.assertEqual(result, "tt1234567")
 
-    def test_extract_imdb_id_from_filename_returns_none_when_missing(self):
+    def test_extract_imdb_id_returns_none_when_missing(self):
         """文件名中没有 ``tt`` 编号时应返回 ``None``。"""
-        result = self.module.extract_imdb_id_from_filename("Movie Name without imdb.json")
+        result = self.module.extract_imdb_id("Movie Name without imdb.json")
 
         self.assertIsNone(result)
 
