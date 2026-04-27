@@ -166,6 +166,19 @@ def load_sort_movie_mysql(config=None):
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: dict(module_config)
 
+    fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
+
+    def fake_parse_movie_id(movie_id: str):
+        if movie_id.startswith("tt"):
+            return "imdb", movie_id
+        if movie_id.startswith("tmdb"):
+            return "tmdb", movie_id[4:]
+        if movie_id.startswith("db"):
+            return "douban", movie_id[2:]
+        return None
+
+    fake_sort_movie_ops.parse_movie_id = fake_parse_movie_id
+
     fake_mysql_connector = types.ModuleType("mysql.connector")
     fake_mysql_connector.Error = FakeMySQLError
     fake_mysql_connector.connect = Mock(name="connect")
@@ -183,6 +196,7 @@ def load_sort_movie_mysql(config=None):
         sys.modules,
         {
             "my_module": fake_my_module,
+            "sort_movie_ops": fake_sort_movie_ops,
             "mysql": fake_mysql_pkg,
             "mysql.connector": fake_mysql_connector,
         },
@@ -267,24 +281,40 @@ class TestConnectionsAndBatchHelpers(unittest.TestCase):
         self.assertIn("SELECT tmdb FROM movies WHERE tmdb IN", sql)
         self.assertEqual(set(params), {"101", "202"})
 
-    def test_get_wanted_batch_uses_dictionary_cursor(self):
+    def test_fetch_existing_tmdb_in_movies_and_wanted_merges_both_tables(self):
+        cursor = CursorStub(fetchall_results=[[("101",)], [("202",)]])
+
+        result = self.module.fetch_existing_tmdb_in_movies_and_wanted(cursor, {"101", "202", "303"})
+
+        self.assertEqual(result, {"101", "202"})
+        self.assertEqual(len(cursor.execute_calls), 2)
+        self.assertIn("SELECT tmdb FROM movies WHERE tmdb IN", cursor.execute_calls[0][0])
+        self.assertIn("SELECT tmdb FROM wanted WHERE tmdb IN", cursor.execute_calls[1][0])
+
+    def test_get_batch_by_imdb_uses_dictionary_cursor(self):
         cursor = CursorStub(fetchall_results=[[{"imdb": "tt1"}]])
         conn = ConnectionStub([cursor])
 
-        result = self.module.get_wanted_batch(conn, {"tt1"})
+        result = self.module.get_batch_by_imdb(conn, "wanted", {"tt1"})
 
         self.assertEqual(result, [{"imdb": "tt1"}])
         self.assertEqual(conn.cursor_calls, [{"dictionary": True}])
         self.assertTrue(cursor.closed)
         self.assertIn("SELECT * FROM wanted WHERE imdb IN", cursor.execute_calls[0][0])
 
-    def test_get_movie_batch_returns_empty_list_for_empty_ids(self):
+    def test_get_batch_by_imdb_returns_empty_list_for_empty_ids(self):
         conn = ConnectionStub()
 
-        result = self.module.get_movie_batch(conn, set())
+        result = self.module.get_batch_by_imdb(conn, "movies", set())
 
         self.assertEqual(result, [])
         self.assertEqual(conn.cursor_calls, [])
+
+    def test_get_batch_by_imdb_rejects_unknown_table_name(self):
+        conn = ConnectionStub()
+
+        with self.assertRaises(ValueError):
+            self.module.get_batch_by_imdb(conn, "invalid_table", {"tt1"})
 
 
 class TestInsertMovieWanted(unittest.TestCase):
@@ -426,33 +456,6 @@ class TestLookupHelpers(unittest.TestCase):
     def setUp(self):
         self.module = load_sort_movie_mysql()
 
-    def test_check_rls_grp_returns_existing_name_without_insert(self):
-        cursor = CursorStub(fetchone_results=[{"id": 1, "name": "DON"}])
-        conn = ConnectionStub([cursor])
-
-        result = self.module.check_rls_grp(conn, "don")
-
-        self.assertEqual(result, "DON")
-        self.assertEqual(conn.commit_calls, 0)
-        self.assertTrue(cursor.closed)
-
-    def test_check_rls_grp_rolls_back_and_refetches_after_insert_conflict(self):
-        def execute_hook(sql, _params):
-            if sql.startswith("INSERT INTO release_group"):
-                raise Exception("duplicate")
-
-        cursor = CursorStub(
-            fetchone_results=[None, {"id": 2, "name": "GroupName"}],
-            execute_hook=execute_hook,
-        )
-        conn = ConnectionStub([cursor])
-
-        result = self.module.check_rls_grp(conn, "groupname")
-
-        self.assertEqual(result, "GroupName")
-        self.assertEqual(conn.rollback_calls, 1)
-        self.assertTrue(cursor.closed)
-
     def test_check_movie_ids_batches_queries_and_preserves_input_order(self):
         conn = ConnectionStub([CursorStub()])
 
@@ -504,27 +507,43 @@ class TestLookupHelpers(unittest.TestCase):
         self.assertTrue(conn.closed)
 
     def test_get_record_id_by_priority_prefers_imdb_match(self):
-        cursor = CursorStub(fetchone_results=[(7,)])
+        cursor = CursorStub(fetchone_results=[(7,)], fetchall_results=[[("tt1111111",)], [], []])
         merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
 
         result = self.module.get_record_id_by_priority(cursor, merged_dict)
 
         self.assertEqual(result, 7)
-        self.assertEqual(len(cursor.execute_calls), 1)
-        self.assertEqual(cursor.execute_calls[0][1], ("tt1111111",))
+        self.assertEqual(
+            [call[1] for call in cursor.execute_calls],
+            [
+                ("tt1111111",),
+                ("22",),
+                ("33",),
+                ("tt1111111",),
+            ],
+        )
 
-    def test_get_record_id_by_priority_falls_back_to_director_title_and_year(self):
-        cursor = CursorStub(fetchone_results=[(9,)])
-        merged_dict = build_movie_info(imdb=None, tmdb=None, douban=None)
+    def test_get_record_id_by_priority_falls_back_to_tmdb_when_imdb_missing(self):
+        cursor = CursorStub(fetchone_results=[(9,)], fetchall_results=[[], [("22",)], []])
+        merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
 
         result = self.module.get_record_id_by_priority(cursor, merged_dict)
 
         self.assertEqual(result, 9)
-        self.assertEqual(len(cursor.execute_calls), 1)
+        self.assertEqual(len(cursor.execute_calls), 4)
         self.assertEqual(
-            cursor.execute_calls[0][1],
-            ("Director Name", "Original Title", 2024),
+            cursor.execute_calls[-1],
+            ("SELECT id FROM movies WHERE tmdb = %s", ("22",)),
         )
+
+    def test_get_record_id_by_priority_returns_none_when_no_external_id_matches(self):
+        cursor = CursorStub(fetchall_results=[[], [], []])
+        merged_dict = build_movie_info(tmdb="22", douban="33", imdb="tt1111111")
+
+        result = self.module.get_record_id_by_priority(cursor, merged_dict)
+
+        self.assertIsNone(result)
+        self.assertEqual(len(cursor.execute_calls), 3)
 
 
 class TestDeleteHelpers(unittest.TestCase):
@@ -539,14 +558,16 @@ class TestDeleteHelpers(unittest.TestCase):
         mock_create_conn.assert_not_called()
 
     def test_remove_existing_tmdb_ids_removes_found_values(self):
-        cursor = CursorStub(fetchall_results=[[("101",), ("303",)]])
+        cursor = CursorStub(fetchall_results=[[("101",)], [("303",)]])
         conn = ConnectionStub([cursor])
 
         with patch.object(self.module, "create_conn", return_value=conn):
             result = self.module.remove_existing_tmdb_ids({"101", "202", "303"})
 
         self.assertEqual(result, {"202"})
-        self.assertIn("UNION", cursor.execute_calls[0][0])
+        self.assertEqual(len(cursor.execute_calls), 2)
+        self.assertIn("SELECT tmdb FROM movies WHERE tmdb IN", cursor.execute_calls[0][0])
+        self.assertIn("SELECT tmdb FROM wanted WHERE tmdb IN", cursor.execute_calls[1][0])
         self.assertTrue(cursor.closed)
         self.assertTrue(conn.closed)
 

@@ -1,9 +1,9 @@
 """
-从 JSON 文件中读取数据，插入到数据库
+读取 ``movie_info.json5`` 并维护 ``movies`` / ``wanted`` 相关数据。
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393
+:copyright: Copyright 2026, hxz393
 """
 
 import json
@@ -16,7 +16,7 @@ from typing import Any, Optional
 import mysql.connector
 
 from my_module import read_json_to_dict
-from sort_movie_ops import parse_resolution, parse_bitrate
+from sort_movie_ops import parse_movie_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,69 +25,68 @@ CONFIG = read_json_to_dict('config/sort_movie.json')  # 配置文件
 MYSQL_HOST = CONFIG['mysql_host']  # mysql 主机地址
 MYSQL_USER = CONFIG['mysql_user']  # mysql 用户名
 MYSQL_PASS = CONFIG['mysql_pass']  # mysql 密码
-MYSQL_DB = CONFIG['mysql_db']  # mysql 数据库
-MYSQL_IMDB_DB = CONFIG['mysql_imdb_db']  # mysql 数据库
+MYSQL_DB_MOVIE = CONFIG['mysql_db_movie']  # mysql 数据库
+MYSQL_DB_IMDB = CONFIG['mysql_db_imdb']  # mysql 数据库
 
-MOVIES_UPDATE_SQL = """
-            UPDATE movies
-            SET director=%s,
-                year=%s,
-                original_title=%s,
-                chinese_title=%s,
-                genres=%s,
-                country=%s,
-                language=%s,
-                runtime=%s,
-                titles=%s,
-                directors=%s,
-                tmdb=%s,
-                douban=%s,
-                imdb=%s,
-                source=%s,
-                quality=%s,
-                resolution=%s,
-                codec=%s,
-                bitrate=%s,
-                duration=%s,
-                size=%s,
-                release_group=%s,
-                filename=%s,
-                dl_link=%s,
-                comment=%s,
-                updated_at=%s
-            WHERE id=%s
-        """
+# movies 插入字段统一在这里维护，后续增删字段时优先改这份清单。
+MOVIE_INSERT_FIELDS = [
+    "director",
+    "year",
+    "original_title",
+    "chinese_title",
+    "genres",
+    "country",
+    "language",
+    "runtime",
+    "titles",
+    "directors",
+    "tmdb",
+    "douban",
+    "imdb",
+    "source",
+    "quality",
+    "resolution",
+    "codec",
+    "bitrate",
+    "duration",
+    "size",
+    "release_group",
+    "filename",
+    "version",
+    "publisher",
+    "pubdate",
+    "dvhdr",
+    "audio",
+    "subtitle",
+    "dl_link",
+    "comment",
+]
+# 这些字段在库里按 JSON 字符串保存，和普通标量字段分开处理。
+MOVIE_JSON_FIELDS = {
+    "genres",
+    "country",
+    "language",
+    "titles",
+    "directors",
+}
+MOVIE_TIMESTAMP_FIELDS = ["created_at", "updated_at"]
+MOVIES_INSERT_COLUMNS = MOVIE_INSERT_FIELDS + MOVIE_TIMESTAMP_FIELDS
+# INSERT 列名和占位符数量都由字段清单派生，避免 SQL 列顺序和数据 tuple 手工错位。
+# noinspection SqlInsertValues
 MOVIES_INSERT_SQL = """
             INSERT INTO movies (
-                director, year, original_title, chinese_title, genres,
-                country, language, runtime, titles, directors,
-                tmdb, douban, imdb, source, quality, resolution,
-                codec, bitrate, duration, size, release_group, filename, version,
-                publisher, pubdate, dvhdr, audio, subtitle,
-                dl_link, comment, created_at, updated_at
+                {columns}
             ) VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, 
-                %s, %s
+                {placeholders}
             )
-        """
-MOVIES_SEARCH_SQL = "SELECT resolution, bitrate, size, tmdb, douban, imdb FROM movies WHERE id = %s"
+        """.format(
+    columns=", ".join(MOVIES_INSERT_COLUMNS),
+    placeholders=", ".join(["%s"] * len(MOVIES_INSERT_COLUMNS)),
+)
 WANTED_INSERT_SQL = """
         INSERT INTO wanted (director, year, imdb, tmdb, runtime, titles)
         VALUES (%s, %s, %s, %s, %s, %s)
     """
-CHECK_QUERY_SQL = """
-            SELECT id FROM (
-                SELECT id FROM wanted WHERE tmdb = %s
-                UNION ALL
-                SELECT id FROM movies WHERE tmdb = %s
-            ) AS combined
-            LIMIT 1;
-        """
 IMDB_QUERY_SQL = """
     SELECT
         d.director_nconst AS director_id,
@@ -100,48 +99,121 @@ IMDB_QUERY_SQL = """
 """
 
 
+def fetch_existing_values(cursor: Any, table_name: str, column_name: str, values: set) -> set:
+    """
+    批量查询表中已存在的字段值
+
+    :param cursor: 数据库游标
+    :param table_name: 表名
+    :param column_name: 字段名
+    :param values: 待查询的值集合
+    :return: 数据库中已存在的值集合
+    """
+    if not values:
+        return set()
+
+    placeholders = ','.join(['%s'] * len(values))
+    sql = f"SELECT {column_name} FROM {table_name} WHERE {column_name} IN ({placeholders})"
+    cursor.execute(sql, tuple(values))
+    return {row[0] for row in cursor.fetchall()}
+
+
+def serialize_movie_field_value(field_name: str, value: Any) -> Any:
+    """
+    将电影字段值转换为数据库可写入的格式
+
+    :param field_name: 字段名
+    :param value: 原始值
+    :return: 转换后的值
+    """
+    if field_name in MOVIE_JSON_FIELDS:
+        return json.dumps(value)
+    return value
+
+
+def build_movie_insert_data(merged_dict: dict, current_time: str) -> tuple:
+    """
+    基于字段清单构造 movies 表的插入数据
+
+    :param merged_dict: 完整电影信息字典
+    :param current_time: 当前时间
+    :return: 与 MOVIES_INSERT_COLUMNS 对齐的插入数据
+    """
+    # 按字段清单顺序统一取值，这样以后增删字段只需要维护字段表本身。
+    data_values = [
+        serialize_movie_field_value(field_name, merged_dict[field_name])
+        for field_name in MOVIE_INSERT_FIELDS
+    ]
+    data_values.extend([current_time, current_time])
+    return tuple(data_values)
+
+
 def insert_movie_wanted(wanted_list: list) -> None:
     """
-    将数据插入到 wanted 表中
+    将缺失影片批量写入 wanted 表。
+
+    写入前会先按 tmdb 去重：
+    1. 跳过 wanted 表里已存在的记录。
+    2. 跳过 movies 表里已经入库的记录。
+    3. 跳过本次 wanted_list 内部重复的 tmdb。
 
     :param wanted_list: 没有记录的电影列表
     :return: 无
     """
-    # 建立数据库连接
-    conn = create_conn()
-    cursor = conn.cursor()
+    if not wanted_list:
+        return
 
-    # 构造批量插入的数据列表
-    data = []
-    for record in wanted_list:
-        tmdb = record.get('tmdb')
-        # 检查 tmdb 是否已经存在
-        cursor.execute(CHECK_QUERY_SQL, (tmdb, tmdb))
-        if cursor.fetchone():
-            continue  # tmdb 已存在于任一表中，跳过
+    conn = None
+    cursor = None
+    try:
+        conn = create_conn()
+        cursor = conn.cursor()
 
-        data.append((
-            record.get('director'),
-            record.get('year') if record.get('year') else 0,
-            record.get('imdb') if record.get('imdb') else None,
-            record.get('tmdb'),
-            record.get('runtime'),
-            json.dumps(record.get('titles')),
-        ))
+        # 先批量查出 wanted/movies 中已存在的 tmdb，避免逐条 N+1 查询。
+        tmdb_values = {record.get('tmdb') for record in wanted_list if record.get('tmdb')}
+        existing_tmdb_values = fetch_existing_tmdb_in_movies_and_wanted(cursor, tmdb_values)
 
-    # 批量插入数据
-    if data:
-        cursor.executemany(WANTED_INSERT_SQL, data)
-        conn.commit()
-        logger.info(f"wanted 库 {cursor.rowcount} 条记录插入成功")
+        data = []
+        pending_tmdb_values = set()
+        for record in wanted_list:
+            tmdb = record.get('tmdb')
+            if tmdb and (tmdb in existing_tmdb_values or tmdb in pending_tmdb_values):
+                continue
 
-    cursor.close()
-    conn.close()
+            if tmdb:
+                pending_tmdb_values.add(tmdb)
+
+            data.append((
+                record.get('director'),
+                record.get('year') if record.get('year') else 0,
+                record.get('imdb') if record.get('imdb') else None,
+                tmdb,
+                record.get('runtime'),
+                json.dumps(record.get('titles')),
+            ))
+
+        if data:
+            cursor.executemany(WANTED_INSERT_SQL, data)
+            conn.commit()
+            logger.info(f"wanted 库 {cursor.rowcount} 条记录插入成功")
+    except mysql.connector.Error as err:
+        if conn:
+            conn.rollback()
+        logger.error(f"写入 wanted 表失败：{err}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
-def sort_movie_mysql(path: str) -> None:
+def insert_movie_record_to_mysql(path: str) -> None:
     """
-    将数据插入到 movies 表中
+    读取目录下的 ``movie_info.json5``，并在 movies 表中插入一条记录。
+
+    当前逻辑只负责“查重后插入”，不再执行旧的更新分支。
+    如果本条电影带 tmdb，则会在同一事务里顺带清理 wanted 表中的待办记录。
 
     :param path: 电影目录
     :return: 无
@@ -153,98 +225,28 @@ def sort_movie_mysql(path: str) -> None:
         logger.error("无法读取 JSON 文件")
         return
 
-    # 建立数据库连接
-    conn = create_conn()
-    cursor = conn.cursor()
+    conn = None
+    cursor = None
+    try:
+        conn = create_conn()
+        cursor = conn.cursor()
 
-    # 需要插入或更新的字段（不包括 created_at 和 updated_at）
-    data_values = (
-        merged_dict['director'],
-        merged_dict['year'],
-        merged_dict['original_title'],
-        merged_dict['chinese_title'],
-        json.dumps(merged_dict['genres']),
-        json.dumps(merged_dict['country']),
-        json.dumps(merged_dict['language']),
-        merged_dict['runtime'],
-        json.dumps(merged_dict['titles']),
-        json.dumps(merged_dict['directors']),
-        merged_dict['tmdb'],
-        merged_dict['douban'],
-        merged_dict['imdb'],
-        merged_dict['source'],
-        merged_dict['quality'],
-        merged_dict['resolution'],
-        merged_dict['codec'],
-        merged_dict['bitrate'],
-        merged_dict['duration'],
-        merged_dict['size'],
-        merged_dict['release_group'],
-        merged_dict['filename'],
-        merged_dict['version'],
-        merged_dict['publisher'],
-        merged_dict['pubdate'],
-        merged_dict['dvhdr'],
-        merged_dict['audio'],
-        merged_dict['subtitle'],
-        merged_dict['dl_link'],
-        merged_dict['comment']
-    )
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # 当前时间，用于插入 created_at / updated_at 或更新 updated_at
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        record_id = get_record_id_by_priority(cursor, merged_dict)
+        if record_id:
+            logger.error(f"已有记录，不执行插入。IMDB: {merged_dict['imdb']} ID: {record_id}")
+            return
 
-    # 先按顺序判断记录是否存在
-    record_id = get_record_id_by_priority(cursor, merged_dict)
-    if record_id:
-        # 如果记录存在，禁止更新
-        logger.error(f"已有记录，不执行更新。IMDB: {merged_dict['imdb']} ID: {record_id}")
-        return
-    if record_id:  # 更新逻辑，现在不启用
-        # 如果记录存在，需要先查询数据库里这条记录的 resolution、bitrate、size 做比较
-        cursor.execute(MOVIES_SEARCH_SQL, (record_id,))
-        row = cursor.fetchone()
-        if row:
-            old_resolution_str, old_bitrate_str, old_size, old_tmdb, old_douban, old_imdb = row
-            old_resolution_val = parse_resolution(old_resolution_str)
-            old_bitrate_val = parse_bitrate(old_bitrate_str)
-
-            new_resolution_val = parse_resolution(merged_dict['resolution'])
-            new_bitrate_val = parse_bitrate(merged_dict['bitrate'])
-            new_size = merged_dict['size']  # size 是整数，可直接比较
-
-            # 如果 id 不匹配，不允许更新
-            if old_tmdb and old_tmdb != merged_dict['tmdb']:
-                logger.error(f"TMDB 记录不匹配，禁止更新。新 TMDB: {merged_dict['tmdb']}，旧 TMDB: {old_tmdb}，数据库 ID: {record_id}")
-                return
-            elif old_imdb and old_imdb != merged_dict['imdb']:
-                logger.error(f"IMDB 记录不匹配，禁止更新。新 IMDB: {merged_dict['imdb']}，旧 IMDB: {old_imdb}，数据库 ID: {record_id}")
-                return
-            elif old_douban and old_douban != merged_dict['douban']:
-                logger.error(f"DOUBAN 记录不匹配，禁止更新。新 DOUBAN: {merged_dict['douban']}，旧 DOUBAN: {old_douban}，数据库 ID: {record_id}")
-                return
-
-            # 如果新数据都大于等于旧数据才更新
-            if (new_resolution_val >= old_resolution_val
-                    and new_bitrate_val >= old_bitrate_val
-                    and new_size >= old_size):
-                update_data = data_values + (current_time, record_id)
-                cursor.execute(MOVIES_UPDATE_SQL, update_data)
-                conn.commit()
-                logger.info(f"数据已更新！IMDB: {merged_dict['imdb']} ID: {record_id}")
-            else:
-                logger.error(f"已有记录更优，不执行更新。IMDB: {merged_dict['imdb']} ID: {record_id}")
-        else:
-            logger.error(f"未能查询到指定 ID 记录，跳过更新。ID: {record_id}")
-    else:
-        # 如果记录不存在，执行 INSERT 操作
-        insert_data = data_values + (current_time, current_time)
+        insert_data = build_movie_insert_data(merged_dict, current_time)
         cursor.execute(MOVIES_INSERT_SQL, insert_data)
-        conn.commit()
+        inserted_rowid = cursor.lastrowid
 
-        # 从 wanted 表中删除记录
         if merged_dict['tmdb']:
-            delete_records([merged_dict['tmdb']], "tmdb", "wanted")
+            # 保持和 movies 插入同一事务，避免一边插入成功、一边 wanted 清理失败。
+            cursor.execute("DELETE FROM wanted WHERE tmdb = %s", (merged_dict['tmdb'],))
+
+        conn.commit()
 
         if merged_dict['imdb']:
             logger.info(f"已插入数据库！IMDB: {merged_dict['imdb']}")
@@ -253,170 +255,148 @@ def sort_movie_mysql(path: str) -> None:
         elif merged_dict['douban']:
             logger.info(f"已插入数据库！DOUBAN: {merged_dict['douban']}")
         else:
-            logger.info(f"已插入数据库！ID: {cursor.lastrowid}")
-
-    # 关闭连接
-    cursor.close()
-    conn.close()
-
-
-def create_conn() -> Any:
-    """
-    创建数据库连接
-
-    :return: 返回数据库连接
-    """
-    conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASS,
-        database=MYSQL_DB
-    )
-    return conn
-
-
-def create_conn_imdb() -> Any:
-    """
-    创建数据库连接，连本地 IMDB 库
-
-    :return: 返回数据库连接
-    """
-    conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASS,
-        database=MYSQL_IMDB_DB
-    )
-    return conn
-
-
-def get_wanted_batch(conn: Any, imdb_ids: set) -> list[dict]:
-    """
-    用 imdb 编号去数据库查找记录
-
-    :param conn: 数据库会话
-    :param imdb_ids: IMDB 编号集合
-    :return: 找到则返回对应数据，否则返回 None
-    """
-    if not imdb_ids:
-        return []
-
-    # 构造 SQL IN 查询
-    placeholders = ','.join(['%s'] * len(imdb_ids))  # 例如: "%s,%s,%s"
-    sql = f"SELECT * FROM wanted WHERE imdb IN ({placeholders})"
-
-    with conn.cursor(dictionary=True) as cursor:
-        cursor.execute(sql, tuple(imdb_ids))
-        return cursor.fetchall()
-
-
-def check_rls_grp(conn: any, name: str) -> str:
-    """
-    检查发布组是否已存在（不区分大小写）。如果存在，则返回数据库中已有的 “name”。
-    否则插入一个新记录，返回插入时使用的 name。
-
-    :param conn: MySQL 数据库连接 (DB-API)
-    :param name: 要检查或插入的发布组名（原始大小写形式）
-    :return: 最终使用的发布组名（即数据库里真实的 name 字段值）
-    """
-    name_low = name.casefold()  # 或 name.lower()
-
-    with conn.cursor(dictionary=True) as cursor:
-        # 先尝试查找已有记录
-        cursor.execute(
-            "SELECT id, name FROM release_group WHERE name_lower = %s",
-            (name_low,)
-        )
-        row = cursor.fetchone()
-        if row:
-            # 找到了：复用已有 name（原始大小写），然后返回 name
-            return row['name']
-
-        # 没找到，需要插入
-        try:
-            cursor.execute(
-                "INSERT INTO release_group (name, name_lower) VALUES (%s, %s)",
-                (name, name_low)
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error(e)
-            # 插入可能失败（理论上是 UNIQUE 冲突，再做一次查找，防止并发插入）
+            logger.info(f"已插入数据库！ID: {inserted_rowid}")
+    except mysql.connector.Error as err:
+        if conn:
             conn.rollback()
-            cursor.execute(
-                "SELECT id, name FROM release_group WHERE name_lower = %s",
-                (name_low,)
-            )
-            row = cursor.fetchone()
-            if row:
-                return row['name']
-            else:
-                # 真出错了：抛出异常或把错误暴露
-                raise
-
-    # 插入成功：返回刚插入的 name
-    return name
+        logger.error(f"写入 movies 表失败：{err}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
-def get_movie_batch(conn: Any, imdb_ids: set) -> list[dict]:
+def create_conn(database: str = MYSQL_DB_MOVIE) -> Any:
     """
-    用 imdb 编号去数据库查找记录
+    创建指定数据库连接；默认连接 movies 业务库。
+
+    :param database: 数据库名
+    :return: 返回数据库连接
+    """
+    conn = mysql.connector.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASS,
+        database=database
+    )
+    return conn
+
+
+def get_batch_by_imdb(conn: Any, table_name: str, imdb_ids: set) -> list[dict]:
+    """
+    按一批 IMDb 编号批量查询指定表记录。
 
     :param conn: 数据库会话
-    :param imdb_ids: imdb_id 列表
-    :return: [{...}, {...}, ...] 电影信息字典列表
+    :param table_name: 表名，仅允许 ``wanted`` 或 ``movies``
+    :param imdb_ids: imdb_id 集合
+    :return: 命中的记录列表；空输入时返回空列表
     """
     if not imdb_ids:
         return []
 
+    if table_name not in {"wanted", "movies"}:
+        raise ValueError(f"不支持的表名: {table_name}")
+
     # 构造 SQL IN 查询
     placeholders = ','.join(['%s'] * len(imdb_ids))  # 例如: "%s,%s,%s"
-    sql = f"SELECT * FROM movies WHERE imdb IN ({placeholders})"
+    sql = f"SELECT * FROM {table_name} WHERE imdb IN ({placeholders})"
 
     with conn.cursor(dictionary=True) as cursor:
         cursor.execute(sql, tuple(imdb_ids))
         return cursor.fetchall()
+
+
+def build_parsed_movie_ids(ids: list) -> list[tuple[str, Optional[tuple[str, str]]]]:
+    """
+    把原始电影 id 列表解析成 ``(原始值, 规范化结果)`` 结构。
+
+    :param ids: 原始电影 id 列表
+    :return: 解析结果列表；未知前缀会保留为 ``(原始值, None)``
+    """
+    return [(movie_id, parse_movie_id(movie_id)) for movie_id in ids]
+
+
+def fetch_existing_movie_external_ids(cursor: Any, parsed_ids: list[tuple[str, Optional[tuple[str, str]]]]) -> dict[str, set]:
+    """
+    按 ``imdb / tmdb / douban`` 三种外部编号，批量查询 movies 表中已存在的值。
+
+    这个 helper 只负责收口三类外部 id 的批量查询，供单条插入查重和批量缺失检查共用。
+
+    :param cursor: 数据库游标
+    :param parsed_ids: ``build_parsed_movie_ids()`` 产出的解析结果
+    :return: 已存在的外部 id 集合，按字段名分组
+    """
+    grouped_ids = {
+        "imdb": set(),
+        "tmdb": set(),
+        "douban": set(),
+    }
+
+    for _, parsed in parsed_ids:
+        if parsed:
+            grouped_ids[parsed[0]].add(parsed[1])
+
+    return {
+        "imdb": fetch_existing_values(cursor, "movies", "imdb", grouped_ids["imdb"]),
+        "tmdb": fetch_existing_values(cursor, "movies", "tmdb", grouped_ids["tmdb"]),
+        "douban": fetch_existing_values(cursor, "movies", "douban", grouped_ids["douban"]),
+    }
+
+
+def fetch_existing_tmdb_in_movies_and_wanted(cursor: Any, tmdb_values: set) -> set:
+    """
+    批量查询 movies / wanted 两张表里已存在的 tmdb 编号。
+
+    这个 helper 专门服务于 wanted 去重和导演作品抓取前的跳过逻辑。
+
+    :param cursor: 数据库游标
+    :param tmdb_values: 待检查的 tmdb 编号集合
+    :return: 已存在于 movies 或 wanted 的 tmdb 编号集合
+    """
+    existing_tmdb_values = fetch_existing_values(cursor, "movies", "tmdb", tmdb_values)
+    existing_tmdb_values.update(fetch_existing_values(cursor, "wanted", "tmdb", tmdb_values))
+    return existing_tmdb_values
 
 
 def check_movie_ids(ids: list) -> list:
-    """用电影 id 去数据库查询，检查是否有没记录的电影
+    """批量检查电影 id 是否已存在于 movies 表中。
+
+    支持三种输入前缀：
+    - ``tt``: IMDb 编号
+    - ``tmdb``: TMDb 编号
+    - ``db``: 豆瓣编号
+
+    返回值保持原输入顺序，只保留未命中的 id。
 
     :param ids: 电影 id 列表
     :return: 没查询到的电影 id 列表
     """
-    # 建立数据库连接
-    conn = create_conn()
-    cursor = conn.cursor()
+    conn = None
+    cursor = None
+    try:
+        conn = create_conn()
+        cursor = conn.cursor()
 
-    not_found = []
+        parsed_ids = build_parsed_movie_ids(ids)
+        existing_ids = fetch_existing_movie_external_ids(cursor, parsed_ids)
 
-    for mid in ids:
-        if mid.startswith("tt"):
-            col, val = "imdb", mid
-        elif mid.startswith("tmdb"):
-            col, val = "tmdb", mid.replace("tmdb", "")
-        elif mid.startswith("db"):
-            col, val = "douban", mid.replace("db", "")
-        else:
-            # 未知类型，直接加入结果
-            not_found.append(mid)
-            continue
-
-        sql = f"SELECT id FROM movies WHERE {col} = %s LIMIT 1"
-        cursor.execute(sql, (val,))
-        row = cursor.fetchone()
-
-        if not row:
-            not_found.append(mid)
-
-    cursor.close()
-    conn.close()
-    return not_found
+        return [
+            movie_id
+            for movie_id, parsed in parsed_ids
+            if not parsed or parsed[1] not in existing_ids[parsed[0]]
+        ]
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
 def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
     """
-    输入 tt 编号，返回导演列表，包含
+    根据 IMDb 影片编号查询本地镜像库里的导演列表。
 
     :param movie_id: imdb 编号
     :return: 搜索结果，成功则返回导演字典列表，形如 [{"director_id": "nmxxxxxxx", "director_name": "导演名"}, ...]
@@ -425,7 +405,7 @@ def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
     cursor = None
     try:
         # 建立数据库连接
-        conn = create_conn_imdb()
+        conn = create_conn(MYSQL_DB_IMDB)
         cursor = conn.cursor(dictionary=True)
         cursor.execute(IMDB_QUERY_SQL, (movie_id,))
         directors = cursor.fetchall()
@@ -442,48 +422,33 @@ def query_imdb_local_director(movie_id: str) -> Optional[list[dict]]:
 
 def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
     """
-    按 imdb -> tmdb -> douban -> 导演+标题 的顺序去数据库查找记录
+    按 ``imdb -> tmdb -> douban`` 的顺序查找 movies 表中是否已有对应记录。
 
-    :param cursor: 数据库会话
+    这里先复用批量外部 id 查询逻辑判断哪一类编号命中了现有记录，再只对命中的那一项回查数据库主键。
+
+    :param cursor: 数据库游标
     :param merged_dict: 完整电影信息字典
     :return: 找到则返回对应的 id，否则返回 None
     """
-    # 先用 imdb 进行查找
-    imdb_val = merged_dict.get('imdb')
-    if imdb_val:
-        select_sql = "SELECT id FROM movies WHERE imdb = %s"
-        cursor.execute(select_sql, (imdb_val,))
+    candidate_ids = []
+    if merged_dict.get('imdb'):
+        candidate_ids.append(merged_dict['imdb'])
+    if merged_dict.get('tmdb'):
+        candidate_ids.append(f"tmdb{merged_dict['tmdb']}")
+    if merged_dict.get('douban'):
+        candidate_ids.append(f"db{merged_dict['douban']}")
+
+    parsed_ids = build_parsed_movie_ids(candidate_ids)
+    existing_ids = fetch_existing_movie_external_ids(cursor, parsed_ids)
+
+    for _, parsed in parsed_ids:
+        if not parsed or parsed[1] not in existing_ids[parsed[0]]:
+            continue
+
+        select_sql = f"SELECT id FROM movies WHERE {parsed[0]} = %s"
+        cursor.execute(select_sql, (parsed[1],))
         result = cursor.fetchone()
         if result:
-            return result[0]
-
-    # 接着用 tmdb 进行查找
-    tmdb_val = merged_dict.get('tmdb')
-    if tmdb_val:
-        select_sql = "SELECT id FROM movies WHERE tmdb = %s"
-        cursor.execute(select_sql, (tmdb_val,))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-
-    # 然后用 douban 进行查找，几乎没有
-    douban_val = merged_dict.get('douban')
-    if douban_val:
-        select_sql = "SELECT id FROM movies WHERE douban = %s"
-        cursor.execute(select_sql, (douban_val,))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-
-    # 最后用导演、标题和年份进行查找
-    director_val = merged_dict.get('director')
-    original_title_val = merged_dict.get('original_title')
-    year_val = merged_dict.get('year')
-    if director_val and original_title_val:
-        select_sql = "SELECT id FROM movies WHERE director = %s AND original_title = %s AND year = %s"
-        cursor.execute(select_sql, (director_val, original_title_val, year_val))
-        result = cursor.fetchone()
-        if result and not imdb_val:
             return result[0]
 
     return None
@@ -491,43 +456,35 @@ def get_record_id_by_priority(cursor, merged_dict: dict) -> Any:
 
 def remove_existing_tmdb_ids(tmdb_set: set) -> set:
     """
-    连接数据库 movie，查询 movies 表中 tmdb 列的值，如果记录存在，则将其删除。
+    过滤掉在 movies / wanted 表中已经存在的 tmdb 编号。
+
+    注意：这里不会删除数据库记录，只会从传入集合里移除已经存在的 tmdb。
 
     :param tmdb_set: tmdb 编号集合
-    :return: 返回修改后的集合
+    :return: 过滤后的 tmdb 编号集合
     """
-    # 建立数据库连接
-    conn = create_conn()
-    cursor = conn.cursor()
+    if not tmdb_set:
+        return tmdb_set
 
-    # 构造 IN 子句
-    placeholders = ','.join(['%s'] * len(tmdb_set))
-    # 使用 UNION 合并两张表的查询
-    query = f"""
-            SELECT tmdb FROM movies WHERE tmdb IN ({placeholders})
-            UNION
-            SELECT tmdb FROM wanted WHERE tmdb IN ({placeholders})
-        """
-    # 注意这里需要将 tmdb_set 作为参数传递两次
-    params = tuple(tmdb_set) + tuple(tmdb_set)
-    cursor.execute(query, params)
-
-    # 获取查询结果
-    results = cursor.fetchall()
-
-    # 对每个查询到的 tmdb 值，从集合中删除
-    for (tmdb_id,) in results:
-        tmdb_set.discard(tmdb_id)  # 使用 discard 不存在时也不会报错
-
-    cursor.close()
-    conn.close()
-
-    return tmdb_set
+    conn = None
+    cursor = None
+    try:
+        conn = create_conn()
+        cursor = conn.cursor()
+        tmdb_set.difference_update(fetch_existing_tmdb_in_movies_and_wanted(cursor, tmdb_set))
+        return tmdb_set
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
 def delete_records(id_list: list, id_type: str, table_name: str) -> None:
     """
-    依据指定 id 号码删除记录
+    按指定字段值批量删除记录。
+
+    这是内部固定用途辅助函数，调用方应只传入可信的表名和字段名。
 
     :param id_list: 编号列表
     :param id_type: 编号类型
@@ -540,8 +497,10 @@ def delete_records(id_list: list, id_type: str, table_name: str) -> None:
         logger.info(f'{table_name} 表无有效的删除编号，跳过操作')
         return
 
-    conn = create_conn()
+    conn = None
+    cursor = None
     try:
+        conn = create_conn()
         cursor = conn.cursor()
         # 参数化查询，防止SQL注入
         sql = f"DELETE FROM {table_name} WHERE {id_type} = %s"
@@ -552,7 +511,11 @@ def delete_records(id_list: list, id_type: str, table_name: str) -> None:
         if counts:
             logger.info(f'成功删除 {table_name} 表中 {counts} 条数据')
     except mysql.connector.Error as err:
-        conn.rollback()
+        if conn:
+            conn.rollback()
         logger.error(f'操作异常：{err}')
     finally:
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
