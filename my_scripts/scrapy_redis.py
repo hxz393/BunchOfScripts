@@ -3,7 +3,7 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2026, hxz393. 保留所有权利。
+:copyright: Copyright 2027, hxz393. 保留所有权利。
 """
 import json
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
