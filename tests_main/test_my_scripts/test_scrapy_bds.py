@@ -135,6 +135,8 @@ def load_scrapy_bds(config: dict | None = None):
         "bds_url": "https://example.com/",
         "bds_cookie": "cookie=value",
         "request_head": {"User-Agent": "unit-test"},
+        "thread_number": 6,
+        "request_interval_seconds": 0.05,
         "end_time": "2020-09-21",
         "redis_seen_key": "bds_seen",
     }
@@ -208,6 +210,12 @@ def build_forum_html(*tbodys: str) -> bytes:
     return html.encode("utf-8")
 
 
+def make_forum_response(*tbodys: str):
+    """构造同时带 ``text`` 与 ``content`` 的列表页响应。"""
+    html_text = f'<table id="threadlisttableid">{"".join(tbodys)}</table>'
+    return Mock(text=html_text, content=html_text.encode("utf-8"))
+
+
 class TestModuleLoad(unittest.TestCase):
     """验证模块导入时的配置注入。"""
 
@@ -220,6 +228,8 @@ class TestModuleLoad(unittest.TestCase):
     def test_load_scrapy_bds_injects_cookie_and_initializes_session(self):
         """模块加载时应把 cookie 注入请求头，并初始化代理与挂载。"""
         self.assertEqual(self.module.REQUEST_HEAD["Cookie"], "cookie=value")
+        self.assertEqual(self.module.THREAD_NUMBER, 6)
+        self.assertEqual(self.module.REQUEST_INTERVAL_SECONDS, 0.05)
         self.assertEqual(
             self.module.session.proxies,
             {
@@ -231,6 +241,20 @@ class TestModuleLoad(unittest.TestCase):
             [prefix for prefix, _adapter in self.module.session.mount_calls],
             ["http://", "https://"],
         )
+
+    def test_create_retry_strategy_falls_back_to_method_whitelist_for_legacy_urllib3(self):
+        """旧版 urllib3 不支持 ``allowed_methods`` 时，应回退到 ``method_whitelist``。"""
+
+        def fake_retry_factory(**kwargs):
+            if "allowed_methods" in kwargs:
+                raise TypeError("unsupported")
+            return kwargs
+
+        with patch.object(self.module, "Retry", side_effect=fake_retry_factory):
+            retry_strategy = self.module.create_retry_strategy()
+
+        self.assertEqual(retry_strategy["method_whitelist"], ["POST", "GET"])
+        self.assertEqual(retry_strategy["status_forcelist"], [502])
 
 
 class TestEndTimeHelpers(unittest.TestCase):
@@ -254,6 +278,10 @@ class TestEndTimeHelpers(unittest.TestCase):
         result = self.module.get_yesterday_date_str(datetime.date(2024, 1, 10))
 
         self.assertEqual(result, "2024-01-09")
+
+    def test_parse_bds_date_returns_none_for_invalid_string(self):
+        """无法解析的日期字符串应返回 ``None``。"""
+        self.assertIsNone(self.module.parse_bds_date("昨天"))
 
     def test_finalize_bds_run_updates_config_when_run_succeeds(self):
         """无失败时，应把配置回写为昨天，而不是从帖子日期推导。"""
@@ -402,14 +430,12 @@ class TestParseForumPage(unittest.TestCase):
 
     def test_parse_forum_page_collects_new_and_undated_posts_on_first_page(self):
         """第一页应保留新帖和无法解析日期的帖子，旧帖仅跳过不触发停止。"""
-        response = Mock(
-            content=build_forum_html(
-                build_thread_tbody(title="新帖子", href="thread-100-1-1.html", date_text="2024-01-05"),
-                build_thread_tbody(title="旧帖子", href="thread-101-1-1.html", date_text="2023-12-30"),
-                build_thread_tbody(title="昨天帖子", href="thread-102-1-1.html", date_text="昨天"),
-                build_thread_tbody(include_th=False),
-                build_thread_tbody(include_anchor=False),
-            )
+        response = make_forum_response(
+            build_thread_tbody(title="新帖子", href="thread-100-1-1.html", date_text="2024-01-05"),
+            build_thread_tbody(title="旧帖子", href="thread-101-1-1.html", date_text="2023-12-30"),
+            build_thread_tbody(title="昨天帖子", href="thread-102-1-1.html", date_text="昨天"),
+            build_thread_tbody(include_th=False),
+            build_thread_tbody(include_anchor=False),
         )
 
         with patch.object(self.module, "get_bds_response", return_value=response) as mock_get:
@@ -435,11 +461,9 @@ class TestParseForumPage(unittest.TestCase):
 
     def test_parse_forum_page_sets_stop_when_old_post_appears_after_first_page(self):
         """第二页及之后出现早于停止日期的帖子时，应返回停止标记。"""
-        response = Mock(
-            content=build_forum_html(
-                build_thread_tbody(title="仍然保留", href="thread-200-1-1.html", date_text="2024-01-03"),
-                build_thread_tbody(title="触发停止", href="thread-201-1-1.html", date_text="2023-12-31"),
-            )
+        response = make_forum_response(
+            build_thread_tbody(title="仍然保留", href="thread-200-1-1.html", date_text="2024-01-03"),
+            build_thread_tbody(title="触发停止", href="thread-201-1-1.html", date_text="2023-12-31"),
         )
 
         with patch.object(self.module, "get_bds_response", return_value=response):
@@ -459,7 +483,7 @@ class TestParseForumPage(unittest.TestCase):
 
     def test_parse_forum_page_returns_empty_when_thread_table_is_missing(self):
         """页面缺少帖子表格时，应记录错误并返回空结果。"""
-        response = Mock(content=b"<html><body><div>blocked</div></body></html>")
+        response = Mock(text="<html><body><div>blocked</div></body></html>", content=b"<html><body><div>blocked</div></body></html>")
 
         with patch.object(self.module, "get_bds_response", return_value=response), self.assertLogs(
             self.module.logger.name, level="ERROR"
@@ -472,21 +496,33 @@ class TestParseForumPage(unittest.TestCase):
 
     def test_parse_forum_page_raises_when_anchor_href_is_missing(self):
         """帖子标题链接缺少 href 时，应中止整页抓取。"""
-        broken_html = build_forum_html(
+        broken_html = (
             build_thread_tbody(title="坏帖子", href="thread-300-1-1.html").replace(' href="thread-300-1-1.html"', ""),
         )
-        response = Mock(content=broken_html)
+        html_text = f'<table id="threadlisttableid">{"".join(broken_html)}</table>'
+        response = Mock(text=html_text, content=html_text.encode("utf-8"))
 
         with patch.object(self.module, "get_bds_response", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "缺少 href"):
                 self.module.parse_forum_page(group_id=10, start_page=1, stop_time=self.stop_time)
+
+    def test_parse_forum_tbody_returns_none_when_required_nodes_are_missing(self):
+        """缺少 ``th`` 或标题链接时，应返回 ``None``。"""
+        no_th = Mock()
+        no_th.find.return_value = None
+
+        html = build_thread_tbody(include_anchor=False)
+        tbody = self.module.BeautifulSoup(html, "html.parser").find("tbody")
+
+        self.assertIsNone(self.module.parse_forum_tbody(no_th))
+        self.assertIsNone(self.module.parse_forum_tbody(tbody))
 
 
 class TestReadThread(unittest.TestCase):
     """验证帖子详情页处理和写盘逻辑。"""
 
     def setUp(self):
-        self.module, self.temp_dir = load_scrapy_bds()
+        self.module, self.temp_dir = load_scrapy_bds({"request_interval_seconds": 0.2})
         self.redis_client = self.module._fake_redis_client
 
     def tearDown(self):
@@ -511,7 +547,7 @@ class TestReadThread(unittest.TestCase):
         self.assertEqual(result, item["link"])
         self.assertEqual(self.redis_client.smembers(self.module.REDIS_SEEN_KEY), {item["link"]})
         mock_get.assert_called_once_with("https://example.com/thread-123-1-1.html&_dsign=39e16b34")
-        mock_sleep.assert_called_once_with(0.05)
+        mock_sleep.assert_called_once_with(0.2)
 
     def test_read_thread_uses_empty_tt_and_logs_warning_when_id_is_missing(self):
         """没有匹配到 tt 编号时，应保留空编号文件名并记录警告。"""
@@ -530,6 +566,14 @@ class TestReadThread(unittest.TestCase):
         self.assertTrue(output_file.exists())
         self.assertEqual(output_file.read_text(encoding="utf-8"), item["link"])
         self.assertIn("没有找到 tt 编号", logs.output[0])
+
+    def test_build_bds_output_filename_uses_sanitize_filename_result(self):
+        """应在替换非法字符后再统一交给 ``sanitize_filename``。"""
+        with patch.object(self.module, "sanitize_filename", return_value="safe title") as mock_sanitize:
+            result = self.module.build_bds_output_filename("Bad:Name/Part", "tt1234567")
+
+        mock_sanitize.assert_called_once_with("Bad Name Part")
+        self.assertEqual(result, "safe title[tt1234567].bds")
 
 
 class TestProcessAll(unittest.TestCase):
@@ -564,12 +608,22 @@ class TestProcessAll(unittest.TestCase):
         self.assertEqual(mock_error.call_count, 1)
         self.assertIn("boom", mock_error.call_args[0][0])
 
+    def test_process_all_returns_early_for_empty_input(self):
+        """空任务列表应直接返回，不去创建 Redis 客户端。"""
+        with patch.object(self.module, "get_redis_client") as mock_get_redis:
+            result = self.module.process_all([])
+
+        self.assertEqual(result, [])
+        mock_get_redis.assert_not_called()
+
 
 class TestScrapyBdsMain(unittest.TestCase):
     """验证主抓取流程的编排逻辑。"""
 
     def setUp(self):
-        self.module, self.temp_dir = load_scrapy_bds({"group_dict": {"电影": 10, "剧集": 20}, "end_time": "2024-01-01"})
+        self.module, self.temp_dir = load_scrapy_bds(
+            {"group_dict": {"电影": 10, "剧集": 20}, "end_time": "2024-01-01", "thread_number": 8}
+        )
         self.redis_client = self.module._fake_redis_client
 
     def tearDown(self):
@@ -606,8 +660,8 @@ class TestScrapyBdsMain(unittest.TestCase):
         self.assertEqual(
             mock_process.call_args_list,
             [
-                call(movie_page_1 + movie_page_2, max_workers=6, redis_client=self.redis_client),
-                call([], max_workers=6, redis_client=self.redis_client),
+                call(movie_page_1 + movie_page_2, max_workers=8, redis_client=self.redis_client),
+                call([], max_workers=8, redis_client=self.redis_client),
             ],
         )
         mock_update.assert_called_once_with("config/scrapy_bds.json", "end_time", "2024-01-09")
@@ -646,8 +700,8 @@ class TestScrapyBdsMain(unittest.TestCase):
         self.assertEqual(
             mock_process.call_args_list,
             [
-                call(first_page, max_workers=6, redis_client=self.redis_client),
-                call([], max_workers=6, redis_client=self.redis_client),
+                call(first_page, max_workers=8, redis_client=self.redis_client),
+                call([], max_workers=8, redis_client=self.redis_client),
             ],
         )
         mock_update.assert_called_once_with("config/scrapy_bds.json", "end_time", "2024-01-09")
@@ -697,7 +751,7 @@ class TestScrapyBdsMain(unittest.TestCase):
             self.module.scrapy_bds()
 
         self.assertEqual(mock_parse.call_args_list[0], call(10, 1, datetime.datetime(2024, 1, 1)))
-        self.assertEqual(mock_process.call_args_list[0], call(page_results, max_workers=6, redis_client=self.redis_client))
+        self.assertEqual(mock_process.call_args_list[0], call(page_results, max_workers=8, redis_client=self.redis_client))
         mock_update.assert_called_once_with("config/scrapy_bds.json", "end_time", "2024-01-09")
 
     def test_scrapy_bds_skips_end_time_update_when_any_group_has_processing_failures(self):
@@ -745,8 +799,8 @@ class TestScrapyBdsMain(unittest.TestCase):
         self.assertEqual(
             mock_process.call_args_list,
             [
-                call([page_results[1]], max_workers=6, redis_client=self.redis_client),
-                call([], max_workers=6, redis_client=self.redis_client),
+                call([page_results[1]], max_workers=8, redis_client=self.redis_client),
+                call([], max_workers=8, redis_client=self.redis_client),
             ],
         )
         mock_update.assert_called_once_with("config/scrapy_bds.json", "end_time", "2024-01-09")

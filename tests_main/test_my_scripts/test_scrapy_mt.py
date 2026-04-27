@@ -4,9 +4,9 @@
 这里在隔离环境中加载模块，不依赖真实配置，也不会发出真实网络请求。
 主要验证：
 1. 模块导入时的配置注入。
-2. 自动时间窗口相关辅助函数。
+2. 自动时间窗口与重试策略辅助函数。
 3. ``post_mt_response`` 的请求参数、编码设置和异常分支。
-4. ``parse_mt_response`` / ``write_to_disk`` 的文件名拼装与落盘行为。
+4. ``parse_mt_response`` 的文件名拼装与落盘行为。
 5. ``scrapy_mt`` 主流程的分页控制、成功回写和失败保护。
 """
 
@@ -75,14 +75,7 @@ def load_scrapy_mt(config: dict | None = None):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    def fake_write_list_to_file(path: str, content: list[str]) -> bool:
-        output_path = Path(path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("\n".join(content), encoding="utf-8")
-        return True
-
     fake_my_module.write_dict_to_json = fake_write_dict_to_json
-    fake_my_module.write_list_to_file = fake_write_list_to_file
     fake_my_module.update_json_config = lambda _path, key, value: module_config.__setitem__(key, value)
 
     fake_retrying = types.ModuleType("retrying")
@@ -135,8 +128,8 @@ class TestModuleLoad(unittest.TestCase):
         self.assertEqual(self.module.QUERY_TIME, "2026-03-25")
 
 
-class TestMtDateHelpers(unittest.TestCase):
-    """验证自动时间窗口相关辅助函数。"""
+class TestMtHelpers(unittest.TestCase):
+    """验证自动时间窗口和重试策略辅助函数。"""
 
     def setUp(self):
         self.module, self.temp_dir = load_scrapy_mt()
@@ -162,6 +155,51 @@ class TestMtDateHelpers(unittest.TestCase):
         self.module.update_json_config(self.module.CONFIG_PATH, "query_time", "2026-04-01")
 
         self.assertEqual(self.module.get_current_query_time(), "2026-04-01")
+
+    def test_create_retry_strategy_prefers_allowed_methods(self):
+        """urllib3 支持 ``allowed_methods`` 时应优先使用它。"""
+        retry_instance = object()
+
+        with patch.object(self.module, "Retry", return_value=retry_instance) as mock_retry:
+            result = self.module.create_retry_strategy()
+
+        self.assertIs(result, retry_instance)
+        mock_retry.assert_called_once_with(
+            allowed_methods=["POST", "GET"],
+            total=15,
+            status_forcelist=[502],
+            backoff_factor=1,
+        )
+
+    def test_create_retry_strategy_falls_back_to_method_whitelist(self):
+        """旧版 urllib3 不支持 ``allowed_methods`` 时应回退到 ``method_whitelist``。"""
+        retry_instance = object()
+
+        with patch.object(
+            self.module,
+            "Retry",
+            side_effect=[TypeError("unsupported"), retry_instance],
+        ) as mock_retry:
+            result = self.module.create_retry_strategy()
+
+        self.assertIs(result, retry_instance)
+        self.assertEqual(
+            mock_retry.call_args_list,
+            [
+                call(
+                    allowed_methods=["POST", "GET"],
+                    total=15,
+                    status_forcelist=[502],
+                    backoff_factor=1,
+                ),
+                call(
+                    method_whitelist=["POST", "GET"],
+                    total=15,
+                    status_forcelist=[502],
+                    backoff_factor=1,
+                ),
+            ],
+        )
 
 
 class TestPostMtResponse(unittest.TestCase):
@@ -196,6 +234,7 @@ class TestPostMtResponse(unittest.TestCase):
                 "_sgin": "unit-sign",
                 "_timestamp": "1700000000",
             },
+            timeout=15,
         )
 
     def test_post_mt_response_raises_when_status_code_is_not_200(self):
@@ -329,39 +368,6 @@ class TestParseMtResponse(unittest.TestCase):
                 ),
             ],
         )
-
-
-class TestWriteToDisk(unittest.TestCase):
-    """验证辅助落盘函数的当前行为。"""
-
-    def setUp(self):
-        output_dir = str(Path(tempfile.gettempdir()) / f"scrapy-mt-write-{uuid.uuid4().hex}" / "downloads")
-        self.module, self.temp_dir = load_scrapy_mt({"output_dir": output_dir})
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def test_write_to_disk_creates_output_dir_and_writes_expected_links(self):
-        """目录不存在时应先创建，再把 URL 和下载链接写入文件。"""
-        result_list = [
-            {
-                "name": "Movie/Title: One",
-                "size": "15.2GB",
-                "imdb": "tt1234567",
-                "url": "https://example.com/post/1",
-                "dl": "https://example.com/download/1",
-            }
-        ]
-
-        self.module.write_to_disk(result_list)
-
-        expected_path = Path(self.module.OUTPUT_DIR) / "Movie｜Title_ One(15.2GB)[tt1234567].ttg"
-        self.assertTrue(expected_path.exists())
-        self.assertEqual(
-            expected_path.read_text(encoding="utf-8"),
-            "https://example.com/post/1\nhttps://example.com/download/1",
-        )
-
 
 class TestScrapyMtMain(unittest.TestCase):
     """验证主抓取流程的编排逻辑。"""

@@ -279,12 +279,14 @@ class TestEndTimeHelpers(unittest.TestCase):
 
     def test_finalize_onk_run_updates_only_when_scan_and_queues_are_finished(self):
         self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")
+        self.redis_client.sadd(self.module.REDIS_SEEN_KEY, "https://onk.example/threads/1")
         with patch.object(self.module, "get_yesterday_date_str", return_value="2026-04-25"), patch.object(
             self.module, "update_json_config"
         ) as mock_update:
             self.module.finalize_onk_run(redis_client=self.redis_client)
         mock_update.assert_called_once_with("config/scrapy_onk.json", "end_time", "2026-04-25")
         self.assertIsNone(self.redis_client.get(self.module.REDIS_SCAN_COMPLETE_KEY))
+        self.assertEqual(self.redis_client.values[self.module.REDIS_SEEN_KEY], {"https://onk.example/threads/1"})
 
     def test_finalize_onk_run_skips_update_when_pending_exists(self):
         self.redis_client.set(self.module.REDIS_SCAN_COMPLETE_KEY, "1")

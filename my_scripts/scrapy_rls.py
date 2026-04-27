@@ -254,7 +254,6 @@ def finalize_rls_run(redis_client: redis.Redis | None = None) -> None:
     redis_client.delete(
         REDIS_PENDING_KEY,
         REDIS_PROCESSING_KEY,
-        REDIS_SEEN_KEY,
         REDIS_FOREIGN_SCAN_PAGE_KEY,
         REDIS_MOVIE_SCAN_PAGE_KEY,
         REDIS_FOREIGN_SCAN_COMPLETE_KEY,

@@ -547,7 +547,7 @@ class TestFinalizeRlsRun(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_finalize_rls_run_updates_both_end_title_lists_and_clears_state(self):
-        """两条列表都扫完且队列清空后，应一次性回写两套截止标题并清理状态。"""
+        """两条列表都扫完且队列清空后，应一次性回写两套截止标题并清理运行态，但保留 seen。"""
         self.redis_client.set(self.module.REDIS_FOREIGN_SCAN_COMPLETE_KEY, "1")
         self.redis_client.set(self.module.REDIS_MOVIE_SCAN_COMPLETE_KEY, "1")
         self.redis_client.set(
@@ -574,6 +574,7 @@ class TestFinalizeRlsRun(unittest.TestCase):
         )
         self.assertIsNone(self.redis_client.get(self.module.REDIS_FOREIGN_SCAN_COMPLETE_KEY))
         self.assertIsNone(self.redis_client.get(self.module.REDIS_MOVIE_SCAN_COMPLETE_KEY))
+        self.assertEqual(self.redis_client.sets[self.module.REDIS_SEEN_KEY], {"u1"})
 
     def test_finalize_rls_run_skips_update_when_scan_is_incomplete(self):
         """任一列表流程未完成时，不应提前回写配置。"""
