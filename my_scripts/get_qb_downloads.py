@@ -3,7 +3,7 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import logging
 import os
@@ -21,8 +21,6 @@ requests.packages.urllib3.disable_warnings()
 CONFIG = read_json_to_dict('config/add_to_qb.json')  # 配置文件
 
 QB_URL = CONFIG['qb_url']  # qb 地址
-QB_SAVE_DIR = CONFIG['qb_save_dir']  # qb 保存目录
-MAGNET_PATH = CONFIG['magnet_path']  # 输出目录
 
 
 def get_qb_downloads(target: str) -> None:
@@ -52,7 +50,7 @@ def get_qb_downloads(target: str) -> None:
             file.write(magnet_uri)
 
 
-def get_qb_torrents(session: requests.Session) -> Optional[dict]:
+def get_qb_torrents(session: requests.Session) -> Optional[list[dict]]:
     """
     请求 QB 获取 JSON 响应会返回
 
