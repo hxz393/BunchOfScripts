@@ -11,7 +11,8 @@ import os
 import requests
 from retrying import retry
 
-from my_module import read_json_to_dict, extract_torrent_download_link
+from extract_torrent_download_link import extract_torrent_download_link
+from my_module import read_json_to_dict
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()

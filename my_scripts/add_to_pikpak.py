@@ -12,7 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from my_module import read_json_to_dict, extract_torrent_download_link
+from extract_torrent_download_link import extract_torrent_download_link
+from my_module import read_json_to_dict
 
 logger = logging.getLogger(__name__)
 

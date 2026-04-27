@@ -12,8 +12,7 @@ from typing import Optional, Union
 
 from scrapy_yts import select_best_yts_magnet
 
-from .read_file_to_list import read_file_to_list
-from .read_json_to_dict import read_json_to_dict
+from my_module import read_file_to_list, read_json_to_dict
 
 logger = logging.getLogger(__name__)
 

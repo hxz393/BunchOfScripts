@@ -33,7 +33,9 @@ def load_add_to_pikpak(config: dict | None = None):
 
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: dict(module_config)
-    fake_my_module.extract_torrent_download_link = lambda _path, _magnet_path: None
+
+    fake_extract_module = types.ModuleType("extract_torrent_download_link")
+    fake_extract_module.extract_torrent_download_link = lambda _path, _magnet_path: None
 
     spec = importlib.util.spec_from_file_location(
         f"add_to_pikpak_test_{uuid.uuid4().hex}",
@@ -44,6 +46,7 @@ def load_add_to_pikpak(config: dict | None = None):
         sys.modules,
         {
             "my_module": fake_my_module,
+            "extract_torrent_download_link": fake_extract_module,
         },
     ):
         spec.loader.exec_module(module)

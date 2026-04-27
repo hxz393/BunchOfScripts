@@ -1,5 +1,5 @@
 """
-针对 ``my_module.file_ops.extract_torrent_download_link`` 的单元测试。
+针对 ``my_scripts.extract_torrent_download_link`` 的单元测试。
 
 这些测试使用真实的临时文件，但不会依赖真实的 YTS 配置或网络。
 重点验证：
@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "my_module" / "file_ops" / "extract_torrent_download_link.py"
+MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "extract_torrent_download_link.py"
 
 
 def load_extract_torrent_download_link(select_best_yts_magnet=None):
@@ -29,11 +29,6 @@ def load_extract_torrent_download_link(select_best_yts_magnet=None):
     )
 
     fake_my_module = types.ModuleType("my_module")
-    fake_my_module.__path__ = []
-    fake_file_ops = types.ModuleType("my_module.file_ops")
-    fake_file_ops.__path__ = []
-
-    fake_read_json_module = types.ModuleType("my_module.file_ops.read_json_to_dict")
 
     def fake_read_json_to_dict(target_path):
         try:
@@ -41,17 +36,15 @@ def load_extract_torrent_download_link(select_best_yts_magnet=None):
         except Exception:
             return None
 
-    fake_read_json_module.read_json_to_dict = fake_read_json_to_dict
-
-    fake_read_file_module = types.ModuleType("my_module.file_ops.read_file_to_list")
-    fake_read_file_module.read_file_to_list = lambda target_path: [
+    fake_my_module.read_json_to_dict = fake_read_json_to_dict
+    fake_my_module.read_file_to_list = lambda target_path: [
         line.strip()
         for line in Path(target_path).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
     spec = importlib.util.spec_from_file_location(
-        "my_module.file_ops.extract_torrent_download_link",
+        "extract_torrent_download_link",
         MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
@@ -60,9 +53,6 @@ def load_extract_torrent_download_link(select_best_yts_magnet=None):
         {
             "scrapy_yts": fake_scrapy_yts,
             "my_module": fake_my_module,
-            "my_module.file_ops": fake_file_ops,
-            "my_module.file_ops.read_json_to_dict": fake_read_json_module,
-            "my_module.file_ops.read_file_to_list": fake_read_file_module,
         },
     ):
         spec.loader.exec_module(module)

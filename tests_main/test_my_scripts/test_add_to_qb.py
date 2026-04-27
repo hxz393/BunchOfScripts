@@ -40,11 +40,12 @@ def load_add_to_qb(config: dict | None = None, select_yts_best_torrent=None):
 
     fake_my_module = types.ModuleType("my_module")
     fake_my_module.read_json_to_dict = lambda _path: dict(module_config)
-    fake_my_module.read_file_to_list = lambda _path: []
+
+    fake_extract_module = types.ModuleType("extract_torrent_download_link")
     if select_yts_best_torrent is None:
-        fake_my_module.extract_torrent_download_link = lambda _path, _magnet_path: "magnet:?xt=urn:btih:FAKEHASH"
+        fake_extract_module.extract_torrent_download_link = lambda _path, _magnet_path: "magnet:?xt=urn:btih:FAKEHASH"
     else:
-        fake_my_module.extract_torrent_download_link = lambda _path, _magnet_path: select_yts_best_torrent(build_movie_json())
+        fake_extract_module.extract_torrent_download_link = lambda _path, _magnet_path: select_yts_best_torrent(build_movie_json())
 
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
@@ -58,6 +59,7 @@ def load_add_to_qb(config: dict | None = None, select_yts_best_torrent=None):
         sys.modules,
         {
             "my_module": fake_my_module,
+            "extract_torrent_download_link": fake_extract_module,
             "retrying": fake_retrying,
         },
     ):
@@ -87,7 +89,7 @@ def build_movie_json(hash_value: str = "JSONHASH") -> dict:
 
 
 class TestAddToQbMain(unittest.TestCase):
-    def test_add_to_qb_counts_only_confirmed_successes(self):
+    def test_add_to_qb_counts_supported_files(self):
         module = load_add_to_qb(
             select_yts_best_torrent=lambda json_data: f"magnet:?xt=urn:btih:{json_data['data']['movie']['torrents'][0]['hash']}"
         )
@@ -102,12 +104,12 @@ class TestAddToQbMain(unittest.TestCase):
 
             with patch.object(module.requests, "Session", return_value=fake_session), \
                     patch.object(module, "qb_login", return_value=True), \
-                    patch.object(module, "read_file_to_list", side_effect=[["magnet:?xt=urn:btih:FIRST"], ["magnet:?xt=urn:btih:SECOND"]]), \
+                    patch.object(module, "extract_torrent_download_link", side_effect=["magnet:?xt=urn:btih:FIRST", "magnet:?xt=urn:btih:SECOND"]), \
                     patch.object(module, "add_magnet_link", side_effect=[False, True]), \
                     patch.object(module.logger, "info") as mock_logger_info:
                 module.add_to_qb(temp_dir)
 
-        self.assertIn(call("共添加 1 个任务。"), mock_logger_info.call_args_list)
+        self.assertIn(call("共添加 2 个任务。"), mock_logger_info.call_args_list)
 
     def test_add_to_qb_skips_bad_json_and_empty_log_instead_of_crashing(self):
         module = load_add_to_qb()
@@ -120,21 +122,9 @@ class TestAddToQbMain(unittest.TestCase):
 
             fake_session = Mock(name="session")
 
-            def fake_read_json_to_dict(path):
-                if Path(path).name == "bad.json":
-                    return None
-                return {
-                    "qb_url": "https://example.com/qb",
-                    "qb_user": "user",
-                    "qb_pass": "pass",
-                    "qb_save_dir": "/downloads/qb",
-                    "magnet_path": "magnet:?xt=urn:btih:",
-                }
-
             with patch.object(module.requests, "Session", return_value=fake_session), \
                     patch.object(module, "qb_login", return_value=True), \
-                    patch.object(module, "read_json_to_dict", side_effect=fake_read_json_to_dict), \
-                    patch.object(module, "read_file_to_list", return_value=[]), \
+                    patch.object(module, "extract_torrent_download_link", return_value=None), \
                     patch.object(module, "add_magnet_link") as mock_add_magnet, \
                     patch.object(module.logger, "info") as mock_logger_info, \
                     patch.object(module.logger, "error"):
@@ -156,20 +146,14 @@ class TestAddToQbMain(unittest.TestCase):
 
             fake_session = Mock(name="session")
 
-            def fake_read_json_to_dict(path):
-                if Path(path).name == "movie.json":
-                    return build_movie_json("JSONHASH")
-                return {
-                    "qb_url": "https://example.com/qb",
-                    "qb_user": "user",
-                    "qb_pass": "pass",
-                    "qb_save_dir": "/downloads/qb",
-                    "magnet_path": "config-prefix:",
-                }
+            def fake_extract(path, magnet_path):
+                self.assertEqual(magnet_path, module.MAGNET_PATH)
+                self.assertEqual(Path(path).name, "movie.json")
+                return "config-prefix:JSONHASH"
 
             with patch.object(module.requests, "Session", return_value=fake_session), \
                     patch.object(module, "qb_login", return_value=True), \
-                    patch.object(module, "read_json_to_dict", side_effect=fake_read_json_to_dict), \
+                    patch.object(module, "extract_torrent_download_link", side_effect=fake_extract), \
                     patch.object(module, "add_magnet_link") as mock_add_magnet:
                 module.add_to_qb(temp_dir)
 
