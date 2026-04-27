@@ -557,12 +557,10 @@ class TestRecoverAndDrainDlbQueue(unittest.TestCase):
             processing_key=self.module.REDIS_PROCESSING_KEY,
             max_workers=self.module.THREAD_NUMBER,
             worker=self.module.visit_dlb_url,
-            deserialize=self.module.deserialize_payload,
             logger=self.module.logger,
             queue_label="DLB",
             identify_item=ANY,
             recover_processing_on_start=False,
-            keep_failed_in_processing=True,
         )
 
 

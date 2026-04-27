@@ -18,7 +18,6 @@ from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_list_to_file, update_json_config, read_file_to_list
 from scrapy_redis import (
-    deserialize_payload,
     drain_queue,
     get_redis_client,
     push_items_to_queue,
@@ -43,7 +42,6 @@ THREAD_NUMBER = CONFIG['thread_number']  # 并发数
 
 REDIS_PENDING_KEY = CONFIG.get('redis_pending_key', 'dhd_pending')  # 待处理队列
 REDIS_PROCESSING_KEY = CONFIG.get('redis_processing_key', 'dhd_processing')  # 处理中队列
-REDIS_FAILED_KEY = CONFIG.get('redis_failed_key', 'dhd_failed')  # 失败队列
 REDIS_SEEN_KEY = CONFIG.get('redis_seen_key', 'dhd_seen')  # 已入队帖子集合
 
 REQUEST_HEAD["Cookie"] = DHD_COOKIE  # 请求头加入认证
@@ -191,10 +189,8 @@ def drain_dhd_queue(redis_client: redis.Redis | None = None) -> None:
         redis_client,
         pending_key=REDIS_PENDING_KEY,
         processing_key=REDIS_PROCESSING_KEY,
-        failed_key=REDIS_FAILED_KEY,
         max_workers=THREAD_NUMBER,
         worker=working_dhd,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="DHD",
         identify_item=lambda info: info["url"],

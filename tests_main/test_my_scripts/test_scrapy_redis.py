@@ -224,20 +224,6 @@ class TestQueueHelpers(FakeredisTestCase):
 class TestDrainQueue(FakeredisTestCase):
     """验证消费队列时的成功、失败与停止策略。"""
 
-    def test_drain_queue_raises_when_failed_key_is_missing(self):
-        """默认失败分流模式下，必须提供 ``failed_key``。"""
-        with self.assertRaisesRegex(ValueError, "failed_key 不能为空"):
-            self.module.drain_queue(
-                self.redis_client,
-                pending_key=self.pending_key,
-                processing_key=self.processing_key,
-                max_workers=1,
-                worker=lambda _info: None,
-                logger=Mock(),
-                queue_label="TEST",
-                identify_item=lambda info: info["id"],
-            )
-
     def test_drain_queue_returns_zero_counts_when_pending_is_empty(self):
         """没有待处理任务时，应直接返回零统计并输出提示。"""
         logger = Mock()
@@ -352,8 +338,8 @@ class TestDrainQueue(FakeredisTestCase):
         logger.error.assert_called_once()
         self.assertIn("抓取出错：2，错误：boom", logger.error.call_args[0][0])
 
-    def test_drain_queue_can_keep_failed_items_in_processing(self):
-        """显式要求时，普通失败任务应保留在 processing 中。"""
+    def test_drain_queue_keeps_failed_items_in_processing_when_failed_key_is_omitted(self):
+        """未提供 ``failed_key`` 时，普通失败任务应保留在 processing 中。"""
         logger = Mock()
         payload_success = self.module.serialize_payload({"id": "1"})
         payload_fail = self.module.serialize_payload({"id": "2"})
@@ -373,7 +359,6 @@ class TestDrainQueue(FakeredisTestCase):
             logger=logger,
             queue_label="TEST",
             identify_item=lambda info: info["id"],
-            keep_failed_in_processing=True,
         )
 
         self.assertEqual(result, {"processed": 2, "success": 1, "failed": 1})
@@ -385,33 +370,6 @@ class TestDrainQueue(FakeredisTestCase):
         self.assertEqual(self.redis_client.llen(self.failed_key), 0)
         logger.error.assert_called_once()
         self.assertIn("抓取出错：2，错误：boom", logger.error.call_args[0][0])
-
-    def test_drain_queue_uses_logger_exception_when_log_traceback_is_true(self):
-        """开启 ``log_traceback`` 时，失败任务应走 ``logger.exception``。"""
-        logger = Mock()
-        payload_fail = self.module.serialize_payload({"id": "9"})
-        self.redis_client.rpush(self.pending_key, payload_fail)
-
-        def fake_worker(_info: dict) -> None:
-            raise RuntimeError("boom")
-
-        result = self.module.drain_queue(
-            self.redis_client,
-            pending_key=self.pending_key,
-            processing_key=self.processing_key,
-            failed_key=self.failed_key,
-            max_workers=1,
-            worker=fake_worker,
-            logger=logger,
-            queue_label="TEST",
-            identify_item=lambda info: info["id"],
-            log_traceback=True,
-        )
-
-        self.assertEqual(result, {"processed": 1, "success": 0, "failed": 1})
-        logger.exception.assert_called_once()
-        logger.error.assert_not_called()
-        self.assertIn("抓取出错：9，错误：boom", logger.exception.call_args[0][0])
 
     def test_drain_queue_requeues_fatal_item_and_raises(self):
         """致命异常应停止继续处理，并把当前任务放回 pending。"""
@@ -441,6 +399,38 @@ class TestDrainQueue(FakeredisTestCase):
         self.assertEqual(self.redis_client.llen(self.failed_key), 0)
         logger.error.assert_called_once()
         self.assertIn("TEST 检测到致命错误，停止继续处理：fatal，错误：fatal boom", logger.error.call_args[0][0])
+
+    def test_drain_queue_lpushes_bad_payload_back_to_pending_when_deserialize_fails(self):
+        """反序列化失败时，应把坏 payload 挪到 pending 左侧，避免阻塞剩余正常任务。"""
+        logger = Mock()
+        payload_bad = "not json"
+        payload_good_1 = self.module.serialize_payload({"id": "good-1"})
+        payload_good_2 = self.module.serialize_payload({"id": "good-2"})
+        self.redis_client.rpush(self.pending_key, payload_good_1)
+        self.redis_client.rpush(self.pending_key, payload_bad)
+        self.redis_client.rpush(self.pending_key, payload_good_2)
+        processed_ids = []
+
+        def fake_worker(info: dict) -> None:
+            processed_ids.append(info["id"])
+
+        with self.assertRaises(json.JSONDecodeError):
+            self.module.drain_queue(
+                self.redis_client,
+                pending_key=self.pending_key,
+                processing_key=self.processing_key,
+                max_workers=2,
+                worker=fake_worker,
+                logger=logger,
+                queue_label="TEST",
+                identify_item=lambda info: info["id"],
+            )
+
+        self.assertEqual(processed_ids, ["good-2"])
+        self.assertEqual(self.redis_client.lrange(self.pending_key, 0, -1), [payload_bad, payload_good_1])
+        self.assertEqual(self.redis_client.llen(self.processing_key), 0)
+        logger.error.assert_called_once()
+        self.assertIn("TEST 任务反序列化失败，已放回待处理队列", logger.error.call_args[0][0])
 
 
 @unittest.skipUnless(

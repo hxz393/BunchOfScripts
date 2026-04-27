@@ -553,13 +553,11 @@ class TestDrainRlsQueue(unittest.TestCase):
             processing_key=self.module.REDIS_PROCESSING_KEY,
             max_workers=self.module.THREAD_NUMBER,
             worker=self.module.visit_rls_url,
-            deserialize=self.module.deserialize_payload,
             logger=self.module.logger,
             queue_label="RLS",
             identify_item=unittest.mock.ANY,
             abort_on_exception=unittest.mock.ANY,
             recover_processing_on_start=False,
-            keep_failed_in_processing=True,
         )
 
         abort_on_exception = mock_drain.call_args.kwargs["abort_on_exception"]

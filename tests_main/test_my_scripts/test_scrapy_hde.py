@@ -773,12 +773,10 @@ class TestRecoverAndDrainHdeQueue(unittest.TestCase):
             processing_key=self.module.REDIS_PROCESSING_KEY,
             max_workers=self.module.DEFAULT_MAX_WORKERS,
             worker=self.module.visit_hde_url,
-            deserialize=self.module.deserialize_payload,
             logger=self.module.logger,
             queue_label="HDE",
             identify_item=ANY,
             recover_processing_on_start=False,
-            keep_failed_in_processing=True,
         )
 
 

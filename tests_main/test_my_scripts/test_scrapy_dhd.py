@@ -49,7 +49,6 @@ def load_scrapy_dhd(config: dict | None = None):
         "thread_number": 3,
         "redis_pending_key": "dhd_pending",
         "redis_processing_key": "dhd_processing",
-        "redis_failed_key": "dhd_failed",
         "redis_seen_key": "dhd_seen",
     }
     helper_config = {
@@ -641,7 +640,7 @@ class TestScrapyDhd(unittest.TestCase):
             ],
         )
         pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
-        pending_ids = [self.module.deserialize_payload(payload)["id"] for payload in pending_payloads]
+        pending_ids = [self.module._scrapy_redis.deserialize_payload(payload)["id"] for payload in pending_payloads]
         self.assertEqual(pending_ids, ["101", "105", "103"])
         mock_update.assert_called_once_with("config/scrapy_dhd.json", "newest_id", 105)
 
@@ -666,8 +665,8 @@ class TestScrapyDhd(unittest.TestCase):
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 3)
 
-    def test_drain_dhd_queue_processes_pending_items_and_records_failures(self):
-        """消费队列时，成功任务应清理 processing，失败任务应进入 failed。"""
+    def test_drain_dhd_queue_processes_pending_items_and_keeps_failures_in_processing(self):
+        """消费队列时，成功任务应清理 processing，失败任务应保留在 processing。"""
         payload_success = self.module.serialize_payload(
             {"id": "101", "name": "A", "url": "https://example.com/topic/101"}
         )
@@ -688,10 +687,10 @@ class TestScrapyDhd(unittest.TestCase):
 
         self.assertEqual(mock_working.call_count, 2)
         self.assertEqual(self.redis_client.llen(self.module.REDIS_PENDING_KEY), 0)
-        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 0)
-        failed_payloads = self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)
-        self.assertEqual(len(failed_payloads), 1)
-        self.assertEqual(self.module.deserialize_payload(failed_payloads[0])["id"], "102")
+        self.assertEqual(self.redis_client.llen(self.module.REDIS_PROCESSING_KEY), 1)
+        processing_payloads = self.redis_client.lrange(self.module.REDIS_PROCESSING_KEY, 0, -1)
+        self.assertEqual(len(processing_payloads), 1)
+        self.assertEqual(self.module._scrapy_redis.deserialize_payload(processing_payloads[0])["id"], "102")
         self.assertIn("https://example.com/topic/102", mock_error.call_args[0][0])
 
     def test_drain_dhd_queue_logs_when_queue_is_empty(self):

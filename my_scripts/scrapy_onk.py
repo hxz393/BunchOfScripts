@@ -26,7 +26,6 @@ from my_module import (
 )
 from gd_downloader import download_gd_url, extract_drive_urls
 from scrapy_redis import (
-    deserialize_payload,
     drain_queue,
     get_redis_client,
     recover_processing_queue,
@@ -446,12 +445,10 @@ def drain_onk_queue(redis_client=None) -> None:
         processing_key=REDIS_PROCESSING_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_onk_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="ONK",
         identify_item=lambda info: info["url"],
         recover_processing_on_start=False,
-        keep_failed_in_processing=True,
     )
 
 

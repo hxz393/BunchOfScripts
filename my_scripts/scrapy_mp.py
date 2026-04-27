@@ -271,13 +271,11 @@ def drain_mp_queue(redis_client: redis.Redis | None = None) -> None:
         processing_key=REDIS_PROCESSING_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_mp_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="MP",
         identify_item=lambda info: info["link"],
         abort_on_exception=lambda exc: isinstance(exc, MpCloudflareError),
         recover_processing_on_start=False,
-        keep_failed_in_processing=True,
     )
 
 

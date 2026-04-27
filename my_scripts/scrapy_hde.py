@@ -219,12 +219,10 @@ def drain_hde_queue(redis_client: redis.Redis | None = None) -> None:
         processing_key=REDIS_PROCESSING_KEY,
         max_workers=DEFAULT_MAX_WORKERS,
         worker=visit_hde_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="HDE",
         identify_item=lambda info: info["url"],
         recover_processing_on_start=False,
-        keep_failed_in_processing=True,
     )
 
 

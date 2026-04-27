@@ -941,7 +941,7 @@ class TestSkRedisHelpers(unittest.TestCase):
         pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
         self.assertEqual(len(pending_payloads), 1)
         self.assertEqual(
-            self.module.deserialize_payload(pending_payloads[0])["url"],
+            self.module._scrapy_redis.deserialize_payload(pending_payloads[0])["url"],
             "https://example.com/torrent/details.php?name=movie&id=1",
         )
 
@@ -1115,7 +1115,7 @@ class TestEnqueueSkPosts(unittest.TestCase):
         self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "2")
         self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "24/04/2026")
         pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
-        pending_urls = [self.module.deserialize_payload(payload)["url"] for payload in pending_payloads]
+        pending_urls = [self.module._scrapy_redis.deserialize_payload(payload)["url"] for payload in pending_payloads]
         self.assertEqual(pending_urls, ["u1", "u2", "u3"])
 
     def test_enqueue_sk_posts_resumes_from_saved_page_and_keeps_existing_next_end_data(self):
@@ -1161,7 +1161,7 @@ class TestEnqueueSkPosts(unittest.TestCase):
         self.assertEqual(self.redis_client.get(self.module.REDIS_SCAN_PAGE_KEY), "20")
         self.assertEqual(self.redis_client.get(self.module.REDIS_NEXT_END_DATA_KEY), "14/10/2013")
         pending_payloads = self.redis_client.lrange(self.module.REDIS_PENDING_KEY, 0, -1)
-        pending_urls = [self.module.deserialize_payload(payload)["url"] for payload in pending_payloads]
+        pending_urls = [self.module._scrapy_redis.deserialize_payload(payload)["url"] for payload in pending_payloads]
         self.assertEqual(pending_urls, ["u9"])
 
     def test_enqueue_sk_posts_raises_after_too_many_empty_pages(self):
@@ -1213,7 +1213,7 @@ class TestDrainSkQueue(unittest.TestCase):
         failed_payloads = self.redis_client.lrange(self.module.REDIS_FAILED_KEY, 0, -1)
         self.assertEqual(len(failed_payloads), 1)
         self.assertEqual(
-            self.module.deserialize_payload(failed_payloads[0])["url"],
+            self.module._scrapy_redis.deserialize_payload(failed_payloads[0])["url"],
             "https://example.com/topic/102",
         )
         self.assertIn("https://example.com/topic/102", mock_error.call_args[0][0])

@@ -214,12 +214,10 @@ def drain_dlb_queue(redis_client: redis.Redis | None = None) -> None:
         processing_key=REDIS_PROCESSING_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_dlb_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="DLB",
         identify_item=lambda info: info["link"],
         recover_processing_on_start=False,
-        keep_failed_in_processing=True,
     )
 
 

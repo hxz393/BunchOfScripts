@@ -215,13 +215,11 @@ def drain_rls_queue(redis_client: redis.Redis | None = None) -> None:
         processing_key=REDIS_PROCESSING_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_rls_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="RLS",
         identify_item=lambda info: info["url"],
         abort_on_exception=lambda exc: isinstance(exc, RlsCloudflareError),
         recover_processing_on_start=False,
-        keep_failed_in_processing=True,
     )
 
 

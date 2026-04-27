@@ -22,6 +22,10 @@ from unittest.mock import Mock, call, patch
 import requests
 import requests.adapters
 import urllib3.util.retry
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_bds.py"
 
@@ -56,7 +60,7 @@ class FakeSession:
         raise AssertionError("session.get should be patched in tests")
 
 
-class FakeRedisPipeline:
+class _FallbackFakeRedisPipeline:
     """最小 Redis pipeline 实现。"""
 
     def __init__(self, client):
@@ -79,14 +83,14 @@ class FakeRedisPipeline:
         return results
 
 
-class FakeRedis:
-    """用于测试 BDS seen 集合逻辑的内存实现。"""
+class _FallbackFakeRedis:
+    """fakeredis 不可用时使用的最小内存 Redis 实现。"""
 
     def __init__(self):
         self.sets = {}
 
     def pipeline(self):
-        return FakeRedisPipeline(self)
+        return _FallbackFakeRedisPipeline(self)
 
     def sadd(self, key: str, value: str) -> int:
         members = self.sets.setdefault(key, set())
@@ -100,6 +104,18 @@ class FakeRedis:
 
     def smembers(self, key: str) -> set[str]:
         return self.sets.get(key, set()).copy()
+
+
+if fakeredis is None:
+    class FakeRedis(_FallbackFakeRedis):
+        """回退到手写内存 Redis。"""
+
+else:
+    class FakeRedis(fakeredis.FakeRedis):
+        """优先使用带真实命令语义的 fakeredis。"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(decode_responses=True)
 
 
 def fake_retry(*args, **kwargs):

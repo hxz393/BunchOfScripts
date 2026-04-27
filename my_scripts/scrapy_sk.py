@@ -24,7 +24,6 @@ from my_module import (
     write_list_to_file,
 )
 from scrapy_redis import (
-    deserialize_payload,
     drain_queue,
     get_redis_client,
     push_items_to_queue,
@@ -194,7 +193,6 @@ def drain_sk_queue(redis_client: redis.Redis | None = None) -> None:
         failed_key=REDIS_FAILED_KEY,
         max_workers=THREAD_NUMBER,
         worker=visit_sk_url,
-        deserialize=deserialize_payload,
         logger=logger,
         queue_label="SK",
         identify_item=lambda info: info["url"],

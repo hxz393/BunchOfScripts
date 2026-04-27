@@ -16,6 +16,10 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import requests
+try:
+    import fakeredis
+except ImportError:  # pragma: no cover - 由依赖安装状态决定
+    fakeredis = None
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_mp.py"
 REDIS_HELPER_PATH = Path(__file__).resolve().parents[2] / "my_scripts" / "scrapy_redis.py"
@@ -113,7 +117,7 @@ def load_scrapy_mp(config: dict | None = None):
     return module, temp_dir
 
 
-class FakeRedisPipeline:
+class _FallbackFakeRedisPipeline:
     """最小 Redis pipeline 实现。"""
 
     def __init__(self, client):
@@ -136,8 +140,8 @@ class FakeRedisPipeline:
         return results
 
 
-class FakeRedis:
-    """用于测试 MP Redis 队列流程的内存实现。"""
+class _FallbackFakeRedis:
+    """fakeredis 不可用时使用的最小内存 Redis 实现。"""
 
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -147,7 +151,7 @@ class FakeRedis:
         self.values = {}
 
     def pipeline(self):
-        return FakeRedisPipeline(self)
+        return _FallbackFakeRedisPipeline(self)
 
     def sadd(self, key: str, value: str) -> int:
         members = self.sets.setdefault(key, set())
@@ -210,6 +214,20 @@ class FakeRedis:
                 del self.sets[key]
                 deleted += 1
         return deleted
+
+
+if fakeredis is None:
+    class FakeRedis(_FallbackFakeRedis):
+        """回退到手写内存 Redis。"""
+
+else:
+    class FakeRedis(fakeredis.FakeRedis):
+        """优先使用带真实命令语义的 fakeredis。"""
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            super().__init__(decode_responses=True)
 
 
 def build_archive_article(title: str = "Movie Title", link: str = "https://example.com/post", span_text: str = "Jul. 20, 1990") -> str:
@@ -1211,7 +1229,7 @@ class TestMpRedisFlow(unittest.TestCase):
 
         mock_drain_queue.assert_called_once()
         self.assertFalse(mock_drain_queue.call_args.kwargs["recover_processing_on_start"])
-        self.assertTrue(mock_drain_queue.call_args.kwargs["keep_failed_in_processing"])
+        self.assertNotIn("failed_key", mock_drain_queue.call_args.kwargs)
 
     def test_drain_mp_queue_aborts_and_requeues_when_cookie_expires(self):
         """详情阶段若命中 Cloudflare 验证页，应终止本轮并把任务放回 pending。"""

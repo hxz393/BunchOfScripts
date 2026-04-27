@@ -136,8 +136,6 @@ def fake_drain_queue(
     pending_key,
     processing_key,
     worker,
-    deserialize,
-    keep_failed_in_processing=False,
     failed_key=None,
     **kwargs,
 ):
@@ -145,15 +143,14 @@ def fake_drain_queue(
         payload = redis_client.rpoplpush(pending_key, processing_key)
         if not payload:
             return
-        info = deserialize(payload)
+        info = json.loads(payload)
         try:
             worker(info)
             redis_client.lrem(processing_key, 1, payload)
         except Exception:
-            if not keep_failed_in_processing:
+            if failed_key is not None:
                 redis_client.lrem(processing_key, 1, payload)
-                if failed_key is not None:
-                    redis_client.rpush(failed_key, payload)
+                redis_client.rpush(failed_key, payload)
 
 
 def load_scrapy_onk(config: dict | None = None):
@@ -187,7 +184,7 @@ def load_scrapy_onk(config: dict | None = None):
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = fake_retry
 
-    fake_gd_downloader = types.ModuleType("scrapy_gd_downloader")
+    fake_gd_downloader = types.ModuleType("gd_downloader")
     fake_gd_downloader.extract_drive_urls = fake_extract_drive_urls
     fake_gd_downloader.download_gd_url = lambda _url: (_ for _ in ()).throw(
         AssertionError("download_gd_url should be patched in tests")
@@ -213,7 +210,7 @@ def load_scrapy_onk(config: dict | None = None):
         {
             "my_module": fake_my_module,
             "retrying": fake_retrying,
-            "scrapy_gd_downloader": fake_gd_downloader,
+            "gd_downloader": fake_gd_downloader,
             "scrapy_redis": fake_redis_module,
             "sort_movie_ops": fake_sort_movie_ops,
         },
@@ -493,7 +490,7 @@ class TestQueueWrappers(unittest.TestCase):
         with patch.object(self.module, "drain_queue") as mock_drain:
             self.module.drain_onk_queue(redis_client=self.redis_client)
         self.assertEqual(mock_drain.call_args.kwargs["pending_key"], self.module.REDIS_PENDING_KEY)
-        self.assertTrue(mock_drain.call_args.kwargs["keep_failed_in_processing"])
+        self.assertNotIn("failed_key", mock_drain.call_args.kwargs)
 
 
 class TestVisitAndDownload(unittest.TestCase):
