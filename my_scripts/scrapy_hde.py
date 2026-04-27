@@ -37,7 +37,7 @@ from urllib3.util.retry import Retry
 
 from my_module import normalize_release_title_for_filename, read_json_to_dict, sanitize_filename, update_json_config, write_list_to_file
 from scrapy_redis import deserialize_payload, drain_queue, get_redis_client, push_items_to_queue, serialize_payload
-from sort_movie_ops import extract_imdb_id_from_links as extract_shared_imdb_id_from_links
+from sort_movie_ops import extract_imdb_id_from_links
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,7 @@ def visit_hde_url(result_item: dict):
     detail_session = build_hde_session()
     response = get_hde_response(url, session=detail_session)
     soup = BeautifulSoup(response.text, 'lxml')
-    result_item["imdb"] = extract_imdb_id_from_soup(soup)
+    result_item["imdb"] = extract_imdb_id_from_links(a["href"] for a in soup.find_all("a", href=True)) or ""
     soup = unlock_hde_protected_soup(url, soup, detail_session)
     content = build_hde_output_content(url, result_item["imdb"], soup)
     path = os.path.join(OUTPUT_DIR, build_hde_output_filename(result_item))
@@ -449,18 +449,6 @@ def dedupe_hde_links(links: Iterable[str]) -> List[str]:
         seen.add(link)
         deduped.append(link)
     return deduped
-
-
-def extract_imdb_id_from_soup(soup: BeautifulSoup) -> str:
-    """从详情页所有链接中提取 IMDb 编号。"""
-    return extract_imdb_id_from_links(a["href"] for a in soup.find_all("a", href=True))
-
-
-def extract_imdb_id_from_links(hrefs: Iterable[str]) -> str:
-    """
-    优先从标准 IMDb 标题页 URL 提取，其次回退到宽松 ``tt`` 编号匹配。
-    """
-    return extract_shared_imdb_id_from_links(hrefs) or ""
 
 
 def build_hde_output_filename(result_item: Dict[str, str]) -> str:

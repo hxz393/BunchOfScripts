@@ -12,7 +12,7 @@ import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict
 
 import requests
 from lxml import etree
@@ -20,7 +20,7 @@ from requests.adapters import HTTPAdapter
 from retrying import retry
 
 from my_module import read_json_to_dict, sanitize_filename, write_dict_to_json, read_file_to_list
-from sort_movie_ops import extract_imdb_id
+from sort_movie_ops import extract_imdb_id, select_best_yts_magnet
 from sort_movie_mysql import query_imdb_local_director
 from sort_movie_request import get_tmdb_movie_details
 
@@ -265,73 +265,6 @@ def get_best_quality(result: Dict) -> str:
     return best_quality
 
 
-def filter_torrents(torrents: List[Dict[str, Any]], key: str, priority_list: List[str]) -> List[Dict[str, Any]]:
-    """
-    按优先级过滤种子；如果出现意外字段值则抛错。
-
-    :param torrents: 种子列表
-    :param key: 过滤字段
-    :param priority_list: 优先级列表，按顺序取第一个命中的值
-    :return: 过滤后的种子列表
-    """
-    unique_values = {torrent[key] for torrent in torrents}
-    unexpected_values = unique_values - set(priority_list)
-    if unexpected_values:
-        raise ValueError(f"Unexpected value for {key}: {unexpected_values}")
-
-    for value in priority_list:
-        filtered = [torrent for torrent in torrents if torrent[key] == value]
-        if filtered:
-            return filtered
-    return torrents
-
-
-def select_best_yts_magnet(json_data: Dict[str, Any], magnet_path: str) -> str:
-    """
-    从 YTS JSON 中选择最佳种子并生成磁链。
-
-    选择顺序依次为：
-    1. 画质：2160p > 1080p > 720p > 480p > 3D
-    2. 视频编码：x265 > x264
-    3. 位深：10 > 8
-    4. 来源：bluray > web
-    5. 如果仍有多个候选，则取 ``size_bytes`` 最大者
-
-    :param json_data: 单个 YTS 电影详情 JSON
-    :param magnet_path: 磁链前缀
-    :return: 最佳种子的磁链
-    """
-    torrents = json_data["data"]["movie"]["torrents"]
-    torrents = filter_torrents(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "video_codec", ["x265", "x264"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "bit_depth", ["10", "8"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents(torrents, "type", ["bluray", "web"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
-    return f"{magnet_path}{best_torrent['hash']}"
-
-
-def extract_imdb_id_from_filename(file_name: str) -> str | None:
-    """
-    从文件名中提取 IMDb 标识。
-
-    :param file_name: 文件名
-    :return: IMDb 标识，例如 tt1234567；不存在时返回 None
-    """
-    return extract_imdb_id(file_name)
-
-
 def search_tmdb_director(movie_id: str) -> str:
     """
     使用 IMDb 标识查询 TMDb，返回第一个导演名。
@@ -406,7 +339,7 @@ def process_missing_director_file(file_path: Path, target_root: Path) -> None:
     file_name = file_path.name
     logger.info(f"处理：{file_name}")
 
-    imdb = extract_imdb_id_from_filename(file_name)
+    imdb = extract_imdb_id(file_name)
     if not imdb:
         logger.error(f"没有找到 tt 编号：{file_name}")
         return

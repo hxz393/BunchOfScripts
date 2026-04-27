@@ -322,19 +322,13 @@ def parse_rls_response(response: requests.Response) -> list:
     return results
 
 
-def extract_rls_imdb_id(soup: BeautifulSoup) -> str:
-    """先匹配标准 IMDb 链接，找不到再宽松回退到任意 tt 编号。"""
-    href_list = [a['href'] for a in soup.find_all('a', href=True)]
-    return extract_imdb_id_from_links(href_list) or ""
-
-
 def visit_rls_url(result_item: dict):
     """访问详情页"""
     url = result_item["url"]
     logger.info(f"访问 {url}")
     response = get_rls_response(url)
     soup = BeautifulSoup(response.text, 'lxml')
-    imdb_id = extract_rls_imdb_id(soup)
+    imdb_id = extract_imdb_id_from_links(a['href'] for a in soup.find_all('a', href=True)) or ""
 
     result_item["imdb"] = imdb_id
     file_name = normalize_release_title_for_filename(result_item['title'])
