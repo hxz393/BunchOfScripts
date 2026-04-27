@@ -30,7 +30,7 @@ from my_module import read_json_to_dict
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
-CONFIG = read_json_to_dict('config/sort_movie.json')  # 配置文件
+CONFIG = read_json_to_dict('config/sort_movie_request.json')  # 配置文件
 
 TMDB_URL = CONFIG['tmdb_url']  # tmdb api 地址
 TMDB_AUTH = CONFIG['tmdb_auth']  # tmdb api auth
