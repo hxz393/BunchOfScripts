@@ -3,7 +3,7 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import logging
 import os
