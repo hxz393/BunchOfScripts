@@ -19,7 +19,7 @@ from sort_movie_ops import parse_movie_id
 
 logger = logging.getLogger(__name__)
 
-CONFIG = read_json_to_dict('config/sort_movie.json')  # 配置文件
+CONFIG = read_json_to_dict('config/sort_movie_mysql.json')  # 配置文件
 
 MYSQL_HOST = CONFIG['mysql_host']  # mysql 主机地址
 MYSQL_USER = CONFIG['mysql_user']  # mysql 用户名
