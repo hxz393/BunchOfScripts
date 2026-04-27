@@ -3,7 +3,7 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import base64
 import json
@@ -11,18 +11,19 @@ import logging
 import os.path
 import re
 import sys
+import time
 import urllib.parse
-from typing import Optional
 from collections import defaultdict
+from typing import Optional
 
 import requests
 import xmltodict as xmltodict
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from retrying import retry
 from tmdbv3api import TMDb, Movie, TV, Person
 from tmdbv3api.as_obj import AsObj
 from tmdbv3api.exceptions import TMDbException
-from playwright.sync_api import sync_playwright
 
 from my_module import read_json_to_dict
 
@@ -61,9 +62,6 @@ KPK_HEADER = CONFIG['kpk_header']  # 科普库请求头
 JACKETT_SEARCH_URL = CONFIG['jackett_search_url']  # jackett 搜索地址
 JACKETT_API_KEY = CONFIG['jackett_api_key']  # jackett api 密钥
 
-
-import time
-
 # 缓存变量
 _last_cookie_time = 0
 _cached_cookie = None
@@ -83,9 +81,12 @@ def get_tmdb_search_response(search_id: str) -> Optional[dict]:
     logger.info(f"搜索 TMDB：{search_id}")
     url = f"{TMDB_URL}/find/{search_id}?external_source=imdb_id"
     r = requests.get(url, timeout=10, verify=False, headers=TMDB_HEADERS)
+    if r.status_code == 403:
+        logger.error("TMDB 拒绝访问：状态码 %s", r.status_code)
+        sys.exit(f"TMDB 拒绝访问 {r.status_code}：{url}")
     if r.status_code != 200:
-        logger.error("请求失败:", r.status_code, r.text)
-        return None
+        logger.error("TMDB 请求失败：%s %s", r.status_code, r.text)
+        raise Exception(f"TMDB 请求失败：{r.status_code}")
 
     return r.json()
 
@@ -104,7 +105,7 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
         movie = TV() if tv else Movie()
         result = dict(movie.details(movie_id)) | dict(movie.alternative_titles(movie_id))
         if not result:
-            logger.info("获取 {movie_id} 电影信息失败，重试")
+            logger.info(f"获取 {movie_id} 电影信息失败，重试")
             raise Exception("从 TMDB 获取电影信息失败")
         return result
     except TMDbException as e:
@@ -113,9 +114,9 @@ def get_tmdb_movie_details(movie_id: str, tv: bool = False) -> Optional[dict]:
         if "could not be found" in error_msg.lower():
             logger.warning(f"TMDB 没有记录 {movie_id}")
             return None
-        # 其他 TMDB 错误也返回 None
+        # 其他 TMDB 错误交给 retry 处理
         logger.warning(f"TMDB 查询失败 {movie_id}: {error_msg}")
-        return None
+        raise
     except Exception as e:
         raise Exception(f"查询 TMDB 失败：{e}")
 
@@ -145,13 +146,13 @@ def get_tmdb_director_movies(director_id: str) -> AsObj:
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=5330, wait_random_max=15800)
-def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
+def get_tmdb_movie_cover(poster_path: str, target_path: str) -> None:
     """
     从 TMDB 获取电影海报地址
 
     :param poster_path: 电影海报地址，半截。例如：/eqMlCJo54tyoEGI9UMxp70Ys7kU.jpg
     :param target_path: 储存路径
-    :return: 电影海报地址
+    :return: 无
     """
     if not poster_path:
         logger.warning("没封面图地址，请手动下载")
@@ -174,7 +175,7 @@ def get_tmdb_movie_cover(poster_path: str, target_path: str) -> Optional[str]:
 @retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
 def get_imdb_cookie(force=False, hl=False):
     """用浏览器访问 IMDB 刷新 Cookie"""
-    global _last_cookie_time, _cached_cookie, _last_cookie_time
+    global _last_cookie_time, _cached_cookie
     now = time.time()
 
     if force:
@@ -279,7 +280,7 @@ def get_imdb_movie_details(movie_id) -> Optional[dict]:
             data = json.loads(json_text)
             return data
         except json.JSONDecodeError as e:
-            logger.error("IMDB JSON 解析失败:", e)
+            logger.error("IMDB JSON 解析失败: %s", e)
             return
     else:
         logger.error("IMDB 页面未找到 id 为 __NEXT_DATA__ 的 script 标签")
@@ -302,6 +303,8 @@ def get_csfd_response(url: str) -> Optional[requests.Response]:
             allow_redirects=True,
             headers=CSFD_HEADER,
         )
+        if response.status_code == 403:
+            sys.exit(f"CSFD 拒绝访问，状态码：{response.status_code}，退出程序")
         # 如果不是 2xx，会抛出 requests.exceptions.HTTPError -> 触发重试
         response.raise_for_status()
         return response
@@ -444,7 +447,7 @@ def get_douban_search_details(r: requests.Response) -> Optional[str]:
 
 
 @retry(stop_max_attempt_number=50, wait_random_min=300, wait_random_max=6000)
-def get_jeckett_search_response(search_id: str) -> Optional[list]:
+def get_jackett_search_response(search_id: str) -> Optional[list]:
     """
     从 kpk 搜索 imdb 编号，返回响应
 
@@ -453,6 +456,8 @@ def get_jeckett_search_response(search_id: str) -> Optional[list]:
     """
     url = f"{JACKETT_SEARCH_URL}/api/v2.0/indexers/all/results/torznab/api?apikey={JACKETT_API_KEY}&q={search_id}"
     response = requests.get(url, timeout=30, verify=False, allow_redirects=True)
+    if response.status_code == 403:
+        sys.exit(f"Jackett 拒绝访问，状态码：{response.status_code}，退出程序")
     if not response:
         logger.info(f"Jackett 没有返回数据")
         raise Exception(f"Jackett 访问网络失败！")
@@ -491,6 +496,10 @@ def get_kpk_search_response(search_id: str) -> Optional[list]:
         "callback": "jQuery112305981342517550043_1742472456793",
     }
     response = requests.get(url, timeout=10, verify=False, headers=KPK_HEADER, params=params)
+    if response.status_code == 403:
+        sys.exit(f"科普库拒绝访问，状态码：{response.status_code}，退出程序")
+    if response.status_code != 200:
+        raise Exception(f"科普库访问失败！状态码：{response.status_code}")
     # 去掉 JSONP 回调函数的包装
     response.encoding = 'utf-8'
     try:
@@ -524,6 +533,10 @@ def get_kpk_page_details(page_id: str) -> Optional[dict]:
     """
     url = f"{KPK_PAGE_URL}/{page_id}"
     response = requests.get(url, timeout=15, verify=False, headers=KPK_HEADER)
+    if response.status_code == 403:
+        sys.exit(f"科普库拒绝访问，状态码：{response.status_code}，退出程序")
+    if response.status_code != 200:
+        raise Exception(f"科普库访问失败！状态码：{response.status_code}")
 
     # 创建一个默认字典来存放结果
     result_dict = defaultdict(list)
