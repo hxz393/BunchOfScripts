@@ -139,7 +139,7 @@ def load_sort_movie_auto():
     fake_sort_movie_ops.create_aka_movie = lambda _new_path, _movie_dict: None
     fake_sort_movie_ops.get_video_info = lambda _path: None
     fake_sort_movie_ops.check_movie = lambda _path: None
-    fake_sort_movie_ops.get_movie_id = lambda movie_dict: movie_dict.get("imdb") or "noid"
+    fake_sort_movie_ops.get_movie_id = lambda movie_dict: movie_dict.get("imdb")
     fake_sort_movie_ops.fix_douban_name = lambda text: text.strip()
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
@@ -880,6 +880,27 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
         self.assertTrue(movie_dir.exists())
         mock_transaction.assert_not_called()
 
+    def test_build_movie_folder_name_requires_movie_id(self):
+        """生成规范目录名时必须有三站任一编号，不再允许 ``noid``。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+        movie_dict = {
+            "imdb": None,
+            "tmdb": None,
+            "douban": None,
+            "original_title": "Movie",
+            "chinese_title": "",
+            "year": 2024,
+            "source": "BluRay",
+            "resolution": "1920x1080",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+        }
+
+        result = self.module.build_movie_folder_name(str(movie_dir), movie_dict)
+
+        self.assertIsNone(result)
+
     def test_ensure_movie_screenshots_warns_for_multiple_videos(self):
         """多视频目录应提前 warning，但不阻塞截图检查。"""
         movie_dir = Path(self.temp_dir.name) / "Movie Folder"
@@ -936,6 +957,51 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             result = self.module.check_movie(str(movie_dir))
 
         self.assertIsNone(result)
+
+    def test_check_movie_rejects_noid_directory_name(self):
+        """整理完成后的目录名必须包含明确站点编号。"""
+        movie_dir = Path(self.temp_dir.name) / "2024 - Movie{noid}[BluRay][1920x1080][h264@8000kbps]"
+        movie_dir.mkdir()
+        (movie_dir / "movie_info.json5").write_text("{}", encoding="utf-8")
+        movie_info = {
+            "director": "Director Name",
+            "directors": ["Director Name"],
+            "imdb": "",
+            "tmdb": "",
+            "douban": "",
+            "quality": "1080p",
+            "source": "BluRay",
+            "duration": 120,
+            "runtime_imdb": 120,
+            "runtime_tmdb": 120,
+        }
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info):
+            result = self.module.check_movie(str(movie_dir))
+
+        self.assertIn("目录名格式错误", result)
+
+    def test_dir_name_regex_accepts_only_supported_movie_ids(self):
+        """目录名校验只接受 IMDb、TMDB 和 Douban 的规范编号形态。"""
+        valid_names = [
+            "1925 - Old Movie{tt0000265}[WEB-DL][640x480][avc@1000kbps]",
+            "2024 - Movie{tmdb12}[WEB-DL][1920x1080][avc@8000kbps]",
+            "2024 - Series{tmdb12345tv}[WEB-DL][1920x1080][avc@8000kbps]",
+            "2024 - Movie{db123456}[WEB-DL][1920x1080][avc@8000kbps]",
+        ]
+        invalid_names = [
+            "2024 - Movie{noid}[WEB-DL][1920x1080][avc@8000kbps]",
+            "2024 - Movie{tt123tv}[WEB-DL][1920x1080][avc@8000kbps]",
+            "2024 - Movie{tmdb1}[WEB-DL][1920x1080][avc@8000kbps]",
+            "2024 - Movie{db123}[WEB-DL][1920x1080][avc@8000kbps]",
+        ]
+
+        for name in valid_names:
+            with self.subTest(name=name):
+                self.assertIsNotNone(self.module.RE_DIR_NAME.match(name))
+        for name in invalid_names:
+            with self.subTest(name=name):
+                self.assertIsNone(self.module.RE_DIR_NAME.match(name))
 
     def test_maintain_checked_movie_warns_but_does_not_fail_when_local_torrents_are_moved(self):
         """本地库存种子命中时，只应 warning，不应阻塞入库校验。"""

@@ -55,7 +55,7 @@ RE_DIR_NAME = re.compile(
     r"(?P<year>\d+)\s*-\s*"
     r"(?P<title>[^{]+)"
     r"(?:\((?P<chinese>[^)]+)\))?"
-    r"\{(?P<imdb>(tt\d+|tmdb\d+|db\d+|noid)\d*(tv)?)}"
+    r"\{(?P<movie_id>tt\d{7,}|tmdb\d{2,}(?:tv)?|db\d{6,})}"
     r"\[(?P<source>[^]]+)]"
     r"\[(?P<resolution>[^]]+)]"
     r"\[(?P<encoding>[^]@]+)@(?P<bitrate>[^]]+)]"
@@ -453,18 +453,18 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     return movie_dict
 
 
-def get_movie_id(movie_dict: dict) -> str:
+def get_movie_id(movie_dict: dict) -> Optional[str]:
     """
     按 ``imdb -> tmdb -> douban`` 的优先级返回当前影片编号。
 
     :param movie_dict: 完整电影信息字典
-    :return: 用于目录名和封面文件名的编号字符串
+    :return: 用于目录名和封面文件名的编号字符串；缺少编号时返回 ``None``
     """
     for key, prefix in (("imdb", ""), ("tmdb", "tmdb"), ("douban", "db")):
         value = str(movie_dict.get(key) or "").strip()
         if value:
             return f"{prefix}{value}"
-    return "noid"
+    return None
 
 
 def build_movie_folder_name(path: str, movie_dict: dict) -> Optional[str]:
@@ -489,6 +489,9 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> Optional[str]:
 
     chinese_title = "" if chinese_title == original_title else chinese_title
     movie_id = get_movie_id(movie_dict)
+    if not movie_id:
+        logger.error(f"缺少可用电影编号：{path}")
+        return None
     title_part = f"{year} - {original_title}"
     if chinese_title:
         title_part += f"({chinese_title})"
@@ -781,7 +784,11 @@ def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> 
 
         logger.info(f"抓取结果：{movie_dict}")
 
-        image_path = os.path.join(current_path, f"{get_movie_id(movie_dict)}.jpg")
+        movie_id = get_movie_id(movie_dict)
+        if not movie_id:
+            raise ValueError(f"缺少可用电影编号：{current_path}")
+
+        image_path = os.path.join(current_path, f"{movie_id}.jpg")
         if not os.path.exists(image_path):
             get_tmdb_movie_cover(movie_dict["poster_path"], image_path)
             created_file_names.update(get_created_file_names(current_path, original_file_names))
