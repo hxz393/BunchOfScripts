@@ -82,7 +82,7 @@ RE_JSON_FILE_NAME = re.compile(
     re.IGNORECASE
 )
 IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
-IMDB_ID_PATTERN = re.compile(r"(tt\d+)", re.IGNORECASE)
+IMDB_ID_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
 IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
 
 # 文件多，先行获取列表
@@ -325,27 +325,15 @@ def remove_duplicates_ignore_case(items: Iterable[Any]) -> list[Any]:
     return result
 
 
-def extract_imdb_ids(text: str) -> list[str]:
+def extract_imdb_id(text: str | None) -> Optional[str]:
     """
-    从文本中提取全部 IMDb 编号，并按首次出现顺序去重。
-
-    :param text: 输入文本
-    :return: IMDb 编号列表，例如 ``["tt1234567", "tt7654321"]``
-    """
-    if not text:
-        return []
-
-    return list(dict.fromkeys(match.lower() for match in IMDB_ID_TOKEN_PATTERN.findall(text)))
-
-
-def extract_imdb_id(text: str) -> Optional[str]:
-    """
-    从文本中提取单个 IMDb 编号。
+    从文本中提取第一个 IMDb title 编号。
 
     优先匹配标准 IMDb 标题页链接；找不到时回退到宽松的 ``tt`` 编号匹配。
+    返回值统一转换为小写。若文本中包含多个编号，只返回第一个匹配结果。
 
-    :param text: 输入文本
-    :return: IMDb 编号；不存在时返回 ``None``
+    :param text: 输入文本，例如文件名、目录名、URL 或页面正文
+    :return: IMDb title 编号，例如 ``tt1234567``；不存在时返回 ``None``
     """
     if not text:
         return None
