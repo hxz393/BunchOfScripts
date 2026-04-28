@@ -26,7 +26,7 @@ from sort_movie_ops import (
     extract_imdb_id,
     fix_douban_name,
     generate_video_contact,
-    generate_video_contact_mtm,
+    generate_video_contact_mtn,
     get_existing_id_files,
     get_video_info,
     remove_duplicates_ignore_case,
@@ -820,7 +820,7 @@ def ensure_movie_screenshots(path: str) -> Optional[str]:
             except Exception as e:
                 logger.warning(f"{video_path} 生成缩略图失败: {e}")
         if not os.path.exists(screen_path):
-            generate_video_contact_mtm(video_path)
+            generate_video_contact_mtn(video_path)
         if not os.path.exists(screen_path):
             return f"生成视频截图失败：{p.name}"
     return None
