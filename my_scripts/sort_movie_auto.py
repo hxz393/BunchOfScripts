@@ -269,6 +269,52 @@ def apply_auto_resolved_marker(path: str, existing_ids: dict[str, Optional[str]]
     return None
 
 
+def prepare_manual_id_folder(path: str, folder_name_ids: dict[str, Optional[str]], existing_ids: dict[str, Optional[str]]) -> Optional[PrepareFolderError]:
+    """
+    处理目录名只有 TMDB/Douban 编号的手工确认目录。
+
+    :param path: 单个电影目录路径
+    :param folder_name_ids: 从目录名提取出的编号
+    :param existing_ids: 当前目录已有的编号空文件结果
+    :return: 失败时返回 ``(code, message)``，成功时返回 ``None``
+    """
+    if folder_name_ids["tmdb"] or folder_name_ids["douban"]:
+        if not existing_ids["tmdb"] and not existing_ids["douban"]:
+            return build_prepare_folder_error("missing_verified_manual_marker", f"目录名带有 TMDB/DOUBAN 编号，但缺少已确认的 .tmdb/.douban 空文件 {path}")
+        return None
+    return build_prepare_folder_error("missing_supported_folder_id", f"目录名缺少受支持的电影编号 {path}")
+
+
+def prepare_imdb_id_folder(path: str, imdb_id: str, existing_ids: dict[str, Optional[str]]) -> Optional[PrepareFolderError]:
+    """
+    处理目录名带 IMDb 编号的目录，并自动补齐可查询到的 TMDB/Douban 编号空文件。
+
+    :param path: 单个电影目录路径
+    :param imdb_id: 目录名中的 IMDb 编号
+    :param existing_ids: 当前目录已有的编号空文件结果
+    :return: 失败时返回 ``(code, message)``，成功时返回 ``None``
+    """
+    if not query_imdb_title_metadata(imdb_id):
+        remove_id_marker(path, imdb_id, "imdb")
+        return build_prepare_folder_error("obsolete_imdb_id", f"IMDb 本地库没有找到影片信息，tt 编号过旧需要更新 {imdb_id} {path}")
+
+    touch_id_marker(path, imdb_id, "imdb")
+
+    # 查询 TMDB，补充编号空文件
+    r = get_tmdb_id(imdb_id)
+    if r["result"]:
+        logger.error(r["result"])
+    error = apply_auto_resolved_marker(path, existing_ids, "tmdb", r["tmdb_id"], "TMDB")
+    if error:
+        return error
+
+    # 查询 Douban，补充编号空文件
+    r = get_douban_id(imdb_id)
+    if r["result"]:
+        logger.error(r["result"])
+    return apply_auto_resolved_marker(path, existing_ids, "douban", r["douban_id"], "DOUBAN")
+
+
 def prepare_movie_folder_markers(path: str) -> Optional[PrepareFolderError]:
     """
     为单个电影目录补齐编号空文件，并决定是否允许进入抓取步骤。
@@ -291,37 +337,8 @@ def prepare_movie_folder_markers(path: str) -> Optional[PrepareFolderError]:
 
     imdb_id = folder_name_ids["imdb"]
     if not imdb_id:
-        if folder_name_ids["tmdb"] or folder_name_ids["douban"]:
-            if not existing_ids["tmdb"] and not existing_ids["douban"]:
-                return build_prepare_folder_error("missing_verified_manual_marker", f"目录名带有 TMDB/DOUBAN 编号，但缺少已确认的 .tmdb/.douban 空文件 {path}")
-            return None
-        return build_prepare_folder_error("missing_supported_folder_id", f"目录名缺少受支持的电影编号 {path}")
-
-    if not query_imdb_title_metadata(imdb_id):
-        remove_id_marker(path, imdb_id, "imdb")
-        return build_prepare_folder_error("obsolete_imdb_id", f"IMDb 本地库没有找到影片信息，tt 编号过旧需要更新 {imdb_id} {path}")
-
-    touch_id_marker(path, imdb_id, "imdb")
-
-    # 查询 TMDB，补充编号空文件
-    r = get_tmdb_id(imdb_id)
-    if r["result"]:
-        logger.error(r["result"])
-    tmdb_id = r["tmdb_id"]
-    error = apply_auto_resolved_marker(path, existing_ids, "tmdb", tmdb_id, "TMDB")
-    if error:
-        return error
-
-    # 查询 Douban，补充编号空文件
-    r = get_douban_id(imdb_id)
-    if r["result"]:
-        logger.error(r["result"])
-    douban_id = r["douban_id"]
-    error = apply_auto_resolved_marker(path, existing_ids, "douban", douban_id, "DOUBAN")
-    if error:
-        return error
-
-    return None
+        return prepare_manual_id_folder(path, folder_name_ids, existing_ids)
+    return prepare_imdb_id_folder(path, imdb_id, existing_ids)
 
 
 def build_empty_movie_info() -> dict:
@@ -450,13 +467,13 @@ def get_movie_id(movie_dict: dict) -> str:
     return "noid"
 
 
-def build_movie_folder_name(path: str, movie_dict: dict) -> str:
+def build_movie_folder_name(path: str, movie_dict: dict) -> Optional[str]:
     """
     根据当前整理规则生成电影目录名。
 
     :param path: 原电影目录路径
     :param movie_dict: 完整电影信息字典
-    :return: 未经过文件名净化的目标目录名
+    :return: 未经过文件名净化的目标目录名；缺少原始片名时返回 ``None``
     """
     chinese_title = str(movie_dict.get("chinese_title") or "").strip()
     original_title = str(movie_dict.get("original_title") or "").strip()
@@ -468,14 +485,14 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> str:
 
     if not original_title:
         logger.error(f"没有获取到信息：{path}")
-        base_name = os.path.basename(os.path.normpath(path))
-    else:
-        chinese_title = "" if chinese_title == original_title else chinese_title
-        movie_id = get_movie_id(movie_dict)
-        title_part = f"{year} - {original_title}"
-        if chinese_title:
-            title_part += f"({chinese_title})"
-        base_name = f"{title_part}{{{movie_id}}}"
+        return None
+
+    chinese_title = "" if chinese_title == original_title else chinese_title
+    movie_id = get_movie_id(movie_dict)
+    title_part = f"{year} - {original_title}"
+    if chinese_title:
+        title_part += f"({chinese_title})"
+    base_name = f"{title_part}{{{movie_id}}}"
 
     return f"{base_name}[{source}][{resolution}][{codec}@{bitrate}]"
 
@@ -840,7 +857,10 @@ def sort_movie(path: str) -> SortMovieResult:
         logger.error(e)
         return False, path
     # 根据整理规则生成新目录名
-    new_path = os.path.join(os.path.dirname(path), sanitize_filename(build_movie_folder_name(path, movie_dict)))
+    folder_name = build_movie_folder_name(path, movie_dict)
+    if not folder_name:
+        return False, path
+    new_path = os.path.join(os.path.dirname(path), sanitize_filename(folder_name))
     return apply_sort_movie_transaction(path, new_path, movie_dict)
 
 
