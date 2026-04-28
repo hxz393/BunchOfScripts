@@ -25,16 +25,14 @@ from sort_movie_ops import (
     delete_trash_files,
     extract_imdb_id,
     fix_douban_name,
-    generate_video_contact,
-    generate_video_contact_mtn,
     get_existing_id_files,
-    get_video_info,
     remove_duplicates_ignore_case,
     remove_id_marker,
     scan_ids,
     select_best_yts_magnet,
     touch_id_marker,
 )
+from video_tools import VIDEO_EXTENSIONS, generate_video_contact, generate_video_contact_mtn, get_video_info
 from sort_movie_request import (
     get_douban_response,
     get_douban_search_details,
@@ -45,7 +43,6 @@ from sort_movie_request import (
 )
 
 logger = logging.getLogger(__name__)
-VIDEO_EXTENSIONS = OPS_CONFIG["video_extensions"]
 MIRROR_PATH = OPS_CONFIG["mirror_path"]
 MAGNET_PATH = OPS_CONFIG["magnet_path"]
 DOWNLOAD_RECORD_SUFFIXES = {".json", ".log"}

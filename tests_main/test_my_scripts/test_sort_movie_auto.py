@@ -38,21 +38,6 @@ def fake_extract_imdb_id(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-def fake_safe_get(data: object, keys: list[object], default=None):
-    """最小可用的嵌套字典读取辅助函数。"""
-    current = data
-    for key in keys:
-        if isinstance(current, dict):
-            current = current.get(key, default)
-        elif isinstance(current, list) and isinstance(key, int) and 0 <= key < len(current):
-            current = current[key]
-        else:
-            return default
-        if current is None:
-            return default
-    return current
-
-
 def fake_build_unique_path(target_path: str | os.PathLike) -> Path:
     """测试环境里的最小可用不重名路径生成。"""
     path = Path(target_path)
@@ -125,22 +110,24 @@ def load_sort_movie_auto():
     fake_sort_movie_ops.check_local_torrent = lambda _imdb: {"move_counts": 0, "move_files": []}
     fake_sort_movie_ops.delete_trash_files = lambda _path: None
     fake_sort_movie_ops.extract_imdb_id = fake_extract_imdb_id
-    fake_sort_movie_ops.generate_video_contact = lambda _video_path: None
-    fake_sort_movie_ops.generate_video_contact_mtm = lambda _video_path: None
     fake_sort_movie_ops.get_existing_id_files = fake_get_existing_id_files
     fake_sort_movie_ops.scan_ids = lambda _directory: {"tmdb": None, "douban": None, "imdb": None}
     fake_sort_movie_ops.select_best_yts_magnet = lambda _json_data, magnet_path: f"{magnet_path}{'a' * 40}"
     fake_sort_movie_ops.remove_duplicates_ignore_case = fake_remove_duplicates_ignore_case
     fake_sort_movie_ops.remove_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").unlink(missing_ok=True)
     fake_sort_movie_ops.touch_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").touch()
-    fake_sort_movie_ops.safe_get = fake_safe_get
     fake_sort_movie_ops.build_movie_folder_name = lambda _path, _movie_dict: "Renamed Movie"
     fake_sort_movie_ops.merged_dict = lambda _path, _movie_info, movie_ids, file_info: movie_ids | file_info
     fake_sort_movie_ops.create_aka_movie = lambda _new_path, _movie_dict: None
-    fake_sort_movie_ops.get_video_info = lambda _path: None
     fake_sort_movie_ops.check_movie = lambda _path: None
     fake_sort_movie_ops.get_movie_id = lambda movie_dict: movie_dict.get("imdb")
     fake_sort_movie_ops.fix_douban_name = lambda text: text.strip()
+
+    fake_video_tools = types.ModuleType("video_tools")
+    fake_video_tools.VIDEO_EXTENSIONS = [".mkv", ".mp4"]
+    fake_video_tools.generate_video_contact = lambda _video_path: None
+    fake_video_tools.generate_video_contact_mtn = lambda _video_path: None
+    fake_video_tools.get_video_info = lambda _path: None
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_search_response = lambda _search_id: {}
@@ -163,6 +150,7 @@ def load_sort_movie_auto():
             "sort_movie_mysql": fake_sort_movie_mysql,
             "sort_movie_ops": fake_sort_movie_ops,
             "sort_movie_request": fake_sort_movie_request,
+            "video_tools": fake_video_tools,
         },
     ):
         spec.loader.exec_module(module)
@@ -778,7 +766,7 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             side_effect=RuntimeError("screenshot failed"),
         ), patch.object(
             self.module,
-            "generate_video_contact_mtm",
+            "generate_video_contact_mtn",
         ), patch.object(
             self.module,
             "merged_dict",
