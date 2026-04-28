@@ -20,15 +20,20 @@ from my_module import read_file_to_list, read_json_to_dict, sanitize_filename, w
 from sort_movie_mysql import insert_movie_record_to_mysql, query_imdb_title_metadata
 from sort_movie_ops import (
     CONFIG as OPS_CONFIG,
+    build_unique_path,
     check_local_torrent,
     delete_trash_files,
     extract_imdb_id,
     fix_douban_name,
     generate_video_contact,
     generate_video_contact_mtm,
+    get_existing_id_files,
     get_video_info,
+    remove_duplicates_ignore_case,
+    remove_id_marker,
     scan_ids,
     select_best_yts_magnet,
+    touch_id_marker,
 )
 from sort_movie_request import (
     get_douban_response,
@@ -101,35 +106,48 @@ def sort_movie_auto(path: str) -> None:
         return
 
     for folder in folders:
-        logger.info(f"{time.strftime('%Y-%m-%d %H:%M:%S')} 开始处理：{folder}")
-        logger.info("-" * 25 + "步骤：搜索电影" + "-" * 25)
-        result = prepare_movie_folder_markers(folder)
-        if result:
-            _error_code, error_message = result
-            logger.error(error_message)
-            handle_failed_movie_folder(folder, path)
-            logger.warning("=" * 255)
-            continue
-        # 先将子目录中的文件提升到当前电影目录根部
-        try:
-            move_all_files_to_root(folder)
-        except Exception:
-            logger.exception(f"打平目录失败：{folder}")
-            handle_failed_movie_folder(folder, path)
-            logger.warning("=" * 255)
-            continue
-        time.sleep(0.1)
-        logger.info("-" * 25 + "步骤：抓取电影信息" + "-" * 25)
-        try:
-            sort_success, failed_or_final_path = sort_movie(folder)
-        except Exception:
-            logger.exception(f"整理电影失败：{folder}")
-            sort_success, failed_or_final_path = False, folder
-        if not sort_success:
-            handle_failed_movie_folder(failed_or_final_path, path)
-        time.sleep(0.1)
+        process_movie_folder(folder, path)
+
+
+def process_movie_folder(folder: str, source_root: str) -> None:
+    """
+    处理单个电影目录，并在失败时移动到检验目录。
+
+    :param folder: 当前电影目录
+    :param source_root: 当前批处理根目录，一般是导演目录
+    :return: 无
+    """
+    logger.info(f"{time.strftime('%Y-%m-%d %H:%M:%S')} 开始处理：{folder}")
+    logger.info("-" * 25 + "步骤：搜索电影" + "-" * 25)
+    result = prepare_movie_folder_markers(folder)
+    if result:
+        _error_code, error_message = result
+        logger.error(error_message)
+        handle_failed_movie_folder(folder, source_root)
         logger.warning("=" * 255)
-        time.sleep(0.1)
+        return
+
+    # 先将子目录中的文件提升到当前电影目录根部
+    try:
+        move_all_files_to_root(folder)
+    except Exception:
+        logger.exception(f"打平目录失败：{folder}")
+        handle_failed_movie_folder(folder, source_root)
+        logger.warning("=" * 255)
+        return
+
+    time.sleep(0.1)
+    logger.info("-" * 25 + "步骤：抓取电影信息" + "-" * 25)
+    try:
+        sort_success, failed_or_final_path = sort_movie(folder)
+    except Exception:
+        logger.exception(f"整理电影失败：{folder}")
+        sort_success, failed_or_final_path = False, folder
+    if not sort_success:
+        handle_failed_movie_folder(failed_or_final_path, source_root)
+    time.sleep(0.1)
+    logger.warning("=" * 255)
+    time.sleep(0.1)
 
 
 def handle_failed_movie_folder(movie_path: str, source_root: str) -> None:
@@ -145,28 +163,6 @@ def handle_failed_movie_folder(movie_path: str, source_root: str) -> None:
         logger.error(move_result)
 
 
-def build_unique_root_file_path(root_path: Path, file_name: str) -> Path:
-    """
-    为即将移动到根目录的文件生成不冲突路径。
-
-    :param root_path: 电影目录根路径
-    :param file_name: 原文件名
-    :return: 根目录下的可用目标路径
-    """
-    target_path = root_path / file_name
-    if not target_path.exists():
-        return target_path
-
-    base = target_path.stem
-    suffix = target_path.suffix
-    index = 1
-    while True:
-        candidate = root_path / f"{base}({index}){suffix}"
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
 def move_all_files_to_root(dir_path: str) -> None:
     """
     将电影目录所有子目录里的文件提升到根目录，并删除空子目录。
@@ -180,7 +176,7 @@ def move_all_files_to_root(dir_path: str) -> None:
     nested_files = [path for path in root_path.rglob("*") if path.is_file() and path.parent != root_path]
 
     for source_path in nested_files:
-        target_path = build_unique_root_file_path(root_path, source_path.name)
+        target_path = build_unique_path(root_path / source_path.name)
         shutil.move(str(source_path), str(target_path))
 
     for path in sorted((path for path in root_path.rglob("*") if path.is_dir()), key=lambda item: len(item.parts), reverse=True):
@@ -216,7 +212,10 @@ def get_dl_link(path: str) -> Optional[str]:
     :return: 磁力下载链接；没有记录时返回 ``None``
     """
     movie_path = Path(path)
-    download_files = [file for file in movie_path.iterdir() if file.is_file() and file.suffix.lower() in DOWNLOAD_RECORD_SUFFIXES]
+    download_files = sorted(
+        (file for file in movie_path.iterdir() if file.is_file() and file.suffix.lower() in DOWNLOAD_RECORD_SUFFIXES),
+        key=lambda file: file.name.lower(),
+    )
     if len(download_files) > 1:
         raise DownloadLinkError(f"{movie_path.name} 目录中下载数量大于 1：{[file.name for file in download_files]}")
     if not download_files:
@@ -236,32 +235,6 @@ def get_dl_link(path: str) -> Optional[str]:
     dl_link = validate_download_link(file_path, match.group(0) if match else None)
     file_path.write_text(dl_link, encoding="utf-8")
     return dl_link
-
-
-def remove_duplicates_ignore_case(items: list) -> list:
-    """
-    按首次出现顺序去重；字符串忽略大小写，非字符串按值比较。
-
-    :param items: 原始列表
-    :return: 去重后的列表
-    """
-    seen = set()
-    result = []
-    for item in items:
-        if isinstance(item, str):
-            key = ("str", item.casefold())
-        else:
-            try:
-                hash(item)
-            except TypeError:
-                key = ("repr", repr(item))
-            else:
-                key = ("value", item)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
-    return result
 
 
 def build_prepare_folder_error(code: str, message: str) -> PrepareFolderError:
@@ -379,6 +352,62 @@ def build_empty_movie_info() -> dict:
     }
 
 
+def normalize_original_title(value) -> str:
+    """
+    清洗原始片名，统一空白和常见标点。
+
+    :param value: 原始片名字段值
+    :return: 清洗后的片名
+    """
+    return re.sub(r"\s+", " ", str(value or "").strip()).replace("　", " ").replace("’", "'")
+
+
+def normalize_movie_titles(titles, original_title: str) -> list:
+    """
+    清洗并去重电影标题列表。
+
+    :param titles: 原始标题集合
+    :param original_title: 已清洗的原始片名
+    :return: 清洗后的标题列表
+    """
+    normalized_titles = []
+    if isinstance(titles, (list, tuple, set)):
+        for title in titles:
+            text = re.sub(r"\s+", " ", str(title or "").strip()).replace("　", " ")
+            if text:
+                normalized_titles.append(text)
+    if original_title:
+        normalized_titles.append(original_title)
+    return remove_duplicates_ignore_case(normalized_titles)
+
+
+def normalize_movie_list_fields(movie_dict: dict, keys: list[str]) -> None:
+    """
+    清洗电影信息中的列表字段。
+
+    :param movie_dict: 完整电影信息字典
+    :param keys: 需要清洗的字段名
+    :return: 无
+    """
+    for key in keys:
+        values = movie_dict.get(key)
+        if isinstance(values, (list, tuple, set)):
+            normalized_values = [str(value).strip() for value in values if value is not None and str(value).strip()]
+            movie_dict[key] = remove_duplicates_ignore_case(normalized_values)
+        else:
+            movie_dict[key] = []
+
+
+def calculate_directory_size_mb(path: str) -> int:
+    """
+    计算目录内所有文件总大小，单位 MB。
+
+    :param path: 目录路径
+    :return: 目录大小，向下取整到 MB
+    """
+    return int(sum(file.stat().st_size for file in Path(path).rglob("*") if file.is_file()) / (1024 * 1024))
+
+
 def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -> dict:
     """
     合并线上元数据、编号信息和本地视频信息，并做当前整理流程需要的清洗。
@@ -392,30 +421,11 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     movie_dict = movie_info | movie_ids | file_info
     movie_dict["director"] = Path(path).parent.name
 
-    original_title = str(movie_dict.get("original_title") or "").strip()
-    original_title = re.sub(r"\s+", " ", original_title).replace("　", " ").replace("’", "'")
+    original_title = normalize_original_title(movie_dict.get("original_title"))
     movie_dict["original_title"] = original_title
-
-    titles = movie_dict.get("titles")
-    normalized_titles = []
-    if isinstance(titles, (list, tuple, set)):
-        for title in titles:
-            text = re.sub(r"\s+", " ", str(title or "").strip()).replace("　", " ")
-            if text:
-                normalized_titles.append(text)
-    if original_title:
-        normalized_titles.append(original_title)
-    movie_dict["titles"] = remove_duplicates_ignore_case(normalized_titles)
-
-    for key in ["genres", "country", "language", "directors"]:
-        values = movie_dict.get(key)
-        if isinstance(values, (list, tuple, set)):
-            normalized_values = [str(value).strip() for value in values if value is not None and str(value).strip()]
-            movie_dict[key] = remove_duplicates_ignore_case(normalized_values)
-        else:
-            movie_dict[key] = []
-
-    movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob("*") if file.is_file()) / (1024 * 1024))
+    movie_dict["titles"] = normalize_movie_titles(movie_dict.get("titles"), original_title)
+    normalize_movie_list_fields(movie_dict, ["genres", "country", "language", "directors"])
+    movie_dict["size"] = calculate_directory_size_mb(path)
     movie_dict["dl_link"] = get_dl_link(path)
 
     try:
@@ -855,34 +865,6 @@ def get_folder_name_ids(path: str) -> dict[str, Optional[str]]:
     }
 
 
-def get_existing_id_files(path: str) -> tuple[dict[str, Optional[str]], Optional[str]]:
-    """
-    读取目录里现有的编号空文件，并检测是否存在同类型重复文件。
-
-    :param path: 电影目录路径
-    :return: ``(编号字典, 错误信息)``
-    """
-    id_files: dict[str, list[str]] = {"imdb": [], "tmdb": [], "douban": []}
-    ext_map = {".imdb": "imdb", ".tmdb": "tmdb", ".douban": "douban"}
-
-    try:
-        file_names = os.listdir(path)
-    except FileNotFoundError:
-        return {"imdb": None, "tmdb": None, "douban": None}, f"目录不存在 {path}"
-
-    for file_name in file_names:
-        name, ext = os.path.splitext(file_name)
-        key = ext_map.get(ext)
-        if key:
-            id_files[key].append(name)
-
-    for key, values in id_files.items():
-        if len(values) > 1:
-            return {"imdb": None, "tmdb": None, "douban": None}, f"目录 {path} 中 {key.upper()} 编号文件太多，请先清理。"
-
-    return {key: values[0] if values else None for key, values in id_files.items()}, None
-
-
 def validate_folder_name_ids(path: str, folder_name_ids: dict[str, Optional[str]], existing_ids: dict[str, Optional[str]]) -> Optional[str]:
     """
     检查目录名中的编号与现有空文件是否冲突。
@@ -899,32 +881,6 @@ def validate_folder_name_ids(path: str, folder_name_ids: dict[str, Optional[str]
         if folder_id and file_id and folder_id != file_id:
             return f"目录名中的 {label} 编号与空文件不一致 {path}"
     return None
-
-
-def touch_id_marker(path: str, id_value: str, suffix: str) -> None:
-    """
-    在目录中创建编号空文件；若已存在则保持不变。
-
-    :param path: 单个电影目录路径
-    :param id_value: 编号值
-    :param suffix: 空文件后缀，不含点
-    :return: 无
-    """
-    Path(path, f"{id_value}.{suffix}").touch()
-
-
-def remove_id_marker(path: str, id_value: str, suffix: str) -> None:
-    """
-    删除目录中的指定编号空文件；不存在时静默跳过。
-
-    :param path: 单个电影目录路径
-    :param id_value: 编号值
-    :param suffix: 空文件后缀，不含点
-    :return: 无
-    """
-    marker_path = Path(path, f"{id_value}.{suffix}")
-    if marker_path.exists():
-        marker_path.unlink()
 
 
 def move_failed_movie_folder(movie_path: str, source_root: str) -> Optional[str]:

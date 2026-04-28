@@ -73,6 +73,56 @@ def load_sort_movie_ops(check_target: str):
     return module
 
 
+class TestSharedHelpers(unittest.TestCase):
+    """验证跨电影/导演流程复用的小工具。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.module = load_sort_movie_ops(str(self.root / "check"))
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_build_unique_path_appends_counter_before_suffix(self):
+        """目标文件已存在时，应生成 ``name(1).ext`` 形式的新路径。"""
+        target = self.root / "Movie.torrent"
+        target.write_text("first", encoding="utf-8")
+        (self.root / "Movie(1).torrent").write_text("second", encoding="utf-8")
+
+        result = self.module.build_unique_path(target)
+
+        self.assertEqual(result, self.root / "Movie(2).torrent")
+
+    def test_id_marker_helpers_round_trip_and_report_duplicates(self):
+        """编号空文件读写应和 ``scan_ids`` 使用同一套规则。"""
+        movie_dir = self.root / "movie"
+        movie_dir.mkdir()
+
+        self.module.touch_id_marker(str(movie_dir), "tt1234567", "imdb")
+        self.module.touch_id_marker(str(movie_dir), "12345tv", "tmdb")
+        ids, error = self.module.get_existing_id_files(str(movie_dir))
+
+        self.assertIsNone(error)
+        self.assertEqual(ids, {"imdb": "tt1234567", "tmdb": "12345tv", "douban": None})
+        self.assertEqual(self.module.scan_ids(str(movie_dir)), {"imdb": "tt1234567", "tmdb": "12345tv", "douban": None})
+
+        self.module.remove_id_marker(str(movie_dir), "tt1234567", "imdb")
+        self.assertFalse((movie_dir / "tt1234567.imdb").exists())
+
+        (movie_dir / "111.tmdb").touch()
+        _ids, duplicate_error = self.module.get_existing_id_files(str(movie_dir))
+        self.assertIn("TMDB 编号文件太多", duplicate_error)
+
+    def test_remove_duplicates_ignore_case_handles_non_string_values(self):
+        """去重工具应保留首次出现项，并兼容非字符串和不可 hash 值。"""
+        items = ["Movie", "movie", 1, 1, ["a"], ["a"], {"x": 1}, {"x": 1}]
+
+        result = self.module.remove_duplicates_ignore_case(items)
+
+        self.assertEqual(result, ["Movie", 1, ["a"], {"x": 1}])
+
+
 class TestCheckLocalTorrent(unittest.TestCase):
     """验证本地库存种子命中后的移动策略。"""
 

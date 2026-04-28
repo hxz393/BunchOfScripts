@@ -58,6 +58,53 @@ def fake_safe_get(data: object, keys: list[object], default=None):
     return current
 
 
+def fake_build_unique_path(target_path: str | os.PathLike) -> Path:
+    """测试环境里的最小可用不重名路径生成。"""
+    path = Path(target_path)
+    if not path.exists():
+        return path
+
+    index = 1
+    while True:
+        candidate = path.with_name(f"{path.stem}({index}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def fake_get_existing_id_files(path: str):
+    """读取测试目录中的编号空文件。"""
+    id_files = {"imdb": [], "tmdb": [], "douban": []}
+    ext_map = {".imdb": "imdb", ".tmdb": "tmdb", ".douban": "douban"}
+    try:
+        file_names = os.listdir(path)
+    except FileNotFoundError:
+        return {"imdb": None, "tmdb": None, "douban": None}, f"目录不存在 {path}"
+
+    for file_name in file_names:
+        name, ext = os.path.splitext(file_name)
+        key = ext_map.get(ext)
+        if key:
+            id_files[key].append(name)
+    for key, values in id_files.items():
+        if len(values) > 1:
+            return {"imdb": None, "tmdb": None, "douban": None}, f"目录 {path} 中 {key.upper()} 编号文件太多，请先清理。"
+    return {key: values[0] if values else None for key, values in id_files.items()}, None
+
+
+def fake_remove_duplicates_ignore_case(items: list) -> list:
+    """测试环境里的忽略大小写去重。"""
+    seen = set()
+    result = []
+    for item in items:
+        key = item.casefold() if isinstance(item, str) else repr(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
 def load_sort_movie_auto():
     """在隔离依赖的环境中加载 ``sort_movie_auto`` 模块。"""
     fake_retrying = types.ModuleType("retrying")
@@ -79,13 +126,18 @@ def load_sort_movie_auto():
         "mirror_path": str(Path(tempfile.gettempdir()) / "sort_movie_auto_mirror"),
         "magnet_path": "magnet:?xt=urn:btih:",
     }
+    fake_sort_movie_ops.build_unique_path = fake_build_unique_path
     fake_sort_movie_ops.check_local_torrent = lambda _imdb: {"move_counts": 0, "move_files": []}
     fake_sort_movie_ops.delete_trash_files = lambda _path: None
     fake_sort_movie_ops.extract_imdb_id = fake_extract_imdb_id
     fake_sort_movie_ops.generate_video_contact = lambda _video_path: None
     fake_sort_movie_ops.generate_video_contact_mtm = lambda _video_path: None
+    fake_sort_movie_ops.get_existing_id_files = fake_get_existing_id_files
     fake_sort_movie_ops.scan_ids = lambda _directory: {"tmdb": None, "douban": None, "imdb": None}
     fake_sort_movie_ops.select_best_yts_magnet = lambda _json_data, magnet_path: f"{magnet_path}{'a' * 40}"
+    fake_sort_movie_ops.remove_duplicates_ignore_case = fake_remove_duplicates_ignore_case
+    fake_sort_movie_ops.remove_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").unlink(missing_ok=True)
+    fake_sort_movie_ops.touch_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").touch()
     fake_sort_movie_ops.safe_get = fake_safe_get
     fake_sort_movie_ops.build_movie_folder_name = lambda _path, _movie_dict: "Renamed Movie"
     fake_sort_movie_ops.merged_dict = lambda _path, _movie_info, movie_ids, file_info: movie_ids | file_info

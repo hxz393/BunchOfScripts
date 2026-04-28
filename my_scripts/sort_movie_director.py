@@ -32,6 +32,7 @@ from sort_movie_ops import (
     fix_douban_name,
     extract_imdb_id,
     check_local_torrent,
+    touch_id_marker,
 )
 from sort_movie_request import (
     get_tmdb_director_details,
@@ -84,7 +85,7 @@ def sort_director_auto(path: str, dst_path: str = r'A:\0b.导演别名') -> None
 
     for director_id, suffix in ((nm_id, 'imdb'), (tmdb_id, 'tmdb'), (douban_id, 'douban')):
         if director_id:
-            Path(path, f"{director_id}.{suffix}").touch()
+            touch_id_marker(path, director_id, suffix)
 
     create_aka_director(path, aka)
     if tmdb_id:

@@ -66,6 +66,7 @@ def load_sort_movie_director():
         "move_counts": 0,
         "move_files": [],
     }
+    fake_sort_movie_ops.touch_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").touch()
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_director_details = lambda _director_id: {"name": "", "also_known_as": []}
