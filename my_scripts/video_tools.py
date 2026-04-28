@@ -91,6 +91,13 @@ CODEC_ALIASES = {
     "xvid": "XviD",
     "mpeg2video": "mpeg2",
 }
+RESOLUTION_PIXEL_LIMITS = {
+    "240p": 400 * 320,
+    "480p": 791 * 576,
+    "720p": 1280 * 960,
+    "1080p": 1950 * 1080,
+    "2160p": 3860 * 2160,
+}
 
 
 def get_video_info(path_str: str | os.PathLike) -> Optional[dict]:
@@ -234,7 +241,7 @@ def extract_video_info(filepath: str | os.PathLike) -> Optional[dict]:
         logger.error(f"视频分辨率缺失：{filepath}")
         return None
     file_info["resolution"] = f"{width}x{height}"
-    file_info["quality"] = classify_resolution_by_pixels(f"{width}x{height}")
+    file_info["quality"] = classify_resolution_by_pixels(width, height)
 
     # 实际宽高比，优先使用显示宽高比；异常时回退到存储宽高比。
     file_info["dar"] = width / height
@@ -807,57 +814,41 @@ def generate_video_contact(video_path: str | os.PathLike) -> None:
             clip.close()
 
 
-def classify_resolution_by_pixels(resolution: str) -> str:
+def classify_resolution_by_pixels(width: int, height: int) -> str:
     """
-    根据宽和高的乘积（像素数）来给分辨率分类
+    按像素面积把视频分辨率归类为整理用质量标签。
 
-    :param resolution: 分辨率字符串
-    :return: 质量归类
+    本函数面向电影常见宽高比，不直接按高度判断；例如 ``1920x800``
+    会归类为 ``1080p``，``3840x1600`` 会归类为 ``2160p``。在
+    ``720p`` 和 ``1080p`` 边界附近，会结合宽度和高度修正常见宽银幕、
+    方形或接近方形片源的归类。
+
+    调用方应传入已校验的正整数宽高。当前主要由 ``extract_video_info``
+    在确认宽高有效后调用。
+
+    :param width: 视频存储宽度
+    :param height: 视频存储高度
+    :return: ``240p``、``480p``、``720p``、``1080p``、``2160p`` 或 ``4320p``
     """
-    w, h = resolution.split('x')
-    w = int(w)
-    h = int(h)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Invalid resolution: {width}x{height}")
 
-    pixel_count = w * h
+    pixel_count = width * height
 
-    # 先把区间边界定义好，方便直观查看
-    p240_max = 400 * 320  # = 128,000
-    p480_max = 791 * 576  # = 442,368
-    p720_max = 1280 * 960  # = 1,228,800
-    p1080_max = 1950 * 1080  # = 2,106,000
-    p2160_max = 3860 * 2160  # = 8,337,600
-
-    if pixel_count <= p240_max:
+    if pixel_count <= RESOLUTION_PIXEL_LIMITS["240p"]:
         return "240p"
-    elif pixel_count <= p480_max:
+    elif pixel_count <= RESOLUTION_PIXEL_LIMITS["480p"]:
         return "480p"
-    elif pixel_count <= p720_max:
-        if h > 1000:
+    elif pixel_count <= RESOLUTION_PIXEL_LIMITS["720p"]:
+        if height > 1000:
             return "1080p"
-        if w > 1400:
+        if width > 1400:
             return "1080p"
         return "720p"
-    elif pixel_count <= p1080_max:
-        if h < 1000 and w < 1200:
+    elif pixel_count <= RESOLUTION_PIXEL_LIMITS["1080p"]:
+        if height < 1000 and width < 1200:
             return "720p"
         return "1080p"
-    elif pixel_count <= p2160_max:
+    elif pixel_count <= RESOLUTION_PIXEL_LIMITS["2160p"]:
         return "2160p"
-    elif pixel_count > p2160_max:
-        return "4320p"
-    else:
-        return "Unknown"
-
-
-def parse_resolution(res_str: str) -> int:
-    """
-    将分辨率转为实际相乘的数值
-
-    :param res_str: 类似于 1920x800
-    :return: 如果解析失败返回 0
-    """
-    try:
-        w, h = res_str.lower().split('x')
-        return int(w) * int(h)
-    except Exception:
-        return 0
+    return "4320p"

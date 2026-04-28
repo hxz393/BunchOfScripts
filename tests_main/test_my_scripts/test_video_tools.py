@@ -145,26 +145,47 @@ class TestVideoTools(unittest.TestCase):
         )
         return fake_image, fake_image_draw, fake_image_font, resized_sizes, grid_sizes, timestamp_texts
 
-    def test_parse_resolution_returns_pixel_count_or_zero(self):
-        """分辨率字符串应转成像素数，坏输入返回 0。"""
-        self.assertEqual(self.module.parse_resolution("1920x800"), 1536000)
-        self.assertEqual(self.module.parse_resolution("bad"), 0)
-
     def test_resolution_classifier_covers_movie_aspect_ratios(self):
         """按像素量归类时，应兼顾常见宽银幕和高分辨率边界。"""
         cases = {
-            "320x240": "240p",
-            "720x480": "480p",
-            "1280x720": "720p",
-            "1440x900": "1080p",
-            "1920x800": "1080p",
-            "3840x1600": "2160p",
-            "7680x4320": "4320p",
+            (320, 240): "240p",
+            (720, 480): "480p",
+            (1280, 720): "720p",
+            (1440, 900): "1080p",
+            (1920, 800): "1080p",
+            (3840, 1600): "2160p",
+            (7680, 4320): "4320p",
         }
 
         for resolution, expected in cases.items():
-            with self.subTest(resolution=resolution):
-                self.assertEqual(self.module.classify_resolution_by_pixels(resolution), expected)
+            width, height = resolution
+            with self.subTest(resolution=f"{width}x{height}"):
+                self.assertEqual(self.module.classify_resolution_by_pixels(width, height), expected)
+
+    def test_resolution_classifier_locks_current_pixel_boundaries(self):
+        """边界值应保持当前整理规则，避免后续调整时无意漂移。"""
+        cases = {
+            (400, 320): "240p",
+            (401, 320): "480p",
+            (791, 576): "480p",
+            (792, 576): "720p",
+            (1280, 960): "720p",
+            (1281, 960): "1080p",
+            (1950, 1080): "1080p",
+            (1951, 1080): "2160p",
+            (3860, 2160): "2160p",
+            (3861, 2160): "4320p",
+        }
+
+        for resolution, expected in cases.items():
+            width, height = resolution
+            with self.subTest(resolution=f"{width}x{height}"):
+                self.assertEqual(self.module.classify_resolution_by_pixels(width, height), expected)
+
+    def test_resolution_classifier_rejects_invalid_dimensions(self):
+        """非正数宽高应显式报错，避免生成无意义质量标签。"""
+        with self.assertRaisesRegex(ValueError, "Invalid resolution"):
+            self.module.classify_resolution_by_pixels(0, 1080)
 
     def test_format_video_contact_timestamp_uses_centiseconds(self):
         """截图时间戳应保留百分秒，并在超过一小时时带小时位。"""

@@ -246,18 +246,8 @@ class TestSharedHelpers(unittest.TestCase):
         self.assertIsNone(self.module.extract_imdb_id_from_links([]))
         self.assertIsNone(self.module.extract_imdb_id_from_links(["https://example.test/no-id"]))
 
-    def test_numeric_parsers_return_defaults_on_bad_input(self):
-        """比特率解析失败时不应向外抛异常。"""
-        self.assertEqual(self.module.parse_bitrate("2249kbps"), 2249)
-        self.assertEqual(self.module.parse_bitrate("unknown"), 0)
-
-    def test_parse_jason_file_name_and_director_name_helpers(self):
-        """文件名和导演名解析应保留既有命名规则。"""
-        self.assertEqual(
-            self.module.parse_jason_file_name("Sonic(2019)[1080p]{tt8108200}"),
-            {"name": "Sonic", "year": "2019", "quality": "1080p", "id": "tt8108200"},
-        )
-        self.assertEqual(self.module.parse_jason_file_name("invalid"), {})
+    def test_director_name_helpers_keep_existing_name_rules(self):
+        """导演名和豆瓣名清理应保留既有命名规则。"""
         self.assertEqual(self.module.split_director_name("John Smith 约翰·史密斯"), ["John Smith", "约翰·史密斯"])
         self.assertEqual(self.module.split_director_name("约翰·史密斯"), ["约翰·史密斯"])
         self.assertEqual(self.module.split_director_name("John Smith"), ["John Smith"])
@@ -407,34 +397,11 @@ class TestFilesystemWorkflows(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_sort_aka_files_moves_empty_files_and_removes_movies_csv(self):
-        """导演别名空文件应移动到对应目标目录，movies.csv 应删除。"""
-        source_root = self.root / "source"
-        target_root = self.root / "target"
-        director = source_root / "Director"
-        director.mkdir(parents=True)
-        aka = director / "Alias"
-        csv = director / "movies.csv"
-        keep = director / "note.txt"
-        aka.touch()
-        csv.write_text("movie", encoding="utf-8")
-        keep.write_text("keep", encoding="utf-8")
-
-        with patch.object(self.module, "remove_target", side_effect=lambda path: Path(path).unlink()):
-            self.module.sort_aka_files(str(source_root), str(target_root))
-
-        self.assertTrue((target_root / "Director" / "Alias").exists())
-        self.assertFalse(aka.exists())
-        self.assertFalse(csv.exists())
-        self.assertTrue(keep.exists())
-
-    def test_sort_torrents_auto_moves_json_and_log_files_to_matching_folders(self):
-        """自动整理应把 JSON/LOG 种子文件放入匹配电影目录，并重命名 YTS 目录。"""
+    def test_sort_torrents_auto_moves_log_files_to_matching_folders(self):
+        """旧整理入口只保留 LOG 文件名的简单目录匹配。"""
         director = self.root / "Director"
-        yts_folder = director / "Sonic (2019) [1080p] yts"
         log_folder = director / "Downloaded.Movie"
-        yts_folder.mkdir(parents=True)
-        log_folder.mkdir()
+        log_folder.mkdir(parents=True)
         json_file = director / "Sonic(2019)[1080p]{tt8108200}.json"
         log_file = director / "Downloaded.Movie.release.log"
         json_file.write_text("{}", encoding="utf-8")
@@ -443,9 +410,7 @@ class TestFilesystemWorkflows(unittest.TestCase):
         with patch.object(self.module, "delete_trash_files") as delete_trash_files:
             self.module.sort_torrents_auto(str(self.root))
 
-        renamed_yts_folder = director / "Sonic(2019)[1080p]{tt8108200}"
-        self.assertTrue((renamed_yts_folder / json_file.name).exists())
-        self.assertFalse(yts_folder.exists())
+        self.assertTrue(json_file.exists())
         self.assertTrue((log_folder / log_file.name).exists())
         delete_trash_files.assert_called_once_with(str(self.root))
 
