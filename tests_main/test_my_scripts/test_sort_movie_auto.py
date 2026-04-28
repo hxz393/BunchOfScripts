@@ -105,7 +105,9 @@ def load_sort_movie_auto():
     fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
     fake_sort_movie_ops.move_all_files_to_root = fake_move_all_files_to_root
     fake_sort_movie_ops.extract_imdb_id = fake_extract_imdb_id
+    fake_sort_movie_ops.get_dl_link = lambda _path: ""
     fake_sort_movie_ops.scan_ids = lambda _directory: {"tmdb": None, "douban": None, "imdb": None}
+    fake_sort_movie_ops.remove_duplicates_ignore_case = lambda items: list(dict.fromkeys(items))
     fake_sort_movie_ops.safe_get = fake_safe_get
     fake_sort_movie_ops.build_movie_folder_name = lambda _path, _movie_dict: "Renamed Movie"
     fake_sort_movie_ops.merged_dict = lambda _path, _movie_info, movie_ids, file_info: movie_ids | file_info
@@ -264,6 +266,131 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
         self.assertFalse((movie_dir / "movie_info.json5").exists())
         mock_insert.assert_not_called()
 
+    def test_sort_movie_restores_existing_movie_info_when_validation_fails(self):
+        """校验失败时，已有 ``movie_info.json5`` 应恢复为整理前内容。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder With Json"
+        movie_dir.mkdir()
+        original_bytes = b'{"original": true}'
+        (movie_dir / "movie_info.json5").write_bytes(original_bytes)
+
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+
+        with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ), patch.object(
+            self.module,
+            "get_video_info",
+            return_value=file_info,
+        ), patch.object(
+            self.module,
+            "merged_dict",
+            return_value=movie_dict,
+        ), patch.object(
+            self.module,
+            "build_movie_folder_name",
+            return_value="Renamed Movie",
+        ), patch.object(
+            self.module,
+            "get_movie_id",
+            return_value="tt1234567",
+        ), patch.object(
+            self.module,
+            "check_movie",
+            return_value="validation failed",
+        ):
+            self.module.sort_movie(str(movie_dir))
+
+        self.assertTrue(movie_dir.exists())
+        self.assertEqual((movie_dir / "movie_info.json5").read_bytes(), original_bytes)
+
+    def test_sort_movie_rolls_back_when_transaction_steps_raise(self):
+        """落盘事务中的异常都应触发回滚。"""
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+
+        def make_movie_dir(name: str) -> Path:
+            movie_dir = Path(self.temp_dir.name) / name
+            movie_dir.mkdir()
+            return movie_dir
+
+        def cover_then_raise(_poster_path: str, image_path: str) -> None:
+            Path(image_path).write_text("poster", encoding="utf-8")
+            raise RuntimeError("cover failed")
+
+        def alias_then_raise(new_path: str, _movie_dict: dict) -> None:
+            Path(new_path, "Alias Title.别名").write_text("", encoding="utf-8")
+            raise RuntimeError("alias failed")
+
+        def json_then_raise(target_path: str, content: dict) -> None:
+            fake_write_dict_to_json(target_path, content)
+            raise RuntimeError("json failed")
+
+        cases = [
+            ("cover", "get_tmdb_movie_cover", cover_then_raise),
+            ("alias", "create_aka_movie", alias_then_raise),
+            ("json", "write_dict_to_json", json_then_raise),
+            ("insert", "insert_movie_record_to_mysql", RuntimeError("insert failed")),
+        ]
+
+        for case_name, patch_target, side_effect in cases:
+            with self.subTest(case=case_name):
+                movie_dir = make_movie_dir(f"Movie Folder {case_name}")
+
+                with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
+                    self.module,
+                    "get_imdb_movie_info",
+                ), patch.object(
+                    self.module,
+                    "get_video_info",
+                    return_value=file_info,
+                ), patch.object(
+                    self.module,
+                    "merged_dict",
+                    return_value=movie_dict,
+                ), patch.object(
+                    self.module,
+                    "build_movie_folder_name",
+                    return_value="Renamed Movie",
+                ), patch.object(
+                    self.module,
+                    "get_movie_id",
+                    return_value="tt1234567",
+                ), patch.object(
+                    self.module,
+                    "check_movie",
+                    return_value=None,
+                ), patch.object(
+                    self.module,
+                    patch_target,
+                    side_effect=side_effect,
+                ):
+                    self.module.sort_movie(str(movie_dir))
+
+                renamed_dir = movie_dir.parent / "Renamed Movie"
+                self.assertTrue(movie_dir.exists())
+                self.assertFalse(renamed_dir.exists())
+                self.assertFalse((movie_dir / "tt1234567.jpg").exists())
+                self.assertFalse((movie_dir / "Alias Title.别名").exists())
+                self.assertFalse((movie_dir / "movie_info.json5").exists())
+
     def test_sort_movie_auto_continues_after_one_folder_fails(self):
         """单个目录失败后，应移到检验目录并继续处理后续目录。"""
         director_dir = Path(self.temp_dir.name) / "Director Name"
@@ -407,6 +534,29 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
         mock_write_json.assert_not_called()
         mock_insert.assert_not_called()
 
+    def test_sort_movie_uses_tmdb_tv_suffix_to_enable_tv_mode(self):
+        """只有 TMDB 编号以 ``tv`` 结尾时，才应按电视剧模式查询详情。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+
+        with patch.object(
+            self.module,
+            "scan_ids",
+            return_value={"tmdb": "12345tv", "douban": None, "imdb": None},
+        ), patch.object(
+            self.module,
+            "get_tmdb_movie_info",
+        ) as mock_tmdb, patch.object(
+            self.module,
+            "get_video_info",
+            return_value=None,
+        ):
+            self.module.sort_movie(str(movie_dir))
+
+        mock_tmdb.assert_called_once()
+        self.assertEqual(mock_tmdb.call_args.args[0], "12345")
+        self.assertTrue(mock_tmdb.call_args.args[2])
+
 
 class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
     """验证目录名编号如何决定 ``sort_movie_auto`` 的入口分支。"""
@@ -445,6 +595,18 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         mock_tmdb.assert_called_once_with("tt1234567")
         mock_douban.assert_called_once_with("tt1234567")
 
+    def test_prepare_movie_folder_markers_rejects_duplicate_tmdb_marker_files(self):
+        """同类型编号空文件出现多个时，应直接报清理错误。"""
+        movie_dir = Path(self.temp_dir.name) / "2023 - Movie Name {tt1234567}"
+        movie_dir.mkdir()
+        (movie_dir / "321.tmdb").touch()
+        (movie_dir / "654.tmdb").touch()
+
+        result = self.module.prepare_movie_folder_markers(str(movie_dir))
+
+        self.assertEqual(result[0], "duplicate_marker_files")
+        self.assertIn("TMDB 编号文件太多", result[1])
+
     def test_sort_movie_auto_moves_folder_when_imdb_id_is_outdated(self):
         """本地 IMDb 查不到旧 ``tt`` 时，应删掉错误 ``.imdb`` 并移到检验目录。"""
         root_dir = Path(self.temp_dir.name) / "Director Name"
@@ -475,6 +637,31 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         self.assertFalse((moved_dir / "tt2404467.imdb").exists())
         mock_move.assert_not_called()
         mock_sort_movie.assert_not_called()
+
+    def test_prepare_movie_folder_markers_keeps_only_imdb_when_auto_lookups_miss(self):
+        """IMDb 有效但 TMDB/Douban 都没补到时，应保留 ``.imdb`` 并继续。"""
+        movie_dir = Path(self.temp_dir.name) / "2023 - Movie Name {tt1234567}"
+        movie_dir.mkdir()
+
+        with patch.object(
+            self.module,
+            "query_imdb_title_metadata",
+            return_value={"imdb_id": "tt1234567"},
+        ), patch.object(
+            self.module,
+            "get_tmdb_id",
+            return_value={"result": "tmdb miss", "tmdb_id": ""},
+        ), patch.object(
+            self.module,
+            "get_douban_id",
+            return_value={"result": "", "douban_id": ""},
+        ):
+            result = self.module.prepare_movie_folder_markers(str(movie_dir))
+
+        self.assertIsNone(result)
+        self.assertTrue((movie_dir / "tt1234567.imdb").exists())
+        self.assertFalse((movie_dir / "321.tmdb").exists())
+        self.assertFalse((movie_dir / "654321.douban").exists())
 
     def test_prepare_movie_folder_markers_accepts_tmdb_folder_name_with_verified_douban_marker(self):
         """目录名只有 ``tmdb...`` 时，只要已有任一非 IMDb 空文件就允许直达抓取步骤。"""
@@ -623,6 +810,30 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         self.assertEqual(result[0], "auto_tmdb_marker_conflict")
         self.assertIn("IMDb 自动补出的 TMDB 编号与空文件不一致", result[1])
 
+    def test_prepare_movie_folder_markers_rejects_auto_douban_conflict_with_existing_marker(self):
+        """IMDb 自动补出的 Douban 编号与现有空文件不一致时，应直接报错。"""
+        movie_dir = Path(self.temp_dir.name) / "2023 - Movie Name {tt1234567}"
+        movie_dir.mkdir()
+        (movie_dir / "111111.douban").touch()
+
+        with patch.object(
+            self.module,
+            "query_imdb_title_metadata",
+            return_value={"imdb_id": "tt1234567"},
+        ), patch.object(
+            self.module,
+            "get_tmdb_id",
+            return_value={"result": "", "tmdb_id": "321"},
+        ), patch.object(
+            self.module,
+            "get_douban_id",
+            return_value={"result": "", "douban_id": "654321"},
+        ):
+            result = self.module.prepare_movie_folder_markers(str(movie_dir))
+
+        self.assertEqual(result[0], "auto_douban_marker_conflict")
+        self.assertIn("IMDb 自动补出的 DOUBAN 编号与空文件不一致", result[1])
+
     def test_get_tmdb_id_marks_tv_results_with_tv_suffix(self):
         """TMDB find 命中电视剧结果时，应返回带 ``tv`` 后缀的编号。"""
         with patch.object(
@@ -633,6 +844,57 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
             result = self.module.get_tmdb_id("tt7654321")
 
         self.assertEqual(result, {"result": "", "tmdb_id": "12345tv"})
+
+    def test_get_tmdb_id_prefers_movie_when_movie_and_tv_results_both_exist(self):
+        """TMDB find 同时命中电影和电视剧时，应优先返回电影编号。"""
+        with patch.object(
+            self.module,
+            "get_tmdb_search_response",
+            return_value={"movie_results": [{"id": 888}], "tv_results": [{"id": 12345}]},
+        ):
+            result = self.module.get_tmdb_id("tt7654321")
+
+        self.assertEqual(result, {"result": "", "tmdb_id": "888"})
+
+    def test_get_douban_id_reports_search_failure(self):
+        """豆瓣搜索请求失败时，应返回明确错误。"""
+        with patch.object(self.module, "get_douban_response", return_value=None):
+            result = self.module.get_douban_id("tt1234567")
+
+        self.assertEqual(result, {"result": "豆瓣电影搜索失败", "douban_id": ""})
+
+    def test_get_douban_id_returns_empty_when_search_details_missing(self):
+        """豆瓣搜索页无法解析出唯一详情链接时，应安静返回空编号。"""
+        with patch.object(self.module, "get_douban_response", return_value=object()), patch.object(
+            self.module,
+            "get_douban_search_details",
+            return_value=None,
+        ):
+            result = self.module.get_douban_id("tt1234567")
+
+        self.assertEqual(result, {"result": "", "douban_id": ""})
+
+    def test_get_douban_id_reports_invalid_subject_link(self):
+        """豆瓣详情链接不含 subject 数字编号时，应返回明确错误。"""
+        with patch.object(self.module, "get_douban_response", return_value=object()), patch.object(
+            self.module,
+            "get_douban_search_details",
+            return_value="https://movie.douban.com/celebrity/123456/",
+        ):
+            result = self.module.get_douban_id("tt1234567")
+
+        self.assertEqual(result, {"result": "豆瓣链接里没有有效编号", "douban_id": ""})
+
+    def test_get_douban_id_extracts_subject_digits(self):
+        """豆瓣详情链接包含 subject 编号时，应正确提取纯数字 ID。"""
+        with patch.object(self.module, "get_douban_response", return_value=object()), patch.object(
+            self.module,
+            "get_douban_search_details",
+            return_value="https://movie.douban.com/subject/790434/",
+        ):
+            result = self.module.get_douban_id("tt1234567")
+
+        self.assertEqual(result, {"result": "", "douban_id": "790434"})
 
 
 class TestImdbLocalMerge(unittest.TestCase):
@@ -682,6 +944,27 @@ class TestImdbLocalMerge(unittest.TestCase):
         self.assertEqual(movie_info["directors"], ["Director One", "Director Two"])
         self.assertEqual(movie_info["country"], ["Japan"])
         self.assertEqual(movie_info["language"], ["Japanese"])
+
+    def test_get_imdb_movie_info_leaves_movie_info_unchanged_when_local_record_missing(self):
+        """本地 IMDb 未命中时，应只报错并保持 ``movie_info`` 原值。"""
+        movie_info = {
+            "year": 1998,
+            "runtime": 123,
+            "runtime_imdb": 123,
+            "original_title": "Original Title",
+            "chinese_title": "中文名",
+            "titles": ["Original Title"],
+            "genres": ["Drama"],
+            "country": ["Japan"],
+            "language": ["Japanese"],
+            "directors": ["Director One"],
+        }
+        before = json.loads(json.dumps(movie_info, ensure_ascii=False))
+
+        with patch.object(self.module, "query_imdb_title_metadata", return_value=None):
+            self.module.get_imdb_movie_info("tt1234567", movie_info)
+
+        self.assertEqual(movie_info, before)
 
 
 class TestTmdbMerge(unittest.TestCase):

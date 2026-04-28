@@ -210,16 +210,37 @@ def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -
     """
     movie_dict = movie_info | movie_ids | file_info
     movie_dict["director"] = Path(path).parent.name
-    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'").replace("  ", " ")
-    movie_dict["titles"] = [re.sub(r"\s+", " ", title.strip()).replace("　", " ") for title in movie_dict["titles"]]
+
+    original_title = str(movie_dict.get("original_title") or "").strip()
+    original_title = re.sub(r"\s+", " ", original_title).replace("　", " ").replace("’", "'")
+    movie_dict["original_title"] = original_title
+
+    titles = movie_dict.get("titles")
+    normalized_titles = []
+    if isinstance(titles, (list, tuple, set)):
+        for title in titles:
+            text = re.sub(r"\s+", " ", str(title or "").strip()).replace("　", " ")
+            if text:
+                normalized_titles.append(text)
+    if original_title:
+        normalized_titles.append(original_title)
+    movie_dict["titles"] = remove_duplicates_ignore_case(normalized_titles)
+
+    for key in ["genres", "country", "language", "directors"]:
+        values = movie_dict.get(key)
+        if isinstance(values, (list, tuple, set)):
+            normalized_values = [str(value).strip() for value in values if value is not None and str(value).strip()]
+            movie_dict[key] = remove_duplicates_ignore_case(normalized_values)
+        else:
+            movie_dict[key] = []
+
     movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob("*") if file.is_file()) / (1024 * 1024))
     movie_dict["dl_link"] = get_dl_link(path)
-    movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
-    movie_dict["titles"].append(movie_dict["original_title"])
 
-    for key in ["genres", "country", "language", "titles", "directors"]:
-        if key in movie_dict and isinstance(movie_dict[key], list):
-            movie_dict[key] = remove_duplicates_ignore_case(movie_dict[key])
+    try:
+        movie_dict["year"] = int(movie_dict.get("year") or 0)
+    except (TypeError, ValueError):
+        movie_dict["year"] = 0
 
     return movie_dict
 
@@ -231,12 +252,10 @@ def get_movie_id(movie_dict: dict) -> str:
     :param movie_dict: 完整电影信息字典
     :return: 用于目录名和封面文件名的编号字符串
     """
-    if movie_dict.get("imdb"):
-        return movie_dict["imdb"]
-    if movie_dict.get("tmdb"):
-        return f"tmdb{movie_dict['tmdb']}"
-    if movie_dict.get("douban"):
-        return f"db{movie_dict['douban']}"
+    for key, prefix in (("imdb", ""), ("tmdb", "tmdb"), ("douban", "db")):
+        value = str(movie_dict.get(key) or "").strip()
+        if value:
+            return f"{prefix}{value}"
     return "noid"
 
 
@@ -248,21 +267,24 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> str:
     :param movie_dict: 完整电影信息字典
     :return: 未经过文件名净化的目标目录名
     """
-    chinese_title = movie_dict.get("chinese_title", "")
-    original_title = movie_dict.get("original_title", "")
-    year = movie_dict.get("year", "")
-    source = movie_dict.get("source", "")
-    resolution = movie_dict.get("resolution", "")
-    codec = movie_dict.get("codec", "")
-    bitrate = movie_dict.get("bitrate", "")
+    chinese_title = str(movie_dict.get("chinese_title") or "").strip()
+    original_title = str(movie_dict.get("original_title") or "").strip()
+    year = movie_dict.get("year") or ""
+    source = str(movie_dict.get("source") or "").strip()
+    resolution = str(movie_dict.get("resolution") or "").strip()
+    codec = str(movie_dict.get("codec") or "").strip()
+    bitrate = str(movie_dict.get("bitrate") or "").strip()
 
     if not original_title:
         logger.error(f"没有获取到信息：{path}")
-        base_name = os.path.basename(path)
+        base_name = os.path.basename(os.path.normpath(path))
     else:
         chinese_title = "" if chinese_title == original_title else chinese_title
         movie_id = get_movie_id(movie_dict)
-        base_name = f"{year} - {original_title}{f'({chinese_title})' if chinese_title else ''}{{{movie_id}}}"
+        title_part = f"{year} - {original_title}"
+        if chinese_title:
+            title_part += f"({chinese_title})"
+        base_name = f"{title_part}{{{movie_id}}}"
 
     return f"{base_name}[{source}][{resolution}][{codec}@{bitrate}]"
 
@@ -275,11 +297,21 @@ def create_aka_movie(path: str, movie_dict: dict) -> None:
     :param movie_dict: 完整电影信息字典
     :return: 无
     """
-    if movie_dict["titles"]:
-        for title in movie_dict["titles"]:
-            file_name = sanitize_filename(title).strip()
-            file_name = file_name.replace("\t", " ")
-            Path(os.path.join(path, f"{file_name}.别名")).touch()
+    titles = movie_dict.get("titles") or []
+    if not isinstance(titles, (list, tuple, set)):
+        return
+
+    seen = set()
+    for title in titles:
+        file_name = sanitize_filename(str(title)).strip().replace("\t", " ")
+        if not file_name:
+            continue
+        marker_name = f"{file_name}.别名"
+        marker_key = marker_name.lower()
+        if marker_key in seen:
+            continue
+        seen.add(marker_key)
+        Path(path, marker_name).touch()
 
 
 def fill_movie_info(movie_ids: dict, movie_info: dict, tv: bool) -> None:
