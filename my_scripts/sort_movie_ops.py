@@ -42,8 +42,8 @@ RLS_SOURCE = CONFIG['rls_source']  # rare 文件路径
 CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 FFPROBE_PATH = CONFIG['ffprobe_path']  # ffprobe 路径
-MTM_PATH = CONFIG['mtm_path']  # mtm 路径
-MEDIAINFO_PATH = CONFIG['mediainfo_path']  # mtm 路径
+MTN_PATH = CONFIG['mtn_path']  # mtn 路径
+MEDIAINFO_PATH = CONFIG['mediainfo_path']  # mediainfo 路径
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
 RU_PATH = CONFIG['ru_path']  # ru 种子路径
 YTS_PATH = CONFIG['yts_path']  # yts 种子路径
@@ -106,6 +106,10 @@ YTS_TORRENT_PRIORITIES = (
 )
 FFPROBE_TIMEOUT_SECONDS = 60
 MEDIAINFO_TIMEOUT_SECONDS = 60
+MTN_TIMEOUT_SECONDS = 120
+MTN_CONTACT_COLUMNS = 4
+MTN_CONTACT_ROWS = 4
+MTN_CONTACT_THUMB_HEIGHT = 100
 IGNORED_CODEC_DETAILS = {
     "mpeg-4 visual",
     "mpeg video",
@@ -817,24 +821,52 @@ def check_video_codec(path: str | os.PathLike) -> Optional[str]:
     return f"{codec}.{rc_mode}" if rc_mode else codec
 
 
-def generate_video_contact_mtm(video_path: str) -> None:
+def generate_video_contact_mtn(video_path: str | os.PathLike) -> None:
     """
-    用 mtn 生成视频网格缩略图，生成在视频同一目录
+    调用 mtn 为视频生成同名 ``_s.jpg`` 网格缩略图。
 
-    :param video_path: 视频路径
-    :return: 无
+    该函数作为 ``generate_video_contact`` 的兜底方案使用，输出文件由 mtn
+    按视频路径自动生成，调用方仍负责检查 ``_s.jpg`` 是否实际存在。
+
+    :param video_path: 视频文件路径
+    :return: 无返回值
     """
+    video_path = os.fspath(video_path)
+    output_path = os.path.splitext(video_path)[0] + "_s.jpg"
     cmd = [
-        MTM_PATH,  # 可使用原始字符串，避免转义
-        "-c", "4",
-        "-r", "4",
-        "-h", "100",
+        MTN_PATH,
+        "-c", str(MTN_CONTACT_COLUMNS),
+        "-r", str(MTN_CONTACT_ROWS),
+        "-h", str(MTN_CONTACT_THUMB_HEIGHT),
         "-P",
-        video_path
+        video_path,
     ]
 
-    logger.info(f"执行命令：{' '.join(cmd)}")
-    subprocess.run(cmd, capture_output=True, text=True)
+    logger.info(f"执行 mtn 命令：{subprocess.list2cmdline(cmd)}")
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=MTN_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"mtn 执行超时: {video_path}")
+        return
+    except OSError as e:
+        logger.warning(f"mtn 执行失败: {video_path}: {e}")
+        return
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        logger.warning(f"mtn 执行失败: {video_path}: {stderr}")
+        return
+
+    if not os.path.exists(output_path):
+        logger.warning(f"mtn 未生成缩略图: {output_path}")
 
 
 def generate_video_contact(video_path: str) -> None:
