@@ -6,6 +6,7 @@
 :copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -94,6 +95,13 @@ PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
 
+YTS_TORRENT_PRIORITIES = (
+    ("quality", ["2160p", "1080p", "720p", "480p", "3D"]),
+    ("video_codec", ["x265", "x264"]),
+    ("bit_depth", ["10", "8"]),
+    ("type", ["bluray", "web"]),
+)
+
 
 def format_bytes(size_bytes: int | str) -> str:
     """
@@ -138,14 +146,6 @@ def filter_torrents_by_priority(torrents: list[dict], key: str, priority_list: l
     return torrents
 
 
-YTS_TORRENT_PRIORITIES = (
-    ("quality", ["2160p", "1080p", "720p", "480p", "3D"]),
-    ("video_codec", ["x265", "x264"]),
-    ("bit_depth", ["10", "8"]),
-    ("type", ["bluray", "web"]),
-)
-
-
 def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
     """
     从 YTS 电影详情 JSON 中选择最佳 torrent 并生成磁链。
@@ -178,12 +178,14 @@ def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
 
 def build_unique_path(target_path: str | os.PathLike) -> Path:
     """
-    为目标文件生成不冲突路径。
+    为目标路径生成一个当前不存在的同目录路径。
 
-    如果 ``target_path`` 已存在，则依次尝试 ``name(1).ext``、``name(2).ext``。
+    如果 ``target_path`` 不存在，直接返回该路径；如果已存在，则依次尝试
+    ``name(1).ext``、``name(2).ext``，直到找到未被文件或目录占用的路径。
+    本函数只计算路径，不创建文件，也不保证后续写入/移动操作的原子性。
 
     :param target_path: 原始目标路径
-    :return: 可用目标路径
+    :return: 当前未被占用的目标路径
     """
     path = Path(target_path)
     if not path.exists():
@@ -191,12 +193,10 @@ def build_unique_path(target_path: str | os.PathLike) -> Path:
 
     base = path.stem
     suffix = path.suffix
-    index = 1
-    while True:
+    for index in itertools.count(1):
         candidate = path.with_name(f"{base}({index}){suffix}")
         if not candidate.exists():
             return candidate
-        index += 1
 
 
 def get_existing_id_files(path: str) -> tuple[dict[str, Optional[str]], Optional[str]]:
