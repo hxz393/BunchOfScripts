@@ -1640,6 +1640,24 @@ class TestAutoLocalHelpers(unittest.TestCase):
         self.assertEqual((movie_dir / "movie.mkv").read_text(encoding="utf-8"), "video")
         self.assertFalse((movie_dir / "disc1").exists())
 
+    def test_move_all_files_to_root_drops_duplicate_empty_marker_files(self):
+        """重复打平空文件时不应生成 ``(1)`` 编号或别名文件。"""
+        movie_dir = self.root / "Movie Folder"
+        nested_dir = movie_dir / "disc1"
+        nested_dir.mkdir(parents=True)
+        marker_names = ["tt1234567.imdb", "12345.tmdb", "654321.douban", "Alias Title.别名"]
+
+        for marker_name in marker_names:
+            (movie_dir / marker_name).touch()
+            (nested_dir / marker_name).touch()
+
+        self.module.move_all_files_to_root(str(movie_dir))
+
+        for marker_name in marker_names:
+            self.assertTrue((movie_dir / marker_name).exists())
+            self.assertFalse((movie_dir / marker_name.replace(".", "(1).", 1)).exists())
+        self.assertFalse(nested_dir.exists())
+
     def test_remove_duplicates_ignore_case_keeps_first_string_variant(self):
         """标题去重应忽略字符串大小写，并保留第一次出现的写法。"""
         result = self.module.remove_duplicates_ignore_case(["Movie", "movie", "MOVIE", "Other"])
