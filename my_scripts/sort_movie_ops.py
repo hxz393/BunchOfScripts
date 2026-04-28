@@ -369,17 +369,21 @@ def parse_movie_id(movie_id: str | None) -> Optional[tuple[str, str]]:
     return None
 
 
-def extract_imdb_id_from_links(hrefs: Iterable[str]) -> Optional[str]:
+def extract_imdb_id_from_links(hrefs: Iterable[str | None]) -> Optional[str]:
     """
-    从链接列表中提取 IMDb 编号。
+    从链接序列中提取 IMDb title 编号。
 
-    优先匹配标准 IMDb 标题页链接；找不到时回退到第一个宽松 ``tt`` 编号匹配。
+    会遍历全部链接并优先返回标准 IMDb title URL 中的编号；
+    如果没有标准 IMDb 链接，则回退到第一个能从链接文本中宽松提取出的 ``tt`` 编号。
+    返回值统一为小写。
 
-    :param hrefs: 链接序列
-    :return: IMDb 编号；不存在时返回 ``None``
+    :param hrefs: href 字符串序列
+    :return: IMDb title 编号，例如 ``tt1234567``；不存在时返回 ``None``
     """
     fallback_imdb_id = None
     for href in hrefs:
+        if not href:
+            continue
         imdb_id = extract_imdb_id(href)
         if not imdb_id:
             continue
