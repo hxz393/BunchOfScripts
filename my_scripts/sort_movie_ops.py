@@ -44,21 +44,6 @@ RARE_PATH = CONFIG['rare_path']  # rare 文件路径
 BD_SOURCE = ['BDRemux', 'BluRay', 'BDRip']
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
-# 编译正则，便于复用
-RE_JSON_FILE_NAME = re.compile(
-    r'^'
-    r'(?P<name>.*?)'  # 电影名 (尽量匹配少一点，直到遇到 '(' )
-    r'\('  # 匹配左括号
-    r'(?P<year>\d{4})'  # 4位年份
-    r'\)'  # 匹配右括号
-    r'\['  # 匹配 '['
-    r'(?P<quality>.*?)'  # 质量 (用非贪心匹配，直到遇到 ']')
-    r']'  # 匹配 ']'
-    r'\{'  # 匹配 '{'
-    r'(?P<id>.*?)'  # 编号 (用非贪心匹配，直到遇到 '}')
-    r'}',  # 匹配 '}'
-    re.IGNORECASE
-)
 IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
 IMDB_ID_PATTERN = re.compile(r"\b(tt\d+)\b", re.IGNORECASE)
 IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
@@ -417,131 +402,63 @@ def extract_torrent_download_link(target_path: str | os.PathLike, magnet_path: s
     return None
 
 
-def parse_bitrate(bitrate_str: str) -> int:
-    """
-    将比特率字符串转换为整数
-
-    :param bitrate_str: 类似于 2249kbps
-    :return: 如果解析失败返回 0
-    """
-    try:
-        bitrate_str = bitrate_str.lower().replace('kbps', '').strip()
-        return int(bitrate_str)
-    except Exception:
-        return 0
-
-
-def sort_aka_files(source_path: str, target_path: str) -> None:
-    """
-    扫描来源目录下的空文件，移动到对应目标目录下
-
-    :param source_path: 来源目录
-    :param target_path: 目标目录
-    :return: 无
-    """
-    logger.info(f"来源目录：{source_path}")
-    logger.info(f"目标目录：{target_path}")
-    # 获取所有子目录
-    dir_dict = get_subdirs(source_path)
-    for k, dir_path in dir_dict.items():
-        p = Path(dir_path)
-        destination_dir = Path(os.path.join(target_path, k))
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        # if not destination_dir.exists():
-        #     continue
-
-        for path_item in p.iterdir():
-            if path_item.is_file():
-                if path_item.stat().st_size == 0:
-                    dest_path = destination_dir / path_item.name
-                    shutil.move(str(path_item), str(dest_path))
-                    logger.info(f"移动：{str(path_item)} -> {str(dest_path)}")
-                elif path_item.name == "movies.csv":
-                    remove_target(str(path_item))
-                    logger.info(f"删除：{str(path_item)}")
-
-
 def sort_torrents_auto(path: str) -> None:
     """
-    自动整理指定目录，扫描目录下的子目录，将其中下载完成的种子移动到对应目录
+    简单整理下载目录中的 LOG 种子记录文件。
 
-    :param path: 来源目录
-    :return: 无
+    ``path`` 下一级目录视为导演目录；导演目录下的直接子目录视为电影目录。
+    LOG 文件按电影目录名是否出现在 LOG 文件名中匹配，匹配后移入目录。
+
+    本函数是旧下载目录整理入口，只保留简单历史兼容逻辑，不做复杂模糊匹配。
+
+    :param path: 下载来源根目录
+    :return: 无返回值
     """
     logger.info(f"来源目录：{path}")
-    # 获取所有子目录，为导演目录
-    dir_dict = get_subdirs(path)
-    for k, dir_path in dir_dict.items():
-        # 获取电影目录
-        film_dict = get_subdirs(dir_path)
-        if not film_dict:
-            continue
+    for director_path in sorted((item for item in Path(path).iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+        film_paths = sorted((item for item in director_path.iterdir() if item.is_dir()), key=lambda item: item.name.casefold())
+        for log_path in sorted((item for item in director_path.iterdir() if item.is_file() and item.suffix.lower() == ".log"), key=lambda item: item.name.casefold()):
+            for film_path in film_paths:
+                if film_path.name.casefold() not in log_path.name.casefold():
+                    continue
+                target_path = film_path / log_path.name
+                shutil.move(str(log_path), str(target_path))
+                logger.info(f"移动文件：{log_path} -> {target_path}")
+                logger.info("-" * 255)
+                break
 
-        # 获取所有 json 文件
-        json_dict = get_files_with_extensions(dir_path, ".json")
-        # 获取所有 log 文件
-        log_dict = get_files_with_extensions(dir_path, ".log")
-
-        # 处理 json 文件，有一些不是通过盒子下载，电影目录为原名，要手动处理
-        if json_dict:
-            for json_name, json_path in json_dict.items():
-                json_name_no_ext = os.path.splitext(json_name)[0]  # 正常文件名
-                info_dict = parse_jason_file_name(json_name_no_ext)
-                json_name_old = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('id')}]"  # 旧文件名
-                json_name_org = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('quality')}]"  # 种子原始名
-                names_to_check = [json_name_no_ext, json_name_old, json_name_org]
-                names_to_check_alt = [n.translate(str.maketrans('', '', "'-,&")).replace("  ", " ") for n in names_to_check]
-                tag_to_check = [info_dict.get('name'), info_dict.get('year'), info_dict.get('quality'), "yts"]  # 近似匹配，只限定来源 yts
-                for film_name, film_path in film_dict.items():
-                    if any(name.lower() in film_name.lower() for name in names_to_check_alt) or any(name.lower() in film_name.lower() for name in names_to_check) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
-                        target_path = os.path.join(film_path, json_name)
-                        shutil.move(json_path, target_path)
-                        logger.info(f"移动文件：{json_path} -> {target_path}")
-                        os.rename(film_path, os.path.join(dir_path, json_name_no_ext))
-                        logger.info(f"目录更名：{film_path} -> {json_name_no_ext}")
-                        logger.info("-" * 255)
-                        break
-
-        # 处理 log 文件，将下载目录名去匹配种子名
-        if log_dict:
-            for log_name, log_path in log_dict.items():
-                for film_name, film_path in film_dict.items():
-                    # 判断目录名是否是文件名的子串，是就移动
-                    if film_name in log_name:
-                        target_path = os.path.join(film_path, log_name)
-                        shutil.move(log_path, target_path)
-                        logger.info(f"移动文件：{log_path} -> {target_path}")
-                        logger.info("-" * 255)
-                        break
-
-    # 删除垃圾文件
     delete_trash_files(path)
 
 
 def check_local_torrent(imdb: str) -> dict:
     """
-    检查本地库存，将命中的种子移动到待检查目录。
+    从预加载的本地种子路径列表中查找并移动指定 IMDb 编号的种子文件。
 
-    :param imdb: imdb 编号
-    :return: 返回移动结果
+    函数在 ``PRE_LOAD_FP`` 中查找文件名包含 ``[imdb]`` 的路径，命中且源文件
+    仍存在时，将文件移动到 ``CHECK_TARGET``。目标目录已存在同名文件时，通过
+    ``build_unique_path`` 生成不重名路径，避免覆盖已有文件。
+
+    ``PRE_LOAD_FP`` 是模块导入时从多个种子来源目录预加载的快照；函数不会重新
+    扫描来源目录，因此运行期间新增的种子不会被本次检查发现。
+
+    :param imdb: IMDb 编号，例如 ``tt1234567``
+    :return: ``{"move_counts": 移动数量, "move_files": 移动后的路径列表}``
     """
-    result = {"move_counts": 0, "move_files": []}
+    moved_files = []
     bracket_id = f"[{imdb}]"
-    os.makedirs(CHECK_TARGET, exist_ok=True)
+    target_dir = Path(CHECK_TARGET)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    file_paths = PRE_LOAD_FP
-    for file_path in file_paths:
-        if bracket_id in file_path:
-            if not os.path.exists(file_path):
-                # 文件可能已被删除，跳过
-                continue
+    for file_path in PRE_LOAD_FP:
+        source_path = Path(file_path)
+        if bracket_id not in source_path.name or not source_path.exists():
+            continue
 
-            target_path = str(build_unique_path(Path(CHECK_TARGET) / os.path.basename(file_path)))
-            shutil.move(file_path, target_path)
-            result["move_counts"] += 1
-            result["move_files"].append(target_path)
+        target_path = build_unique_path(target_dir / source_path.name)
+        shutil.move(str(source_path), str(target_path))
+        moved_files.append(str(target_path))
 
-    return result
+    return {"move_counts": len(moved_files), "move_files": moved_files}
 
 
 def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
@@ -618,62 +535,6 @@ def create_aka_director(path: str, aka: list) -> None:
     for a in unique_aka:
         file_name = sanitize_filename(a).strip()
         Path(os.path.join(path, file_name)).touch()
-
-
-def get_subdirs(dir_path: str) -> dict:
-    """获取指定目录下所有直接子目录路径，不递归
-
-    :param dir_path: 来源目录
-    :return: 目录名和路径字典
-    """
-    result = {}
-    for entry in os.listdir(dir_path):
-        full_path = os.path.join(dir_path, entry)
-        if os.path.isdir(full_path):
-            result[entry] = full_path
-    return result
-
-
-def get_files_with_extensions(dir_path: str, extension: str) -> dict:
-    """
-    获取指定目录下所有符合扩展名的文件。
-
-    :param dir_path: 来源目录
-    :param extension: 扩展名
-    :return: 目录名和路径字典
-    """
-    result = {}
-    for entry in os.listdir(dir_path):
-        full_path = os.path.join(dir_path, entry)
-        if os.path.isfile(full_path):
-            # 检查该文件是否匹配任意一个扩展名
-            if entry.lower().endswith(extension):
-                result[entry] = full_path
-    return result
-
-
-def parse_jason_file_name(filename: str) -> dict:
-    """
-    解析类似 "Sonic(2019)[1080p]{tt8108200}" 格式的文件名，
-    返回一个字典，其中包含：
-        - name: 电影名
-        - year: 年份
-        - quality: 视频质量(如 1080p)
-        - id: 编号(如 tt8108200)
-
-    :param filename: 不带扩展的文件名
-    :return: 解析结果，匹配失败返回空字典
-    """
-    match = RE_JSON_FILE_NAME.match(filename)
-    if not match:
-        return {}
-
-    return {
-        'name': match.group('name').strip(),
-        'year': match.group('year').strip(),
-        'quality': match.group('quality').strip(),
-        'id': match.group('id').strip(),
-    }
 
 
 def delete_trash_files(path: str) -> None:
