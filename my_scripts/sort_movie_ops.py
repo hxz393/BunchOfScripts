@@ -82,7 +82,7 @@ RE_JSON_FILE_NAME = re.compile(
     re.IGNORECASE
 )
 IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
-IMDB_ID_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
+IMDB_ID_PATTERN = re.compile(r"\b(tt\d+)\b", re.IGNORECASE)
 IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
 
 # 文件多，先行获取列表
@@ -346,23 +346,25 @@ def extract_imdb_id(text: str | None) -> Optional[str]:
     return match.group(1).lower() if match else None
 
 
-def parse_movie_id(movie_id: str) -> Optional[tuple[str, str]]:
+def parse_movie_id(movie_id: str | None) -> Optional[tuple[str, str]]:
     """
-    将电影编号解析为数据库字段名和对应值。
+    将外部电影编号解析为数据库字段名和值。
 
-    支持三种格式：
-    - ``tt...`` -> ``("imdb", "tt...")``
-    - ``tmdb123`` -> ``("tmdb", "123")``
-    - ``db456`` -> ``("douban", "456")``
+    支持三种前缀格式：``tt...``、``tmdb...``、``db...``。
+    函数只按前缀拆分，不校验编号主体是否为纯数字；无法识别的前缀返回 ``None``。
 
-    :param movie_id: 原始电影编号
-    :return: ``(字段名, 字段值)``；无法识别时返回 ``None``
+    :param movie_id: 原始电影编号，例如 ``tt1234567``、``tmdb123``、``db456``
+    :return: ``(字段名, 字段值)``；字段名为 ``imdb``、``tmdb`` 或 ``douban``。无法识别时返回 ``None``
     """
-    if movie_id.startswith("tt"):
-        return "imdb", movie_id
-    if movie_id.startswith("tmdb"):
+    if not movie_id:
+        return None
+
+    movie_id = movie_id.strip()
+    if movie_id.startswith("tt") and len(movie_id) > 2:
+        return "imdb", movie_id.lower()
+    if movie_id.startswith("tmdb") and len(movie_id) > 4:
         return "tmdb", movie_id[4:]
-    if movie_id.startswith("db"):
+    if movie_id.startswith("db") and len(movie_id) > 2:
         return "douban", movie_id[2:]
     return None
 
