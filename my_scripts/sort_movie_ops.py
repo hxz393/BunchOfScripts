@@ -295,12 +295,16 @@ def scan_ids(directory: str | os.PathLike) -> Dict[str, Optional[str]]:
     return result
 
 
-def remove_duplicates_ignore_case(items: list) -> list:
+def remove_duplicates_ignore_case(items: Iterable[Any]) -> list[Any]:
     """
-    按首次出现顺序去重；字符串忽略大小写，非字符串按值比较。
+    按首次出现顺序去重。
 
-    :param items: 原始列表
-    :return: 去重后的列表
+    字符串使用 ``casefold()`` 后的值比较，因此大小写不同但文本相同的
+    字符串只保留第一次出现的原始写法。可 hash 的非字符串按值比较；
+    不可 hash 的对象使用 ``repr(item)`` 作为兜底比较键。
+
+    :param items: 原始可迭代对象
+    :return: 去重后的列表，元素顺序与首次出现顺序一致
     """
     seen = set()
     result = []
