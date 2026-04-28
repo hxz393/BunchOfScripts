@@ -16,12 +16,16 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-import sort_movie_ops
 from my_module import read_file_to_list, read_json_to_dict, sanitize_filename, write_dict_to_json
 from sort_movie_mysql import insert_movie_record_to_mysql, query_imdb_title_metadata
 from sort_movie_ops import (
+    CONFIG as OPS_CONFIG,
+    check_local_torrent,
+    delete_trash_files,
     extract_imdb_id,
     fix_douban_name,
+    generate_video_contact,
+    generate_video_contact_mtm,
     get_dl_link,
     get_video_info,
     move_all_files_to_root,
@@ -38,6 +42,21 @@ from sort_movie_request import (
 )
 
 logger = logging.getLogger(__name__)
+VIDEO_EXTENSIONS = OPS_CONFIG["video_extensions"]
+MAX_BITRATE = OPS_CONFIG["max_bitrate"]
+MIRROR_PATH = OPS_CONFIG["mirror_path"]
+RE_DIR_NAME = re.compile(
+    r"^"
+    r"(?P<year>\d+)\s*-\s*"
+    r"(?P<title>[^{]+)"
+    r"(?:\((?P<chinese>[^)]+)\))?"
+    r"\{(?P<imdb>(tt\d+|tmdb\d+|db\d+|noid)\d*(tv)?)}"
+    r"\[(?P<source>[^]]+)]"
+    r"\[(?P<resolution>[^]]+)]"
+    r"\[(?P<encoding>[^]@]+)@(?P<bitrate>[^]]+)]"
+    r"$",
+    re.IGNORECASE,
+)
 # TMDB 的真实低位编号很多（例如两位、三位都可能出现），
 # 这里只要求至少 2 位数字，避免把 ``tmdb1`` 之类明显噪声当成有效编号。
 TMDB_FOLDER_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9])(tmdb\d{2,}(?:tv)?)(?![A-Za-z0-9])", re.IGNORECASE)
@@ -323,7 +342,7 @@ def ensure_movie_screenshots(path: str) -> Optional[str]:
     :return: 截图生成失败时返回错误信息，否则返回 ``None``
     """
     p = Path(path)
-    video_paths = [str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in sort_movie_ops.VIDEO_EXTENSIONS]
+    video_paths = [str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS]
     if len(video_paths) > 1:
         logger.warning(f"{p.name} 目录中视频数量大于 1")
 
@@ -332,14 +351,44 @@ def ensure_movie_screenshots(path: str) -> Optional[str]:
         screen_path = base + "_s.jpg"
         if not os.path.exists(screen_path):
             try:
-                sort_movie_ops.generate_video_contact(video_path)
+                generate_video_contact(video_path)
             except Exception as e:
                 logger.warning(f"{video_path} 生成缩略图失败: {e}")
         if not os.path.exists(screen_path):
-            sort_movie_ops.generate_video_contact_mtm(video_path)
+            generate_video_contact_mtm(video_path)
         if not os.path.exists(screen_path):
             return f"生成视频截图失败：{p.name}"
     return None
+
+
+def maintain_checked_movie(path: str, movie_info: dict) -> None:
+    """
+    执行通过校验后的整理维护动作。
+
+    :param path: 电影目录路径
+    :param movie_info: 完整电影信息字典
+    :return: 无
+    """
+    imdb = movie_info["imdb"]
+    quality = movie_info["quality"]
+    source = movie_info["source"]
+
+    try:
+        local_check = check_local_torrent(imdb, quality, source)
+    except Exception as e:
+        logger.warning(f"{imdb} 本地库存种子检查失败，跳过：{e}")
+    else:
+        move_counts = local_check["move_counts"]
+        if move_counts:
+            logger.warning(f"{imdb} 已移动本地库存种子，请检查: {move_counts} {local_check.get('move_files', [])}")
+
+    if quality not in ["1080p", "2160p"] and imdb:
+        check_kpk_for_better_quality(imdb, quality)
+
+    mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info["director"]))
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    delete_trash_files(path)
 
 
 def check_movie(path: str) -> Optional[str]:
@@ -389,43 +438,27 @@ def check_movie(path: str) -> Optional[str]:
     if len(dir_list) != 0:
         return f"{p.name} 目录中有二级目录：{dir_list}"
 
-    match = sort_movie_ops.RE_DIR_NAME.match(p.name)
+    match = RE_DIR_NAME.match(p.name)
     if not match:
         return f"{p.name} 目录名格式错误或缺少必须字段"
 
-    imdb = movie_info["imdb"]
     quality = movie_info["quality"]
     source = movie_info["source"]
-    result = sort_movie_ops.check_local_torrent(imdb, quality, source)
-    move_counts = result["move_counts"]
-    delete_counts = result["delete_counts"]
-    if move_counts:
-        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
-        return f"{imdb} 请检查本地库存: {move_counts}"
-    if delete_counts:
-        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
-
     info = match.groupdict()
     file_bitrate = int(info["bitrate"].split("kbps")[0])
     low_bitrate = False
-    if quality == "2160p" and source == "BluRay" and file_bitrate < sort_movie_ops.MAX_BITRATE * 40:
+    if quality == "2160p" and source == "BluRay" and file_bitrate < MAX_BITRATE * 40:
         low_bitrate = True
-    elif quality == "1080p" and source == "BluRay" and file_bitrate < sort_movie_ops.MAX_BITRATE * 8:
+    elif quality == "1080p" and source == "BluRay" and file_bitrate < MAX_BITRATE * 8:
         low_bitrate = True
-    elif quality == "720p" and file_bitrate < sort_movie_ops.MAX_BITRATE * 2:
+    elif quality == "720p" and file_bitrate < MAX_BITRATE * 2:
         low_bitrate = True
-    elif quality == "480p" and file_bitrate < sort_movie_ops.MAX_BITRATE:
+    elif quality == "480p" and file_bitrate < MAX_BITRATE:
         low_bitrate = True
     if low_bitrate:
         logger.warning(f"{p.name} 码率过低：{file_bitrate}kbps")
 
-    if quality not in ["1080p", "2160p"] and imdb:
-        check_kpk_for_better_quality(imdb, quality)
-
-    mirror_dir = Path(os.path.join(sort_movie_ops.MIRROR_PATH, movie_info["director"]))
-    mirror_dir.mkdir(parents=True, exist_ok=True)
-
-    sort_movie_ops.delete_trash_files(path)
+    maintain_checked_movie(path, movie_info)
     return None
 
 
