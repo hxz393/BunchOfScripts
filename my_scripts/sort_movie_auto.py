@@ -172,6 +172,157 @@ def prepare_movie_folder_markers(path: str) -> Optional[PrepareFolderError]:
     return None
 
 
+def build_empty_movie_info() -> dict:
+    """
+    创建统一的影片元数据容器，供各站点逐步补全。
+
+    :return: 初始化后的电影信息字典
+    """
+    return {
+        "director": "",
+        "year": 0,
+        "original_title": "",
+        "chinese_title": "",
+        "genres": [],
+        "country": [],
+        "language": [],
+        "runtime": 0,
+        "poster_path": "",
+        "titles": [],
+        "directors": [],
+        "version": "",
+        "publisher": "",
+        "pubdate": "",
+        "dvhdr": "",
+        "audio": "未知",
+        "subtitle": "未知",
+        "comment": None,
+    }
+
+
+def fill_movie_info(movie_ids: dict, movie_info: dict, tv: bool) -> None:
+    """
+    按可用编号依次补充 TMDB、IMDb 和 Douban 元数据。
+
+    :param movie_ids: 当前目录扫描到的编号字典
+    :param movie_info: 统一的电影信息字典，会在原对象上更新
+    :param tv: 是否按电视剧条目处理
+    :return: 无
+    """
+    tmdb_id = movie_ids.get("tmdb")
+    if tmdb_id:
+        normalized_tmdb_id = tmdb_id[:-2] if tmdb_id.endswith("tv") else tmdb_id
+        get_tmdb_movie_info(normalized_tmdb_id, movie_info, tv)
+    else:
+        logger.warning("没有 TMDB 编号。")
+
+    imdb_id = movie_ids.get("imdb")
+    if imdb_id:
+        get_imdb_movie_info(imdb_id, movie_info)
+    else:
+        logger.warning("没有 IMDB 编号。")
+
+    douban_id = movie_ids.get("douban")
+    if douban_id:
+        get_douban_movie_info(douban_id, movie_info)
+    else:
+        logger.warning("没有 DOUBAN 编号。")
+
+
+def get_created_file_names(path: str, original_file_names: set[str]) -> set[str]:
+    """
+    计算当前目录里相对整理前新出现的文件名集合。
+
+    :param path: 当前电影目录
+    :param original_file_names: 整理前已有的文件名集合
+    :return: 新增文件名集合
+    """
+    return {file.name for file in Path(path).iterdir() if file.is_file()} - original_file_names
+
+
+def rollback_sort_movie_state(path: str, current_path: str, renamed: bool, created_file_names: set[str], movie_info_backup: Optional[bytes]) -> None:
+    """
+    将整理失败后的目录状态回滚到整理前。
+
+    :param path: 整理前原始目录路径
+    :param current_path: 当前目录路径，可能已经重命名
+    :param renamed: 是否执行过目录重命名
+    :param created_file_names: 本次整理新创建的文件名集合
+    :param movie_info_backup: 整理前 ``movie_info.json5`` 的原始字节；不存在时为 ``None``
+    :return: 无
+    """
+    rollback_path = Path(current_path)
+    if rollback_path.exists():
+        for file_name in created_file_names:
+            file_path = rollback_path / file_name
+            if file_path.exists():
+                file_path.unlink()
+        if movie_info_backup is not None:
+            (rollback_path / "movie_info.json5").write_bytes(movie_info_backup)
+    if renamed and os.path.exists(current_path) and not os.path.exists(path):
+        os.rename(current_path, path)
+
+
+def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> Optional[str]:
+    """
+    执行目录重命名、落盘、校验和入库，并在失败时回滚。
+
+    :param path: 整理前原始目录路径
+    :param new_path: 目标目录路径
+    :param movie_dict: 完整电影信息字典
+    :return: 成功时返回最终目录路径，失败时返回 ``None``
+    """
+    same_target = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(new_path))
+    if not same_target and os.path.exists(new_path):
+        logger.error(f"目标目录已存在，停止整理：{new_path}")
+        return None
+
+    current_path = path
+    renamed = False
+    original_file_names = {file.name for file in Path(path).iterdir() if file.is_file()}
+    created_file_names: set[str] = set()
+    movie_info_path = Path(path) / "movie_info.json5"
+    movie_info_backup = movie_info_path.read_bytes() if movie_info_path.exists() else None
+
+    try:
+        if not same_target:
+            os.rename(path, new_path)
+            current_path = new_path
+            renamed = True
+
+        logger.info(f"抓取结果：{movie_dict}")
+
+        image_path = os.path.join(current_path, f"{get_movie_id(movie_dict)}.jpg")
+        if not os.path.exists(image_path):
+            get_tmdb_movie_cover(movie_dict["poster_path"], image_path)
+            created_file_names.update(get_created_file_names(current_path, original_file_names))
+
+        create_aka_movie(current_path, movie_dict)
+        created_file_names.update(get_created_file_names(current_path, original_file_names))
+
+        write_dict_to_json(os.path.join(current_path, "movie_info.json5"), movie_dict)
+        created_file_names.update(get_created_file_names(current_path, original_file_names))
+
+        time.sleep(0.1)
+        logger.info("-" * 25 + "步骤：检查校验信息" + "-" * 25)
+        time.sleep(0.1)
+        check_result = check_movie(current_path)
+        if check_result:
+            logger.error(check_result)
+            rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
+            return None
+
+        insert_movie_record_to_mysql(current_path)
+        time.sleep(0.1)
+        logger.info(f"旧名：{path}")
+        logger.info(f"新名：{current_path}")
+        return current_path
+    except Exception:
+        logger.exception(f"整理失败，开始回滚：{path}")
+        rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
+        return None
+
+
 def sort_movie(path: str, tv: bool = False) -> None:
     """
     根据目录中的编号文件抓取影片信息，并完成目录整理。
@@ -192,41 +343,9 @@ def sort_movie(path: str, tv: bool = False) -> None:
         return
 
     # TMDB 电视剧编号以 ``tv`` 后缀标记，这里据此自动切换抓取模式
-    tv = True if movie_ids["tmdb"] and movie_ids["tmdb"].find('tv') != -1 else False
-    # 统一的元数据容器，后续由各站点逐步补全
-    movie_info = {
-        "director": "",
-        "year": 0,
-        "original_title": "",
-        "chinese_title": "",
-        "genres": [],
-        "country": [],
-        "language": [],
-        "runtime": 0,
-        "poster_path": "",
-        "titles": [],
-        "directors": [],
-        "version": "",
-        "publisher": "",
-        "pubdate": "",
-        "dvhdr": "",
-        "audio": "未知",
-        "subtitle": "未知",
-        "comment": None
-    }
-
-    # 按可用编号依次补充 TMDB、IMDb 和 Douban 元数据
-    actions = {
-        'tmdb': lambda tmdb_id: get_tmdb_movie_info(tmdb_id.replace("tv", ""), movie_info, tv),
-        'imdb': lambda imdb_id: get_imdb_movie_info(imdb_id, movie_info),
-        'douban': lambda douban_id: get_douban_movie_info(douban_id, movie_info)
-    }
-    for key, action in actions.items():
-        id_value = movie_ids.get(key)
-        if id_value:
-            action(id_value)
-        else:
-            logger.warning(f"没有 {key.upper()} 编号。")
+    tv = bool(movie_ids["tmdb"] and movie_ids["tmdb"].endswith("tv"))
+    movie_info = build_empty_movie_info()
+    fill_movie_info(movie_ids, movie_info, tv)
 
     # 读取本地视频文件的基础信息
     file_info = get_video_info(path)
@@ -237,72 +356,7 @@ def sort_movie(path: str, tv: bool = False) -> None:
     movie_dict = merged_dict(path, movie_info, movie_ids, file_info)
     # 根据整理规则生成新目录名
     new_path = os.path.join(os.path.dirname(path), sanitize_filename(build_movie_folder_name(path, movie_dict)))
-    same_target = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(new_path))
-    if not same_target and os.path.exists(new_path):
-        logger.error(f"目标目录已存在，停止整理：{new_path}")
-        return
-
-    current_path = path
-    renamed = False
-    original_file_names = {file.name for file in Path(path).iterdir() if file.is_file()}
-    created_file_names: set[str] = set()
-    movie_info_path = Path(path) / "movie_info.json5"
-    movie_info_backup = movie_info_path.read_bytes() if movie_info_path.exists() else None
-
-    def record_created_files() -> None:
-        created_file_names.update({file.name for file in Path(current_path).iterdir() if file.is_file()} - original_file_names)
-
-    def rollback_sort_movie_state() -> None:
-        rollback_path = Path(current_path)
-        if rollback_path.exists():
-            for file_name in created_file_names:
-                file_path = rollback_path / file_name
-                if file_path.exists():
-                    file_path.unlink()
-            if movie_info_backup is not None:
-                (rollback_path / "movie_info.json5").write_bytes(movie_info_backup)
-        if renamed and os.path.exists(current_path) and not os.path.exists(path):
-            os.rename(current_path, path)
-
-    try:
-        if not same_target:
-            os.rename(path, new_path)
-            current_path = new_path
-            renamed = True
-
-        # 记录抓取结果
-        logger.info(f"抓取结果：{movie_dict}")
-        # 下载封面图
-        image_path = os.path.join(current_path, f"{get_movie_id(movie_dict)}.jpg")
-        if not os.path.exists(image_path):
-            get_tmdb_movie_cover(movie_dict["poster_path"], image_path)
-            record_created_files()
-        # 创建影片别名占位文件
-        create_aka_movie(current_path, movie_dict)
-        record_created_files()
-        # 将合并后的元数据写回本地
-        write_dict_to_json(os.path.join(current_path, "movie_info.json5"), movie_dict)
-        record_created_files()
-
-        # 执行整理后的目录校验
-        time.sleep(0.1)
-        logger.info("-" * 25 + "步骤：检查校验信息" + "-" * 25)
-        time.sleep(0.1)
-        check_result = check_movie(current_path)
-        if check_result:
-            logger.error(check_result)
-            rollback_sort_movie_state()
-            return
-
-        # 校验通过后再写入数据库
-        insert_movie_record_to_mysql(current_path)
-        time.sleep(0.1)
-        logger.info(f"旧名：{path}")
-        logger.info(f"新名：{current_path}")
-    except Exception as e:
-        logger.error(f"整理失败，开始回滚：{path} {e}")
-        rollback_sort_movie_state()
-        return
+    apply_sort_movie_transaction(path, new_path, movie_dict)
 
 
 def get_folder_name_ids(path: str) -> dict[str, Optional[str]]:
