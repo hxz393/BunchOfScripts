@@ -138,9 +138,17 @@ def filter_torrents_by_priority(torrents: list[dict], key: str, priority_list: l
     return torrents
 
 
+YTS_TORRENT_PRIORITIES = (
+    ("quality", ["2160p", "1080p", "720p", "480p", "3D"]),
+    ("video_codec", ["x265", "x264"]),
+    ("bit_depth", ["10", "8"]),
+    ("type", ["bluray", "web"]),
+)
+
+
 def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
     """
-    从 YTS JSON 中选择最佳种子并生成磁链。
+    从 YTS 电影详情 JSON 中选择最佳 torrent 并生成磁链。
 
     选择顺序依次为：
     1. 画质：2160p > 1080p > 720p > 480p > 3D
@@ -149,28 +157,22 @@ def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
     4. 来源：bluray > web
     5. 如果仍有多个候选，则取 ``size_bytes`` 最大者
 
-    :param json_data: 单个 YTS 电影详情 JSON
-    :param magnet_path: 磁链前缀
-    :return: 最佳种子的磁链
+    :param json_data: YTS movie details JSON，必须包含 ``data.movie.torrents``
+    :param magnet_path: 磁链前缀，例如 ``magnet:?xt=urn:btih:``
+    :return: 最佳 torrent 对应的磁链
+    :raises KeyError: JSON 结构缺少必要字段，或 torrent 缺少 ``hash``、``size_bytes`` 等字段
+    :raises ValueError: torrent 字段值超出允许优先级，或 ``torrents`` 为空
     """
     torrents = json_data["data"]["movie"]["torrents"]
-    torrents = filter_torrents_by_priority(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
+    if not torrents:
+        raise ValueError("YTS torrents is empty")
 
-    torrents = filter_torrents_by_priority(torrents, "video_codec", ["x265", "x264"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
+    for key, priority_list in YTS_TORRENT_PRIORITIES:
+        torrents = filter_torrents_by_priority(torrents, key, priority_list)
+        if len(torrents) == 1:
+            return f"{magnet_path}{torrents[0]['hash']}"
 
-    torrents = filter_torrents_by_priority(torrents, "bit_depth", ["10", "8"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    torrents = filter_torrents_by_priority(torrents, "type", ["bluray", "web"])
-    if len(torrents) == 1:
-        return f"{magnet_path}{torrents[0]['hash']}"
-
-    best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
+    best_torrent = max(torrents, key=lambda torrent: int(torrent["size_bytes"]))
     return f"{magnet_path}{best_torrent['hash']}"
 
 
