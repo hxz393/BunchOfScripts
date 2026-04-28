@@ -92,6 +92,8 @@ PRE_LOAD_FP.extend(get_file_paths(SK_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
+ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
+
 
 def format_bytes(size_bytes: int | str) -> str:
     """
@@ -109,17 +111,23 @@ def format_bytes(size_bytes: int | str) -> str:
     return f"{size_bytes:.2f} {size_name[i]}"
 
 
-def _filter_torrents_by_priority(torrents: list[dict], key: str, priority_list: list[str]) -> list[dict]:
+def filter_torrents_by_priority(torrents: list[dict], key: str, priority_list: list[str]) -> list[dict]:
     """
-    按优先级过滤 YTS 种子；如果出现意外字段值则抛错。
+    按字段优先级筛选 torrent 列表。
 
-    :param torrents: 种子列表
-    :param key: 过滤字段
-    :param priority_list: 优先级列表，按顺序取第一个命中的值
-    :return: 过滤后的种子列表
+    先校验所有 ``torrent[key]`` 的值都在 ``priority_list`` 中；如果发现未知值，
+    抛出 ``ValueError``，避免静默选错种子。校验通过后，按 ``priority_list``
+    顺序返回第一个命中优先级对应的全部 torrent，并保留原列表顺序。
+
+    :param torrents: torrent 字典列表，每个元素必须包含 ``key`` 字段
+    :param key: 用于筛选的字段名，例如 ``quality``、``video_codec``、``bit_depth``、``type``
+    :param priority_list: 允许值和优先级，越靠前优先级越高
+    :return: 最高优先级命中的 torrent 列表；空输入返回空列表
+    :raises KeyError: torrent 缺少 ``key`` 字段
+    :raises ValueError: ``torrent[key]`` 出现 ``priority_list`` 之外的值
     """
     unique_values = {torrent[key] for torrent in torrents}
-    unexpected_values = unique_values - set(priority_list)
+    unexpected_values = sorted(unique_values - set(priority_list))
     if unexpected_values:
         raise ValueError(f"Unexpected value for {key}: {unexpected_values}")
 
@@ -146,27 +154,24 @@ def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
     :return: 最佳种子的磁链
     """
     torrents = json_data["data"]["movie"]["torrents"]
-    torrents = _filter_torrents_by_priority(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
+    torrents = filter_torrents_by_priority(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
     if len(torrents) == 1:
         return f"{magnet_path}{torrents[0]['hash']}"
 
-    torrents = _filter_torrents_by_priority(torrents, "video_codec", ["x265", "x264"])
+    torrents = filter_torrents_by_priority(torrents, "video_codec", ["x265", "x264"])
     if len(torrents) == 1:
         return f"{magnet_path}{torrents[0]['hash']}"
 
-    torrents = _filter_torrents_by_priority(torrents, "bit_depth", ["10", "8"])
+    torrents = filter_torrents_by_priority(torrents, "bit_depth", ["10", "8"])
     if len(torrents) == 1:
         return f"{magnet_path}{torrents[0]['hash']}"
 
-    torrents = _filter_torrents_by_priority(torrents, "type", ["bluray", "web"])
+    torrents = filter_torrents_by_priority(torrents, "type", ["bluray", "web"])
     if len(torrents) == 1:
         return f"{magnet_path}{torrents[0]['hash']}"
 
     best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
     return f"{magnet_path}{best_torrent['hash']}"
-
-
-ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
 
 
 def build_unique_path(target_path: str | os.PathLike) -> Path:
