@@ -19,15 +19,13 @@ from bs4 import BeautifulSoup
 from my_module import sanitize_filename, write_dict_to_json
 from sort_movie_mysql import insert_movie_record_to_mysql, query_imdb_title_metadata
 from sort_movie_ops import (
-    build_movie_folder_name,
     check_movie,
-    create_aka_movie,
     extract_imdb_id,
     fix_douban_name,
-    get_movie_id,
+    get_dl_link,
     get_video_info,
-    merged_dict,
     move_all_files_to_root,
+    remove_duplicates_ignore_case,
     scan_ids,
 )
 from sort_movie_request import (
@@ -200,6 +198,90 @@ def build_empty_movie_info() -> dict:
     }
 
 
+def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -> dict:
+    """
+    合并线上元数据、编号信息和本地视频信息，并做当前整理流程需要的清洗。
+
+    :param path: 电影目录路径
+    :param movie_info: 电影信息字典
+    :param movie_ids: 电影编号字典
+    :param file_info: 视频文件信息字典
+    :return: 完整电影信息字典
+    """
+    movie_dict = movie_info | movie_ids | file_info
+    movie_dict["director"] = Path(path).parent.name
+    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'").replace("  ", " ")
+    movie_dict["titles"] = [re.sub(r"\s+", " ", title.strip()).replace("　", " ") for title in movie_dict["titles"]]
+    movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob("*") if file.is_file()) / (1024 * 1024))
+    movie_dict["dl_link"] = get_dl_link(path)
+    movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
+    movie_dict["titles"].append(movie_dict["original_title"])
+
+    for key in ["genres", "country", "language", "titles", "directors"]:
+        if key in movie_dict and isinstance(movie_dict[key], list):
+            movie_dict[key] = remove_duplicates_ignore_case(movie_dict[key])
+
+    return movie_dict
+
+
+def get_movie_id(movie_dict: dict) -> str:
+    """
+    按 ``imdb -> tmdb -> douban`` 的优先级返回当前影片编号。
+
+    :param movie_dict: 完整电影信息字典
+    :return: 用于目录名和封面文件名的编号字符串
+    """
+    if movie_dict.get("imdb"):
+        return movie_dict["imdb"]
+    if movie_dict.get("tmdb"):
+        return f"tmdb{movie_dict['tmdb']}"
+    if movie_dict.get("douban"):
+        return f"db{movie_dict['douban']}"
+    return "noid"
+
+
+def build_movie_folder_name(path: str, movie_dict: dict) -> str:
+    """
+    根据当前整理规则生成电影目录名。
+
+    :param path: 原电影目录路径
+    :param movie_dict: 完整电影信息字典
+    :return: 未经过文件名净化的目标目录名
+    """
+    chinese_title = movie_dict.get("chinese_title", "")
+    original_title = movie_dict.get("original_title", "")
+    year = movie_dict.get("year", "")
+    source = movie_dict.get("source", "")
+    resolution = movie_dict.get("resolution", "")
+    codec = movie_dict.get("codec", "")
+    bitrate = movie_dict.get("bitrate", "")
+
+    if not original_title:
+        logger.error(f"没有获取到信息：{path}")
+        base_name = os.path.basename(path)
+    else:
+        chinese_title = "" if chinese_title == original_title else chinese_title
+        movie_id = get_movie_id(movie_dict)
+        base_name = f"{year} - {original_title}{f'({chinese_title})' if chinese_title else ''}{{{movie_id}}}"
+
+    return f"{base_name}[{source}][{resolution}][{codec}@{bitrate}]"
+
+
+def create_aka_movie(path: str, movie_dict: dict) -> None:
+    """
+    根据 ``titles`` 列表在电影目录里创建别名空文件。
+
+    :param path: 电影目录路径
+    :param movie_dict: 完整电影信息字典
+    :return: 无
+    """
+    if movie_dict["titles"]:
+        for title in movie_dict["titles"]:
+            file_name = sanitize_filename(title).strip()
+            file_name = file_name.replace("\t", " ")
+            Path(os.path.join(path, f"{file_name}.别名")).touch()
+
+
 def fill_movie_info(movie_ids: dict, movie_info: dict, tv: bool) -> None:
     """
     按可用编号依次补充 TMDB、IMDb 和 Douban 元数据。
@@ -319,16 +401,17 @@ def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> 
         return current_path
     except Exception:
         logger.exception(f"整理失败，开始回滚：{path}")
+        if os.path.exists(current_path):
+            created_file_names.update(get_created_file_names(current_path, original_file_names))
         rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
         return None
 
 
-def sort_movie(path: str, tv: bool = False) -> None:
+def sort_movie(path: str) -> None:
     """
     根据目录中的编号文件抓取影片信息，并完成目录整理。
 
     :param path: 待整理的电影目录路径
-    :param tv: 是否按电视剧条目处理；当 TMDB 编号带 ``tv`` 后缀时会自动覆盖
     :return: 无
     """
     path = path.strip()
