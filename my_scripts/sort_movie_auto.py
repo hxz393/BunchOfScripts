@@ -43,7 +43,6 @@ from sort_movie_request import (
 
 logger = logging.getLogger(__name__)
 VIDEO_EXTENSIONS = OPS_CONFIG["video_extensions"]
-MAX_BITRATE = OPS_CONFIG["max_bitrate"]
 MIRROR_PATH = OPS_CONFIG["mirror_path"]
 RE_DIR_NAME = re.compile(
     r"^"
@@ -371,10 +370,9 @@ def maintain_checked_movie(path: str, movie_info: dict) -> None:
     """
     imdb = movie_info["imdb"]
     quality = movie_info["quality"]
-    source = movie_info["source"]
 
     try:
-        local_check = check_local_torrent(imdb, quality, source)
+        local_check = check_local_torrent(imdb)
     except Exception as e:
         logger.warning(f"{imdb} 本地库存种子检查失败，跳过：{e}")
     else:
@@ -441,22 +439,6 @@ def check_movie(path: str) -> Optional[str]:
     match = RE_DIR_NAME.match(p.name)
     if not match:
         return f"{p.name} 目录名格式错误或缺少必须字段"
-
-    quality = movie_info["quality"]
-    source = movie_info["source"]
-    info = match.groupdict()
-    file_bitrate = int(info["bitrate"].split("kbps")[0])
-    low_bitrate = False
-    if quality == "2160p" and source == "BluRay" and file_bitrate < MAX_BITRATE * 40:
-        low_bitrate = True
-    elif quality == "1080p" and source == "BluRay" and file_bitrate < MAX_BITRATE * 8:
-        low_bitrate = True
-    elif quality == "720p" and file_bitrate < MAX_BITRATE * 2:
-        low_bitrate = True
-    elif quality == "480p" and file_bitrate < MAX_BITRATE:
-        low_bitrate = True
-    if low_bitrate:
-        logger.warning(f"{p.name} 码率过低：{file_bitrate}kbps")
 
     maintain_checked_movie(path, movie_info)
     return None
