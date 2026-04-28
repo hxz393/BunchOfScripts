@@ -94,6 +94,7 @@ PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
+EMPTY_ID_MARKERS: dict[str, Optional[str]] = {"imdb": None, "tmdb": None, "douban": None}
 
 YTS_TORRENT_PRIORITIES = (
     ("quality", ["2160p", "1080p", "720p", "480p", "3D"]),
@@ -199,31 +200,46 @@ def build_unique_path(target_path: str | os.PathLike) -> Path:
             return candidate
 
 
-def get_existing_id_files(path: str) -> tuple[dict[str, Optional[str]], Optional[str]]:
+def get_existing_id_files(path: str | os.PathLike) -> tuple[dict[str, Optional[str]], Optional[str]]:
     """
-    读取目录里现有的编号空文件，并检测是否存在同类型重复文件。
+    扫描目录中的电影编号标记文件。
 
-    :param path: 目录路径
-    :return: ``(编号字典, 错误信息)``
+    支持的标记文件后缀由 ``ID_MARKER_EXT_MAP`` 定义：
+    ``*.imdb``、``*.tmdb``、``*.douban``。函数把扩展名前的文件名作为编号值，
+    不读取文件内容，也不校验文件是否为空。
+
+    如果同一编号类型存在多个标记文件，返回空编号字典和错误信息；
+    如果目录不存在，也返回空编号字典和错误信息。
+
+    :param path: 待扫描目录路径
+    :return: ``(编号字典, 错误信息)``。成功时错误信息为 ``None``；失败时编号字典三项均为 ``None``
     """
-    id_files: dict[str, list[str]] = {"imdb": [], "tmdb": [], "douban": []}
+    id_files: dict[str, list[tuple[str, str]]] = {"imdb": [], "tmdb": [], "douban": []}
+    directory = os.fspath(path)
 
     try:
-        file_names = os.listdir(path)
+        file_names = sorted(os.listdir(directory), key=str.casefold)
     except FileNotFoundError:
-        return {"imdb": None, "tmdb": None, "douban": None}, f"目录不存在 {path}"
+        return EMPTY_ID_MARKERS.copy(), f"目录不存在 {directory}"
 
     for file_name in file_names:
+        if not os.path.isfile(os.path.join(directory, file_name)):
+            continue
+
         name, ext = os.path.splitext(file_name)
+        if ext.lower() in ID_MARKER_EXT_MAP and ext != ext.lower():
+            return EMPTY_ID_MARKERS.copy(), f"目录 {directory} 中编号文件后缀必须小写：{file_name}"
+
         key = ID_MARKER_EXT_MAP.get(ext)
         if key:
-            id_files[key].append(name)
+            id_files[key].append((name, file_name))
 
     for key, values in id_files.items():
         if len(values) > 1:
-            return {"imdb": None, "tmdb": None, "douban": None}, f"目录 {path} 中 {key.upper()} 编号文件太多，请先清理。"
+            duplicate_names = [file_name for _name, file_name in values]
+            return EMPTY_ID_MARKERS.copy(), f"目录 {directory} 中 {key.upper()} 编号文件太多，请先清理：{duplicate_names}"
 
-    return {key: values[0] if values else None for key, values in id_files.items()}, None
+    return {key: values[0][0] if values else None for key, values in id_files.items()}, None
 
 
 def touch_id_marker(path: str, id_value: str, suffix: str) -> None:
