@@ -26,11 +26,9 @@ from sort_movie_ops import (
     fix_douban_name,
     generate_video_contact,
     generate_video_contact_mtm,
-    get_dl_link,
     get_video_info,
-    move_all_files_to_root,
-    remove_duplicates_ignore_case,
     scan_ids,
+    select_best_yts_magnet,
 )
 from sort_movie_request import (
     get_douban_response,
@@ -44,6 +42,9 @@ from sort_movie_request import (
 logger = logging.getLogger(__name__)
 VIDEO_EXTENSIONS = OPS_CONFIG["video_extensions"]
 MIRROR_PATH = OPS_CONFIG["mirror_path"]
+MAGNET_PATH = OPS_CONFIG["magnet_path"]
+DOWNLOAD_RECORD_SUFFIXES = {".json", ".log"}
+DOWNLOAD_LINK_PATTERN = re.compile(r"magnet:\?xt=urn:btih:[A-Fa-f0-9]+", re.IGNORECASE)
 RE_DIR_NAME = re.compile(
     r"^"
     r"(?P<year>\d+)\s*-\s*"
@@ -64,13 +65,32 @@ TMDB_FOLDER_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9])(tmdb\d{2,}(?:tv)?)(?![A-Z
 DOUBAN_FOLDER_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9])(db\d{6,})(?![A-Za-z0-9])", re.IGNORECASE)
 FAILED_MOVIE_ROOT = r"A:\0d.检验转码"
 PrepareFolderError = tuple[str, str]
+SortMovieResult = tuple[bool, str]
+OPTIONAL_MOVIE_INFO_FIELDS = {
+    "chinese_title",
+    "tmdb",
+    "douban",
+    "imdb",
+    "size",
+    "comment",
+    "poster_path",
+    "runtime_tmdb",
+    "runtime_imdb",
+    "release_group",
+    "filename",
+    "version",
+    "dvhdr",
+    "publisher",
+    "pubdate",
+}
+REQUIRED_MOVIE_INFO_FIELDS = ("director", "directors", "duration", "quality", "source")
 
 
 def sort_movie_auto(path: str) -> None:
     """
     批量处理根目录下的电影子目录。
 
-    单个目录如果在入口校验阶段失败，会被移到检验目录后继续处理后续目录。
+    单个目录任一整理阶段失败，会被移到检验目录后继续处理后续目录。
 
     :param path: 包含多个电影子目录的根目录
     :return: 无
@@ -87,19 +107,161 @@ def sort_movie_auto(path: str) -> None:
         if result:
             _error_code, error_message = result
             logger.error(error_message)
-            move_result = move_failed_movie_folder(folder, path)
-            if move_result:
-                logger.error(move_result)
+            handle_failed_movie_folder(folder, path)
             logger.warning("=" * 255)
             continue
         # 先将子目录中的文件提升到当前电影目录根部
-        move_all_files_to_root(folder)
+        try:
+            move_all_files_to_root(folder)
+        except Exception:
+            logger.exception(f"打平目录失败：{folder}")
+            handle_failed_movie_folder(folder, path)
+            logger.warning("=" * 255)
+            continue
         time.sleep(0.1)
         logger.info("-" * 25 + "步骤：抓取电影信息" + "-" * 25)
-        sort_movie(folder)
+        try:
+            sort_success, failed_or_final_path = sort_movie(folder)
+        except Exception:
+            logger.exception(f"整理电影失败：{folder}")
+            sort_success, failed_or_final_path = False, folder
+        if not sort_success:
+            handle_failed_movie_folder(failed_or_final_path, path)
         time.sleep(0.1)
         logger.warning("=" * 255)
         time.sleep(0.1)
+
+
+def handle_failed_movie_folder(movie_path: str, source_root: str) -> None:
+    """
+    将失败电影目录打回检验目录，并记录移动失败原因。
+
+    :param movie_path: 当前应移动的电影目录路径
+    :param source_root: 当前批处理根目录，一般是导演目录
+    :return: 无
+    """
+    move_result = move_failed_movie_folder(movie_path, source_root)
+    if move_result:
+        logger.error(move_result)
+
+
+def build_unique_root_file_path(root_path: Path, file_name: str) -> Path:
+    """
+    为即将移动到根目录的文件生成不冲突路径。
+
+    :param root_path: 电影目录根路径
+    :param file_name: 原文件名
+    :return: 根目录下的可用目标路径
+    """
+    target_path = root_path / file_name
+    if not target_path.exists():
+        return target_path
+
+    base = target_path.stem
+    suffix = target_path.suffix
+    index = 1
+    while True:
+        candidate = root_path / f"{base}({index}){suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def move_all_files_to_root(dir_path: str) -> None:
+    """
+    将电影目录所有子目录里的文件提升到根目录，并删除空子目录。
+
+    遍历前先固定文件列表，避免移动过程中改变目录结构导致漏处理或重复处理。
+
+    :param dir_path: 电影目录
+    :return: 无
+    """
+    root_path = Path(dir_path).resolve()
+    nested_files = [path for path in root_path.rglob("*") if path.is_file() and path.parent != root_path]
+
+    for source_path in nested_files:
+        target_path = build_unique_root_file_path(root_path, source_path.name)
+        shutil.move(str(source_path), str(target_path))
+
+    for path in sorted((path for path in root_path.rglob("*") if path.is_dir()), key=lambda item: len(item.parts), reverse=True):
+        if path != root_path and not any(path.iterdir()):
+            path.rmdir()
+
+
+class DownloadLinkError(ValueError):
+    """下载记录文件不满足自动整理要求。"""
+
+
+def validate_download_link(path: str | Path, dl: Optional[str]) -> str:
+    """
+    校验并返回基础 magnet 下载链接。
+
+    :param path: 当前下载记录文件路径，用于错误提示
+    :param dl: 提取到的下载链接
+    :return: 合法的基础 magnet 下载链接
+    """
+    if not dl or len(dl) != 60:
+        raise DownloadLinkError(f"{Path(path).name} 下载链接错误")
+    return dl
+
+
+def get_dl_link(path: str) -> Optional[str]:
+    """
+    从电影目录的下载记录文件中提取基础 magnet 链接。
+
+    目录中只能有一个 ``.json`` 或 ``.log`` 下载记录；发现多个时先报错，
+    不改写或删除任何记录文件。
+
+    :param path: 电影目录
+    :return: 磁力下载链接；没有记录时返回 ``None``
+    """
+    movie_path = Path(path)
+    download_files = [file for file in movie_path.iterdir() if file.is_file() and file.suffix.lower() in DOWNLOAD_RECORD_SUFFIXES]
+    if len(download_files) > 1:
+        raise DownloadLinkError(f"{movie_path.name} 目录中下载数量大于 1：{[file.name for file in download_files]}")
+    if not download_files:
+        return None
+
+    file_path = download_files[0]
+    if file_path.suffix.lower() == ".json":
+        dl_link = validate_download_link(file_path, select_best_yts_magnet(read_json_to_dict(file_path), MAGNET_PATH))
+        file_path.with_suffix(".log").write_text(dl_link, encoding="utf-8")
+        file_path.unlink()
+        return dl_link
+
+    lines = read_file_to_list(file_path)
+    if not lines:
+        raise DownloadLinkError(f"{file_path.name} 下载链接错误")
+    match = DOWNLOAD_LINK_PATTERN.search(lines[0].strip())
+    dl_link = validate_download_link(file_path, match.group(0) if match else None)
+    file_path.write_text(dl_link, encoding="utf-8")
+    return dl_link
+
+
+def remove_duplicates_ignore_case(items: list) -> list:
+    """
+    按首次出现顺序去重；字符串忽略大小写，非字符串按值比较。
+
+    :param items: 原始列表
+    :return: 去重后的列表
+    """
+    seen = set()
+    result = []
+    for item in items:
+        if isinstance(item, str):
+            key = ("str", item.casefold())
+        else:
+            try:
+                hash(item)
+            except TypeError:
+                key = ("repr", repr(item))
+            else:
+                key = ("value", item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def build_prepare_folder_error(code: str, message: str) -> PrepareFolderError:
@@ -389,6 +551,44 @@ def maintain_checked_movie(path: str, movie_info: dict) -> None:
     delete_trash_files(path)
 
 
+def validate_required_movie_info(movie_info: dict, folder_name: str) -> Optional[str]:
+    """
+    检查后续校验和维护动作必须依赖的字段是否存在。
+
+    :param movie_info: 完整电影信息字典
+    :param folder_name: 当前电影目录名，用于错误提示
+    :return: 发现阻塞问题时返回错误信息，否则返回 ``None``
+    """
+    if not isinstance(movie_info, dict):
+        return f"{folder_name} movie_info.json5 格式错误"
+
+    for key in REQUIRED_MOVIE_INFO_FIELDS:
+        value = movie_info.get(key)
+        if value in (None, "", []):
+            return f"{folder_name} 缺少必要字段：{key}"
+
+    if not isinstance(movie_info.get("directors"), list):
+        return f"{folder_name} directors 字段格式错误"
+
+    if parse_int(movie_info.get("duration")) is None:
+        return f"{folder_name} duration 字段格式错误"
+
+    return None
+
+
+def parse_int(value) -> Optional[int]:
+    """
+    将字段值解析为整数。
+
+    :param value: 待解析字段值
+    :return: 解析成功时返回整数，否则返回 ``None``
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def check_movie(path: str) -> Optional[str]:
     """
     检查整理后的电影目录是否满足入库要求。
@@ -397,50 +597,46 @@ def check_movie(path: str) -> Optional[str]:
     :return: 发现阻塞问题时返回错误信息，否则返回 ``None``
     """
     p = Path(path)
-    file_list = [f for f in p.iterdir() if f.is_file()]
 
     movie_info_file = p / "movie_info.json5"
     if not os.path.exists(movie_info_file):
         return f"{p.name} 目录中不存在 movie_info.json5"
     movie_info = read_json_to_dict(movie_info_file)
 
-    log_paths = [str(f) for f in file_list if f.suffix.lower() == ".log"]
-    if len(log_paths) > 1:
-        return f"{p.name} 目录中下载数量大于 1"
+    required_error = validate_required_movie_info(movie_info, p.name)
+    if required_error:
+        return required_error
 
-    if len(log_paths) == 1:
-        dl_link = read_file_to_list(log_paths[0])
-        if len(dl_link[0]) != 60:
-            return f"{p.name} 下载链接错误"
+    director = str(movie_info.get("director", "")).strip()
+    directors = movie_info.get("directors", [])
+    normalized_directors = {str(d).strip().lower() for d in directors if d}
+    if director.lower() not in normalized_directors:
+        logger.warning(f"{p.name} 导演 {director} 不在导演列表 {directors} 中")
 
-    if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
-        logger.warning(f"{p.name} 导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
-
+    duration = parse_int(movie_info.get("duration"))
     for source in ("imdb", "tmdb"):
         runtime_key = f"runtime_{source}"
-        runtime_value = movie_info.get(runtime_key)
+        runtime_value = parse_int(movie_info.get(runtime_key))
         if runtime_value:
-            time_diff = abs(runtime_value - movie_info["duration"])
+            time_diff = abs(runtime_value - duration)
             if time_diff > 2:
-                logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{movie_info['duration']} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
+                logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{duration} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
             else:
                 logger.info(f"{source.upper()} 时长匹配")
         else:
             logger.warning(f"{source.upper()} 时长缺失")
 
     for key, value in movie_info.items():
-        if not value and key not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb", "release_group", "filename", "version", "dvhdr", "publisher", "pubdate"]:
+        if not value and key not in OPTIONAL_MOVIE_INFO_FIELDS:
             logger.warning(f"{p.name} 缺少字段信息：{key}")
 
     dir_list = [f.name for f in p.iterdir() if f.is_dir()]
-    if len(dir_list) != 0:
+    if dir_list:
         return f"{p.name} 目录中有二级目录：{dir_list}"
 
-    match = RE_DIR_NAME.match(p.name)
-    if not match:
+    if not RE_DIR_NAME.match(p.name):
         return f"{p.name} 目录名格式错误或缺少必须字段"
 
-    maintain_checked_movie(path, movie_info)
     return None
 
 
@@ -484,7 +680,22 @@ def get_created_file_names(path: str, original_file_names: set[str]) -> set[str]
     return {file.name for file in Path(path).iterdir() if file.is_file()} - original_file_names
 
 
-def rollback_sort_movie_state(path: str, current_path: str, renamed: bool, created_file_names: set[str], movie_info_backup: Optional[bytes]) -> None:
+def get_existing_sort_movie_path(path: str, current_path: str) -> str:
+    """
+    在回滚或移动失败目录时，返回当前仍存在的电影目录路径。
+
+    :param path: 整理前原始目录路径
+    :param current_path: 当前目录路径，可能已经重命名
+    :return: 优先返回存在的原路径，否则返回存在的当前路径，最后回退原路径
+    """
+    if os.path.exists(path):
+        return path
+    if os.path.exists(current_path):
+        return current_path
+    return path
+
+
+def rollback_sort_movie_state(path: str, current_path: str, renamed: bool, created_file_names: set[str], movie_info_backup: Optional[bytes]) -> str:
     """
     将整理失败后的目录状态回滚到整理前。
 
@@ -493,33 +704,40 @@ def rollback_sort_movie_state(path: str, current_path: str, renamed: bool, creat
     :param renamed: 是否执行过目录重命名
     :param created_file_names: 本次整理新创建的文件名集合
     :param movie_info_backup: 整理前 ``movie_info.json5`` 的原始字节；不存在时为 ``None``
-    :return: 无
+    :return: 回滚后当前应移动或继续处理的目录路径
     """
-    rollback_path = Path(current_path)
-    if rollback_path.exists():
-        for file_name in created_file_names:
-            file_path = rollback_path / file_name
-            if file_path.exists():
-                file_path.unlink()
-        if movie_info_backup is not None:
-            (rollback_path / "movie_info.json5").write_bytes(movie_info_backup)
-    if renamed and os.path.exists(current_path) and not os.path.exists(path):
-        os.rename(current_path, path)
+    try:
+        rollback_path = Path(current_path)
+        if rollback_path.exists():
+            for file_name in created_file_names:
+                file_path = rollback_path / file_name
+                if file_path.exists():
+                    file_path.unlink()
+            if movie_info_backup is not None:
+                (rollback_path / "movie_info.json5").write_bytes(movie_info_backup)
+        if renamed and os.path.exists(current_path):
+            if not os.path.exists(path):
+                os.rename(current_path, path)
+            else:
+                logger.error(f"回滚目标已存在，保留当前目录等待检验：{current_path}")
+    except Exception:
+        logger.exception(f"回滚失败，保留当前目录等待检验：{current_path}")
+    return get_existing_sort_movie_path(path, current_path)
 
 
-def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> Optional[str]:
+def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> SortMovieResult:
     """
     执行目录重命名、落盘、校验和入库，并在失败时回滚。
 
     :param path: 整理前原始目录路径
     :param new_path: 目标目录路径
     :param movie_dict: 完整电影信息字典
-    :return: 成功时返回最终目录路径，失败时返回 ``None``
+    :return: ``(是否成功, 当前电影目录路径)``
     """
     same_target = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(new_path))
     if not same_target and os.path.exists(new_path):
         logger.error(f"目标目录已存在，停止整理：{new_path}")
-        return None
+        return False, path
 
     current_path = path
     renamed = False
@@ -553,39 +771,43 @@ def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> 
         check_result = check_movie(current_path)
         if check_result:
             logger.error(check_result)
-            rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
-            return None
+            created_file_names.update(get_created_file_names(current_path, original_file_names))
+            failed_path = rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
+            return False, failed_path
+
+        maintain_checked_movie(current_path, movie_dict)
+        created_file_names.update(get_created_file_names(current_path, original_file_names))
 
         insert_movie_record_to_mysql(current_path)
         time.sleep(0.1)
         logger.info(f"旧名：{path}")
         logger.info(f"新名：{current_path}")
-        return current_path
+        return True, current_path
     except Exception:
         logger.exception(f"整理失败，开始回滚：{path}")
         if os.path.exists(current_path):
             created_file_names.update(get_created_file_names(current_path, original_file_names))
-        rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
-        return None
+        failed_path = rollback_sort_movie_state(path, current_path, renamed, created_file_names, movie_info_backup)
+        return False, failed_path
 
 
-def sort_movie(path: str) -> None:
+def sort_movie(path: str) -> SortMovieResult:
     """
     根据目录中的编号文件抓取影片信息，并完成目录整理。
 
     :param path: 待整理的电影目录路径
-    :return: 无
+    :return: ``(是否成功, 当前电影目录路径)``
     """
     path = path.strip()
     if not os.path.exists(path):
         logger.error("目录不存在")
-        return
+        return False, path
 
     # 只要没有任何 ID，就直接拒绝继续处理和入库
     movie_ids = scan_ids(path)
     if all(value is None for value in movie_ids.values()):
         logger.error("没有找到任何 ID")
-        return
+        return False, path
 
     # TMDB 电视剧编号以 ``tv`` 后缀标记，这里据此自动切换抓取模式
     tv = bool(movie_ids["tmdb"] and movie_ids["tmdb"].endswith("tv"))
@@ -595,17 +817,21 @@ def sort_movie(path: str) -> None:
     # 读取本地视频文件的基础信息
     file_info = get_video_info(path)
     if not file_info:
-        return
+        return False, path
     screenshot_result = ensure_movie_screenshots(path)
     if screenshot_result:
         logger.error(screenshot_result)
-        return
+        return False, path
 
-    # 合并线上元数据、编号信息和本地视频信息
-    movie_dict = merged_dict(path, movie_info, movie_ids, file_info)
+    try:
+        # 合并线上元数据、编号信息和本地视频信息
+        movie_dict = merged_dict(path, movie_info, movie_ids, file_info)
+    except DownloadLinkError as e:
+        logger.error(e)
+        return False, path
     # 根据整理规则生成新目录名
     new_path = os.path.join(os.path.dirname(path), sanitize_filename(build_movie_folder_name(path, movie_dict)))
-    apply_sort_movie_transaction(path, new_path, movie_dict)
+    return apply_sort_movie_transaction(path, new_path, movie_dict)
 
 
 def get_folder_name_ids(path: str) -> dict[str, Optional[str]]:

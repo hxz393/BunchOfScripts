@@ -1,4 +1,4 @@
-"""
+﻿"""
 针对 ``my_scripts.sort_movie_auto`` 的定向单元测试。
 
 这些用例先把当前已知的高风险问题固化下来：
@@ -13,7 +13,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 import types
@@ -59,42 +58,14 @@ def fake_safe_get(data: object, keys: list[object], default=None):
     return current
 
 
-def fake_move_all_files_to_root(dir_path: str) -> None:
-    """模拟当前打平目录逻辑，用于暴露提前变更目录结构的问题。"""
-    root_path = Path(dir_path).resolve()
-
-    for current_root, _dirs, files in os.walk(root_path):
-        current_path = Path(current_root)
-        if current_path == root_path:
-            continue
-
-        for file_name in files:
-            source = current_path / file_name
-            target = root_path / file_name
-            if target.exists():
-                base = target.stem
-                suffix = target.suffix
-                index = 1
-                while True:
-                    candidate = root_path / f"{base}({index}){suffix}"
-                    if not candidate.exists():
-                        target = candidate
-                        break
-                    index += 1
-            shutil.move(str(source), str(target))
-
-    for current_root, _dirs, _files in os.walk(root_path, topdown=False):
-        current_path = Path(current_root)
-        if current_path != root_path and not any(current_path.iterdir()):
-            current_path.rmdir()
-
-
 def load_sort_movie_auto():
     """在隔离依赖的环境中加载 ``sort_movie_auto`` 模块。"""
     fake_retrying = types.ModuleType("retrying")
     fake_retrying.retry = lambda *args, **kwargs: (lambda func: func)
 
     fake_my_module = types.ModuleType("my_module")
+    fake_my_module.read_file_to_list = lambda _path: []
+    fake_my_module.read_json_to_dict = lambda _path: {}
     fake_my_module.sanitize_filename = fake_sanitize_filename
     fake_my_module.write_dict_to_json = fake_write_dict_to_json
 
@@ -103,11 +74,18 @@ def load_sort_movie_auto():
     fake_sort_movie_mysql.query_imdb_title_metadata = lambda _movie_id: None
 
     fake_sort_movie_ops = types.ModuleType("sort_movie_ops")
-    fake_sort_movie_ops.move_all_files_to_root = fake_move_all_files_to_root
+    fake_sort_movie_ops.CONFIG = {
+        "video_extensions": [".mkv", ".mp4"],
+        "mirror_path": str(Path(tempfile.gettempdir()) / "sort_movie_auto_mirror"),
+        "magnet_path": "magnet:?xt=urn:btih:",
+    }
+    fake_sort_movie_ops.check_local_torrent = lambda _imdb: {"move_counts": 0, "move_files": []}
+    fake_sort_movie_ops.delete_trash_files = lambda _path: None
     fake_sort_movie_ops.extract_imdb_id = fake_extract_imdb_id
-    fake_sort_movie_ops.get_dl_link = lambda _path: ""
+    fake_sort_movie_ops.generate_video_contact = lambda _video_path: None
+    fake_sort_movie_ops.generate_video_contact_mtm = lambda _video_path: None
     fake_sort_movie_ops.scan_ids = lambda _directory: {"tmdb": None, "douban": None, "imdb": None}
-    fake_sort_movie_ops.remove_duplicates_ignore_case = lambda items: list(dict.fromkeys(items))
+    fake_sort_movie_ops.select_best_yts_magnet = lambda _json_data, magnet_path: f"{magnet_path}{'a' * 40}"
     fake_sort_movie_ops.safe_get = fake_safe_get
     fake_sort_movie_ops.build_movie_folder_name = lambda _path, _movie_dict: "Renamed Movie"
     fake_sort_movie_ops.merged_dict = lambda _path, _movie_info, movie_ids, file_info: movie_ids | file_info
@@ -121,6 +99,7 @@ def load_sort_movie_auto():
     fake_sort_movie_request.get_tmdb_search_response = lambda _search_id: {}
     fake_sort_movie_request.get_douban_response = lambda _query, _mode: None
     fake_sort_movie_request.get_douban_search_details = lambda _response: None
+    fake_sort_movie_request.check_kpk_for_better_quality = lambda _imdb, _quality: None
     fake_sort_movie_request.get_tmdb_movie_details = lambda _movie_id, _tv=False: {}
     fake_sort_movie_request.get_tmdb_movie_cover = lambda _poster_path, _image_path: None
 
@@ -172,6 +151,10 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             side_effect=fake_prepare_movie_folder_markers,
         ), patch.object(
             self.module,
+            "FAILED_MOVIE_ROOT",
+            str(Path(self.temp_dir.name) / "quarantine"),
+        ), patch.object(
+            self.module,
             "sort_movie",
             side_effect=RuntimeError("metadata lookup failed"),
         ):
@@ -213,7 +196,7 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "duration": 120,
             "quality": "1080p",
         }
-        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg", "director": "Director Name", "directors": ["Director Name"]}
 
         def fake_download_cover(_poster_path: str, image_path: str) -> None:
             Path(image_path).write_text("poster", encoding="utf-8")
@@ -282,7 +265,7 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "duration": 120,
             "quality": "1080p",
         }
-        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg", "director": "Director Name", "directors": ["Director Name"]}
 
         with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
             self.module,
@@ -324,7 +307,7 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "duration": 120,
             "quality": "1080p",
         }
-        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg", "director": "Director Name", "directors": ["Director Name"]}
 
         def make_movie_dir(name: str) -> Path:
             movie_dir = Path(self.temp_dir.name) / name
@@ -426,6 +409,7 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
         ), patch.object(
             self.module,
             "sort_movie",
+            return_value=(True, str(second_movie)),
         ) as mock_sort_movie:
             self.module.sort_movie_auto(str(director_dir))
 
@@ -433,6 +417,165 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
         mock_sort_movie.assert_called_once_with(str(second_movie))
         self.assertFalse(first_movie.exists())
         self.assertTrue((quarantine_root / "Director Name" / first_movie.name).exists())
+
+    def test_sort_movie_auto_moves_folder_when_sort_movie_fails(self):
+        """整理阶段失败时，也应将当前电影目录移到检验目录并继续后续目录。"""
+        director_dir = Path(self.temp_dir.name) / "Director Name"
+        director_dir.mkdir()
+        first_movie = director_dir / "01 Bad Movie [tt0000001]"
+        second_movie = director_dir / "02 Good Movie [tt0000002]"
+        first_movie.mkdir()
+        second_movie.mkdir()
+        quarantine_root = Path(self.temp_dir.name) / "quarantine"
+
+        with patch.object(
+            self.module.os,
+            "listdir",
+            return_value=[first_movie.name, second_movie.name],
+        ), patch.object(
+            self.module,
+            "FAILED_MOVIE_ROOT",
+            str(quarantine_root),
+        ), patch.object(
+            self.module,
+            "prepare_movie_folder_markers",
+            return_value=None,
+        ), patch.object(
+            self.module,
+            "move_all_files_to_root",
+        ), patch.object(
+            self.module,
+            "sort_movie",
+            side_effect=[(False, str(first_movie)), (True, str(second_movie))],
+        ) as mock_sort_movie:
+            self.module.sort_movie_auto(str(director_dir))
+
+        self.assertEqual(mock_sort_movie.call_count, 2)
+        self.assertFalse(first_movie.exists())
+        self.assertTrue((quarantine_root / "Director Name" / first_movie.name).exists())
+        self.assertTrue(second_movie.exists())
+
+    def test_sort_movie_auto_rolls_back_and_moves_folder_when_validation_fails(self):
+        """校验失败时，应先回滚整理产物，再将电影目录移到检验目录。"""
+        director_dir = Path(self.temp_dir.name) / "Director Name"
+        movie_dir = director_dir / "Movie Folder"
+        movie_dir.mkdir(parents=True)
+        quarantine_root = Path(self.temp_dir.name) / "quarantine"
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg", "director": "Director Name", "directors": ["Director Name"]}
+
+        def fake_download_cover(_poster_path: str, image_path: str) -> None:
+            Path(image_path).write_text("poster", encoding="utf-8")
+
+        def fake_create_aka_movie(new_path: str, _movie_dict: dict) -> None:
+            Path(new_path, "Alias Title.别名").write_text("", encoding="utf-8")
+
+        with patch.object(
+            self.module,
+            "FAILED_MOVIE_ROOT",
+            str(quarantine_root),
+        ), patch.object(
+            self.module,
+            "prepare_movie_folder_markers",
+            return_value=None,
+        ), patch.object(
+            self.module,
+            "move_all_files_to_root",
+        ), patch.object(
+            self.module,
+            "scan_ids",
+            return_value=movie_ids,
+        ), patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ), patch.object(
+            self.module,
+            "get_video_info",
+            return_value=file_info,
+        ), patch.object(
+            self.module,
+            "merged_dict",
+            return_value=movie_dict,
+        ), patch.object(
+            self.module,
+            "build_movie_folder_name",
+            return_value="Renamed Movie",
+        ), patch.object(
+            self.module,
+            "get_movie_id",
+            return_value="tt1234567",
+        ), patch.object(
+            self.module,
+            "check_movie",
+            return_value="validation failed",
+        ), patch.object(
+            self.module,
+            "get_tmdb_movie_cover",
+            side_effect=fake_download_cover,
+        ), patch.object(
+            self.module,
+            "create_aka_movie",
+            side_effect=fake_create_aka_movie,
+        ):
+            self.module.sort_movie_auto(str(director_dir))
+
+        failed_dir = quarantine_root / "Director Name" / movie_dir.name
+        self.assertFalse(movie_dir.exists())
+        self.assertTrue(failed_dir.exists())
+        self.assertFalse((director_dir / "Renamed Movie").exists())
+        self.assertFalse((failed_dir / "tt1234567.jpg").exists())
+        self.assertFalse((failed_dir / "Alias Title.别名").exists())
+        self.assertFalse((failed_dir / "movie_info.json5").exists())
+
+    def test_sort_movie_auto_moves_folder_when_flattening_fails(self):
+        """打平目录失败时，应将当前电影目录移到检验目录并继续后续目录。"""
+        director_dir = Path(self.temp_dir.name) / "Director Name"
+        director_dir.mkdir()
+        first_movie = director_dir / "01 Bad Movie [tt0000001]"
+        second_movie = director_dir / "02 Good Movie [tt0000002]"
+        first_movie.mkdir()
+        second_movie.mkdir()
+        quarantine_root = Path(self.temp_dir.name) / "quarantine"
+
+        def fake_move_all_files_to_root(path: str) -> None:
+            if path == str(first_movie):
+                raise RuntimeError("flatten failed")
+
+        with patch.object(
+            self.module.os,
+            "listdir",
+            return_value=[first_movie.name, second_movie.name],
+        ), patch.object(
+            self.module,
+            "FAILED_MOVIE_ROOT",
+            str(quarantine_root),
+        ), patch.object(
+            self.module,
+            "prepare_movie_folder_markers",
+            return_value=None,
+        ), patch.object(
+            self.module,
+            "move_all_files_to_root",
+            side_effect=fake_move_all_files_to_root,
+        ), patch.object(
+            self.module,
+            "sort_movie",
+            return_value=(True, str(second_movie)),
+        ) as mock_sort_movie:
+            self.module.sort_movie_auto(str(director_dir))
+
+        mock_sort_movie.assert_called_once_with(str(second_movie))
+        self.assertFalse(first_movie.exists())
+        self.assertTrue((quarantine_root / "Director Name" / first_movie.name).exists())
+        self.assertTrue(second_movie.exists())
 
 
 class TestSortMovieAutoCurrentRules(unittest.TestCase):
@@ -495,7 +638,7 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "duration": 120,
             "quality": "1080p",
         }
-        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg"}
+        movie_dict = movie_ids | file_info | {"poster_path": "/poster.jpg", "director": "Director Name", "directors": ["Director Name"]}
 
         with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
             self.module,
@@ -556,6 +699,204 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
         mock_tmdb.assert_called_once()
         self.assertEqual(mock_tmdb.call_args.args[0], "12345")
         self.assertTrue(mock_tmdb.call_args.args[2])
+
+    def test_sort_movie_stops_before_rename_when_screenshot_generation_fails(self):
+        """截图生成失败时，应在重命名和落盘之前停止。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+        (movie_dir / "movie.mkv").write_text("video", encoding="utf-8")
+
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+
+        with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ), patch.object(
+            self.module,
+            "get_video_info",
+            return_value=file_info,
+        ), patch.object(
+            self.module,
+            "generate_video_contact",
+            side_effect=RuntimeError("screenshot failed"),
+        ), patch.object(
+            self.module,
+            "generate_video_contact_mtm",
+        ), patch.object(
+            self.module,
+            "merged_dict",
+        ) as mock_merged_dict, patch.object(
+            self.module,
+            "apply_sort_movie_transaction",
+        ) as mock_transaction:
+            self.module.sort_movie(str(movie_dir))
+
+        self.assertTrue(movie_dir.exists())
+        self.assertFalse((movie_dir / "movie_s.jpg").exists())
+        mock_merged_dict.assert_not_called()
+        mock_transaction.assert_not_called()
+
+    def test_sort_movie_stops_before_transaction_when_download_records_are_ambiguous(self):
+        """下载记录数量异常时，应在重命名和落盘之前停止。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+
+        with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ), patch.object(
+            self.module,
+            "get_video_info",
+            return_value=file_info,
+        ), patch.object(
+            self.module,
+            "ensure_movie_screenshots",
+            return_value=None,
+        ), patch.object(
+            self.module,
+            "get_dl_link",
+            side_effect=self.module.DownloadLinkError("Movie Folder 目录中下载数量大于 1"),
+        ), patch.object(
+            self.module,
+            "apply_sort_movie_transaction",
+        ) as mock_transaction:
+            self.module.sort_movie(str(movie_dir))
+
+        self.assertTrue(movie_dir.exists())
+        mock_transaction.assert_not_called()
+
+    def test_ensure_movie_screenshots_warns_for_multiple_videos(self):
+        """多视频目录应提前 warning，但不阻塞截图检查。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+        (movie_dir / "movie-a.mkv").write_text("video", encoding="utf-8")
+        (movie_dir / "movie-b.mp4").write_text("video", encoding="utf-8")
+        (movie_dir / "movie-a_s.jpg").write_text("screenshot", encoding="utf-8")
+        (movie_dir / "movie-b_s.jpg").write_text("screenshot", encoding="utf-8")
+
+        with self.assertLogs(self.module.logger, level="WARNING") as cm:
+            result = self.module.ensure_movie_screenshots(str(movie_dir))
+
+        self.assertIsNone(result)
+        self.assertTrue(any("视频数量大于 1" in message for message in cm.output))
+
+    def test_check_movie_returns_error_for_missing_required_movie_info_field(self):
+        """必要字段缺失时，应返回明确错误，而不是让后续流程抛 KeyError。"""
+        movie_dir = Path(self.temp_dir.name) / "2024 - Movie{tt1234567}[BluRay][1920x1080][h264@8000kbps]"
+        movie_dir.mkdir()
+        (movie_dir / "movie_info.json5").write_text("{}", encoding="utf-8")
+        movie_info = {
+            "director": "",
+            "directors": ["Director Name"],
+            "imdb": "tt1234567",
+            "quality": "1080p",
+            "source": "BluRay",
+            "duration": 120,
+            "runtime_imdb": 120,
+            "runtime_tmdb": 120,
+        }
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info):
+            result = self.module.check_movie(str(movie_dir))
+
+        self.assertEqual(result, f"{movie_dir.name} 缺少必要字段：director")
+
+    def test_check_movie_handles_non_string_directors_and_string_runtimes(self):
+        """导演列表和时长字段格式轻微不稳定时，不应让校验流程崩溃。"""
+        movie_dir = Path(self.temp_dir.name) / "2024 - Movie{tt1234567}[BluRay][1920x1080][h264@8000kbps]"
+        movie_dir.mkdir()
+        (movie_dir / "movie_info.json5").write_text("{}", encoding="utf-8")
+        movie_info = {
+            "director": "Director Name",
+            "directors": [None, 123, "Director Name"],
+            "imdb": "tt1234567",
+            "quality": "1080p",
+            "source": "BluRay",
+            "duration": "120",
+            "runtime_imdb": "120",
+            "runtime_tmdb": "123",
+        }
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info):
+            result = self.module.check_movie(str(movie_dir))
+
+        self.assertIsNone(result)
+
+    def test_maintain_checked_movie_warns_but_does_not_fail_when_local_torrents_are_moved(self):
+        """本地库存种子命中时，只应 warning，不应阻塞入库校验。"""
+        movie_dir = Path(self.temp_dir.name) / "2024 - Movie{tt1234567}[BluRay][1920x1080][h264@8000kbps]"
+        movie_dir.mkdir()
+        movie_info = {
+            "director": "Director Name",
+            "directors": ["Director Name"],
+            "imdb": "tt1234567",
+            "quality": "1080p",
+            "source": "BluRay",
+            "duration": 120,
+            "runtime_imdb": 120,
+            "runtime_tmdb": 120,
+        }
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info), patch.object(
+            self.module,
+            "check_local_torrent",
+            return_value={"move_counts": 2, "move_files": ["a.torrent", "b.torrent"]},
+        ) as mock_check_local, patch.object(
+            self.module,
+            "delete_trash_files",
+        ), self.assertLogs(self.module.logger, level="WARNING") as cm:
+            result = self.module.maintain_checked_movie(str(movie_dir), movie_info)
+
+        self.assertIsNone(result)
+        mock_check_local.assert_called_once_with("tt1234567")
+        self.assertTrue(any("已移动本地库存种子" in message for message in cm.output))
+
+    def test_maintain_checked_movie_warns_but_does_not_fail_when_local_torrent_check_raises(self):
+        """本地库存种子检查异常时，只应 warning，不应阻塞入库校验。"""
+        movie_dir = Path(self.temp_dir.name) / "2024 - Movie{tt1234567}[BluRay][1920x1080][h264@8000kbps]"
+        movie_dir.mkdir()
+        movie_info = {
+            "director": "Director Name",
+            "directors": ["Director Name"],
+            "imdb": "tt1234567",
+            "quality": "1080p",
+            "source": "BluRay",
+            "duration": 120,
+            "runtime_imdb": 120,
+            "runtime_tmdb": 120,
+        }
+
+        with patch.object(self.module, "read_json_to_dict", return_value=movie_info), patch.object(
+            self.module,
+            "check_local_torrent",
+            side_effect=RuntimeError("move failed"),
+        ) as mock_check_local, patch.object(
+            self.module,
+            "delete_trash_files",
+        ), self.assertLogs(self.module.logger, level="WARNING") as cm:
+            result = self.module.maintain_checked_movie(str(movie_dir), movie_info)
+
+        self.assertIsNone(result)
+        mock_check_local.assert_called_once_with("tt1234567")
+        self.assertTrue(any("本地库存种子检查失败" in message for message in cm.output))
 
 
 class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
@@ -629,6 +970,7 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         ) as mock_move, patch.object(
             self.module,
             "sort_movie",
+            return_value=(True, str(movie_dir)),
         ) as mock_sort_movie:
             self.module.sort_movie_auto(str(root_dir))
 
@@ -747,6 +1089,7 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         ) as mock_move, patch.object(
             self.module,
             "sort_movie",
+            return_value=(True, str(movie_dir)),
         ) as mock_sort_movie:
             self.module.sort_movie_auto(str(root_dir))
 
@@ -777,6 +1120,7 @@ class TestSortMovieAutoFolderEntrypoints(unittest.TestCase):
         ) as mock_move, patch.object(
             self.module,
             "sort_movie",
+            return_value=(True, str(movie_dir)),
         ) as mock_sort_movie:
             self.module.sort_movie_auto(str(root_dir))
 
@@ -1101,6 +1445,102 @@ class TestTmdbMerge(unittest.TestCase):
                 "poster_path": "",
             },
         )
+
+
+class TestAutoLocalHelpers(unittest.TestCase):
+    """验证迁入自动整理模块的本地辅助函数。"""
+
+    def setUp(self):
+        self.module = load_sort_movie_auto()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_move_all_files_to_root_moves_nested_files_and_keeps_collisions(self):
+        """打平目录时应保留同名文件，子目录清空后删除。"""
+        movie_dir = self.root / "Movie Folder"
+        nested_dir = movie_dir / "disc1" / "subs"
+        nested_dir.mkdir(parents=True)
+        root_subtitle = movie_dir / "Traditional.chi.srt"
+        nested_subtitle = nested_dir / "Traditional.chi.srt"
+        nested_video = movie_dir / "disc1" / "movie.mkv"
+        root_subtitle.write_text("root", encoding="utf-8")
+        nested_subtitle.write_text("nested", encoding="utf-8")
+        nested_video.write_text("video", encoding="utf-8")
+
+        self.module.move_all_files_to_root(str(movie_dir))
+
+        self.assertEqual(root_subtitle.read_text(encoding="utf-8"), "root")
+        self.assertEqual((movie_dir / "Traditional.chi(1).srt").read_text(encoding="utf-8"), "nested")
+        self.assertEqual((movie_dir / "movie.mkv").read_text(encoding="utf-8"), "video")
+        self.assertFalse((movie_dir / "disc1").exists())
+
+    def test_remove_duplicates_ignore_case_keeps_first_string_variant(self):
+        """标题去重应忽略字符串大小写，并保留第一次出现的写法。"""
+        result = self.module.remove_duplicates_ignore_case(["Movie", "movie", "MOVIE", "Other"])
+
+        self.assertEqual(result, ["Movie", "Other"])
+
+
+class TestDownloadLinkExtraction(unittest.TestCase):
+    """验证自动整理流程内下载记录提取的准入和归一化规则。"""
+
+    def setUp(self):
+        self.module = load_sort_movie_auto()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_get_dl_link_rejects_multiple_download_records_before_side_effects(self):
+        """多个下载记录应直接报错，且不改写或删除任何记录文件。"""
+        movie_dir = self.root / "Movie Folder"
+        movie_dir.mkdir()
+        log_file = movie_dir / "source.log"
+        json_file = movie_dir / "source.json"
+        log_file.write_text("original log", encoding="utf-8")
+        json_file.write_text('{"original": true}', encoding="utf-8")
+
+        with self.assertRaisesRegex(self.module.DownloadLinkError, "下载数量大于 1"):
+            self.module.get_dl_link(str(movie_dir))
+
+        self.assertEqual(log_file.read_text(encoding="utf-8"), "original log")
+        self.assertEqual(json_file.read_text(encoding="utf-8"), '{"original": true}')
+
+    def test_get_dl_link_rejects_invalid_single_log_before_rewrite(self):
+        """单个 LOG 下载链接无效时，应直接报错且不改写原文件。"""
+        movie_dir = self.root / "Movie Folder"
+        movie_dir.mkdir()
+        log_file = movie_dir / "source.log"
+        log_file.write_text("not a magnet", encoding="utf-8")
+
+        with patch.object(self.module, "read_file_to_list", return_value=["not a magnet"]):
+            with self.assertRaisesRegex(self.module.DownloadLinkError, "下载链接错误"):
+                self.module.get_dl_link(str(movie_dir))
+
+        self.assertEqual(log_file.read_text(encoding="utf-8"), "not a magnet")
+
+    def test_get_dl_link_converts_single_json_record_to_log(self):
+        """单个 YTS JSON 记录应提取最佳 magnet，落成同名 LOG 后删除 JSON。"""
+        movie_dir = self.root / "Movie Folder"
+        movie_dir.mkdir()
+        json_file = movie_dir / "source.json"
+        json_file.write_text('{"data": {"movie": {"torrents": []}}}', encoding="utf-8")
+        magnet = f"magnet:?xt=urn:btih:{'b' * 40}"
+
+        with patch.object(self.module, "read_json_to_dict", return_value={"data": {"movie": {"torrents": []}}}), patch.object(
+            self.module,
+            "select_best_yts_magnet",
+            return_value=magnet,
+        ):
+            result = self.module.get_dl_link(str(movie_dir))
+
+        self.assertEqual(result, magnet)
+        self.assertFalse(json_file.exists())
+        self.assertEqual((movie_dir / "source.log").read_text(encoding="utf-8"), magnet)
 
 
 if __name__ == "__main__":

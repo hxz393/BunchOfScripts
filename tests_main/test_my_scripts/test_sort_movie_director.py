@@ -62,10 +62,9 @@ def load_sort_movie_director():
     fake_sort_movie_ops.create_aka_director = fake_create_aka_director
     fake_sort_movie_ops.fix_douban_name = lambda text: text.strip()
     fake_sort_movie_ops.extract_imdb_id = fake_extract_imdb_id
-    fake_sort_movie_ops.check_local_torrent = lambda _imdb, _quality, _source: {
+    fake_sort_movie_ops.check_local_torrent = lambda _imdb: {
         "move_counts": 0,
-        "delete_counts": 0,
-        "delete_files": [],
+        "move_files": [],
     }
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
@@ -555,13 +554,13 @@ class TestAchieveDirector(unittest.TestCase):
         ) as mock_jackett, patch.object(
             self.module,
             "check_local_torrent",
-            return_value={"move_counts": 0, "delete_counts": 0, "delete_files": []},
+            return_value={"move_counts": 0, "move_files": []},
         ) as mock_local, patch.object(self.module.time, "sleep"):
             self.module.search_missing_director_movies("Director Name", movies)
 
         mock_kpk.assert_called_once_with("tt1234567", "240p")
         mock_jackett.assert_called_once_with("tt1234567")
-        mock_local.assert_called_once_with("tt1234567", "240p", "None")
+        mock_local.assert_called_once_with("tt1234567")
 
     def test_achieve_director_orchestrates_collect_and_search(self):
         movies = [{"imdb": "tt1234567", "year": "1999", "titles": ["Title A"]}]
