@@ -16,10 +16,10 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from my_module import sanitize_filename, write_dict_to_json
+import sort_movie_ops
+from my_module import read_file_to_list, read_json_to_dict, sanitize_filename, write_dict_to_json
 from sort_movie_mysql import insert_movie_record_to_mysql, query_imdb_title_metadata
 from sort_movie_ops import (
-    check_movie,
     extract_imdb_id,
     fix_douban_name,
     get_dl_link,
@@ -31,6 +31,7 @@ from sort_movie_ops import (
 from sort_movie_request import (
     get_douban_response,
     get_douban_search_details,
+    check_kpk_for_better_quality,
     get_tmdb_movie_cover,
     get_tmdb_movie_details,
     get_tmdb_search_response,
@@ -314,6 +315,120 @@ def create_aka_movie(path: str, movie_dict: dict) -> None:
         Path(path, marker_name).touch()
 
 
+def ensure_movie_screenshots(path: str) -> Optional[str]:
+    """
+    检查视频数量并确保每个视频都有缩略图。
+
+    :param path: 电影目录路径
+    :return: 截图生成失败时返回错误信息，否则返回 ``None``
+    """
+    p = Path(path)
+    video_paths = [str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in sort_movie_ops.VIDEO_EXTENSIONS]
+    if len(video_paths) > 1:
+        logger.warning(f"{p.name} 目录中视频数量大于 1")
+
+    for video_path in video_paths:
+        base, _ext = os.path.splitext(video_path)
+        screen_path = base + "_s.jpg"
+        if not os.path.exists(screen_path):
+            try:
+                sort_movie_ops.generate_video_contact(video_path)
+            except Exception as e:
+                logger.warning(f"{video_path} 生成缩略图失败: {e}")
+        if not os.path.exists(screen_path):
+            sort_movie_ops.generate_video_contact_mtm(video_path)
+        if not os.path.exists(screen_path):
+            return f"生成视频截图失败：{p.name}"
+    return None
+
+
+def check_movie(path: str) -> Optional[str]:
+    """
+    检查整理后的电影目录是否满足入库要求。
+
+    :param path: 电影目录
+    :return: 发现阻塞问题时返回错误信息，否则返回 ``None``
+    """
+    p = Path(path)
+    file_list = [f for f in p.iterdir() if f.is_file()]
+
+    movie_info_file = p / "movie_info.json5"
+    if not os.path.exists(movie_info_file):
+        return f"{p.name} 目录中不存在 movie_info.json5"
+    movie_info = read_json_to_dict(movie_info_file)
+
+    log_paths = [str(f) for f in file_list if f.suffix.lower() == ".log"]
+    if len(log_paths) > 1:
+        return f"{p.name} 目录中下载数量大于 1"
+
+    if len(log_paths) == 1:
+        dl_link = read_file_to_list(log_paths[0])
+        if len(dl_link[0]) != 60:
+            return f"{p.name} 下载链接错误"
+
+    if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
+        logger.warning(f"{p.name} 导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
+
+    for source in ("imdb", "tmdb"):
+        runtime_key = f"runtime_{source}"
+        runtime_value = movie_info.get(runtime_key)
+        if runtime_value:
+            time_diff = abs(runtime_value - movie_info["duration"])
+            if time_diff > 2:
+                logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{movie_info['duration']} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
+            else:
+                logger.info(f"{source.upper()} 时长匹配")
+        else:
+            logger.warning(f"{source.upper()} 时长缺失")
+
+    for key, value in movie_info.items():
+        if not value and key not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment", "poster_path", "runtime_tmdb", "runtime_imdb", "release_group", "filename", "version", "dvhdr", "publisher", "pubdate"]:
+            logger.warning(f"{p.name} 缺少字段信息：{key}")
+
+    dir_list = [f.name for f in p.iterdir() if f.is_dir()]
+    if len(dir_list) != 0:
+        return f"{p.name} 目录中有二级目录：{dir_list}"
+
+    match = sort_movie_ops.RE_DIR_NAME.match(p.name)
+    if not match:
+        return f"{p.name} 目录名格式错误或缺少必须字段"
+
+    imdb = movie_info["imdb"]
+    quality = movie_info["quality"]
+    source = movie_info["source"]
+    result = sort_movie_ops.check_local_torrent(imdb, quality, source)
+    move_counts = result["move_counts"]
+    delete_counts = result["delete_counts"]
+    if move_counts:
+        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
+        return f"{imdb} 请检查本地库存: {move_counts}"
+    if delete_counts:
+        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
+
+    info = match.groupdict()
+    file_bitrate = int(info["bitrate"].split("kbps")[0])
+    low_bitrate = False
+    if quality == "2160p" and source == "BluRay" and file_bitrate < sort_movie_ops.MAX_BITRATE * 40:
+        low_bitrate = True
+    elif quality == "1080p" and source == "BluRay" and file_bitrate < sort_movie_ops.MAX_BITRATE * 8:
+        low_bitrate = True
+    elif quality == "720p" and file_bitrate < sort_movie_ops.MAX_BITRATE * 2:
+        low_bitrate = True
+    elif quality == "480p" and file_bitrate < sort_movie_ops.MAX_BITRATE:
+        low_bitrate = True
+    if low_bitrate:
+        logger.warning(f"{p.name} 码率过低：{file_bitrate}kbps")
+
+    if quality not in ["1080p", "2160p"] and imdb:
+        check_kpk_for_better_quality(imdb, quality)
+
+    mirror_dir = Path(os.path.join(sort_movie_ops.MIRROR_PATH, movie_info["director"]))
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    sort_movie_ops.delete_trash_files(path)
+    return None
+
+
 def fill_movie_info(movie_ids: dict, movie_info: dict, tv: bool) -> None:
     """
     按可用编号依次补充 TMDB、IMDb 和 Douban 元数据。
@@ -465,6 +580,10 @@ def sort_movie(path: str) -> None:
     # 读取本地视频文件的基础信息
     file_info = get_video_info(path)
     if not file_info:
+        return
+    screenshot_result = ensure_movie_screenshots(path)
+    if screenshot_result:
+        logger.error(screenshot_result)
         return
 
     # 合并线上元数据、编号信息和本地视频信息
