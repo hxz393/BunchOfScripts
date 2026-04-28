@@ -95,6 +95,7 @@ PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
 EMPTY_ID_MARKERS: dict[str, Optional[str]] = {"imdb": None, "tmdb": None, "douban": None}
+ID_MARKER_SUFFIXES = set(ID_MARKER_EXT_MAP.values())
 
 YTS_TORRENT_PRIORITIES = (
     ("quality", ["2160p", "1080p", "720p", "480p", "3D"]),
@@ -242,42 +243,51 @@ def get_existing_id_files(path: str | os.PathLike) -> tuple[dict[str, Optional[s
     return {key: values[0][0] if values else None for key, values in id_files.items()}, None
 
 
-def touch_id_marker(path: str, id_value: str, suffix: str) -> None:
+def touch_id_marker(path: str | os.PathLike, id_value: str, suffix: str) -> None:
     """
-    在目录中创建编号空文件；若已存在则保持不变。
+    在目录中创建编号标记空文件。
 
-    :param path: 目录路径
+    文件名格式为 ``{id_value}.{suffix}``，例如 ``tt1234567.imdb``。
+    ``suffix`` 应使用不带点的小写标记类型：``imdb``、``tmdb``、``douban``。
+    如果文件已存在，``Path.touch`` 会保留文件并更新修改时间。
+
+    :param path: 标记文件所在目录
     :param id_value: 编号值
-    :param suffix: 空文件后缀，不含点
+    :param suffix: 标记后缀，不含点
     :return: 无
     """
+    if suffix not in ID_MARKER_SUFFIXES:
+        raise ValueError(f"Unsupported ID marker suffix: {suffix}")
     Path(path, f"{id_value}.{suffix}").touch()
 
 
-def remove_id_marker(path: str, id_value: str, suffix: str) -> None:
+def remove_id_marker(path: str | os.PathLike, id_value: str, suffix: str) -> None:
     """
-    删除目录中的指定编号空文件；不存在时静默跳过。
+    删除目录中的指定编号标记文件。
 
-    :param path: 目录路径
+    文件名格式为 ``{id_value}.{suffix}``。目标不存在时静默跳过；
+    如果目标路径存在但不是文件，交由 ``Path.unlink`` 抛错。
+
+    :param path: 标记文件所在目录
     :param id_value: 编号值
-    :param suffix: 空文件后缀，不含点
+    :param suffix: 标记后缀，不含点
     :return: 无
     """
+    if suffix not in ID_MARKER_SUFFIXES:
+        raise ValueError(f"Unsupported ID marker suffix: {suffix}")
     marker_path = Path(path, f"{id_value}.{suffix}")
-    if marker_path.exists():
-        marker_path.unlink()
+    marker_path.unlink(missing_ok=True)
 
 
-def scan_ids(directory: str) -> Dict[str, Optional[str]]:
+def scan_ids(directory: str | os.PathLike) -> Dict[str, Optional[str]]:
     """
-    扫描给定目录下的编号文件：
-    - *.tmdb 文件保存tmdb编号
-    - *.douban 文件保存douban编号
-    - *.imdb 文件保存imdb编号
-    如果某个文件未找到，则会打印提示信息。
+    扫描目录中的编号标记文件并返回编号字典。
 
-    :param directory: 导演路径
-    :return: 返回一个字典，包含可能的键：'tmdb', 'douban', 'imdb'
+    这是 ``get_existing_id_files`` 的容错包装：扫描失败、重复标记、
+    或标记后缀大小写错误时，会记录错误日志，并返回空编号字典。
+
+    :param directory: 待扫描目录路径
+    :return: 包含 ``imdb``、``tmdb``、``douban`` 三个键的编号字典
     """
     result, error = get_existing_id_files(directory)
     if error:
