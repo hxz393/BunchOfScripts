@@ -37,8 +37,6 @@ TMDB_KEY = CONFIG['tmdb_key']  # tmdb api key
 TMDB_HEADERS = {"Authorization": f"Bearer {TMDB_AUTH}", "accept": "application/json"}
 TMDB_IMAGE_URL = CONFIG['tmdb_image_url']  # tmdb 图片地址
 
-IMDB_MOVIE_URL = CONFIG['imdb_movie_url']  # imdb 电影地址
-
 DOUBAN_HEADER = CONFIG['douban_header']  # 豆瓣请求头
 DOUBAN_COOKIE = CONFIG['douban_cookie']  # 豆瓣cookie
 DOUBAN_MOVIE_URL = CONFIG['douban_movie_url']  # 豆瓣电影地址

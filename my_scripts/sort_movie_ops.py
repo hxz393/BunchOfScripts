@@ -31,6 +31,7 @@ CONFIG = read_json_to_dict('config/sort_movie_ops.json')  # 配置文件
 TRASH_LIST = CONFIG['trash_list']  # 垃圾文件名列表
 SOURCE_LIST = CONFIG['source_list']  # 来源列表
 VIDEO_EXTENSIONS = CONFIG['video_extensions']  # 后缀名列表
+VIDEO_EXTENSION_SET = {extension.lower() for extension in VIDEO_EXTENSIONS}
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
 TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
@@ -103,6 +104,30 @@ YTS_TORRENT_PRIORITIES = (
     ("bit_depth", ["10", "8"]),
     ("type", ["bluray", "web"]),
 )
+FFPROBE_TIMEOUT_SECONDS = 60
+MEDIAINFO_TIMEOUT_SECONDS = 60
+IGNORED_CODEC_DETAILS = {
+    "mpeg-4 visual",
+    "mpeg video",
+    "Vimeo Encoder",
+    "Zencoder Video Encoding System",
+    "VOLOHEVC",
+    "ATEME Titan File",
+    "ATEME Titan KFE",
+    "x264pro - Adobe CS Exporter Plug-in",
+    "TMPGEnc",
+    "TMPGEnc MPEG Editor",
+    "TMPGEnc XPress",
+    "Created by Nero",
+}
+IGNORED_CODEC_DETAIL_SUBSTRINGS = ("Womble", "TMPGEnc", "HCenc")
+CODEC_ALIASES = {
+    "divx": "DivX",
+    "dx50": "DivX",
+    "div3": "DivX",
+    "xvid": "XviD",
+    "mpeg2video": "mpeg2",
+}
 
 
 def format_bytes(size_bytes: int | str) -> str:
@@ -397,209 +422,277 @@ def extract_imdb_id_from_links(hrefs: Iterable[str | None]) -> Optional[str]:
 
 def extract_torrent_download_link(target_path: str | os.PathLike, magnet_path: str) -> Optional[str]:
     """
-    从来源文件中提取下载链接。
+    从下载记录文件中提取可提交给下载客户端的链接。
 
-    目前支持：
-    - ``.json``: YTS 电影详情 JSON，返回根据优先级挑选出的 magnet
-    - ``.log``: 纯文本链接文件，返回首行去 BOM 后的链接
+    支持两类来源：
+    - ``.json``: YTS movie details JSON，读取 ``data.movie.torrents``，
+      并调用 ``select_best_yts_magnet`` 按优先级生成 magnet。
+    - ``.log``: 已保存的下载链接文本文件，只读取第一行并去除 UTF-8 BOM。
 
-    :param target_path: 来源文件路径
-    :param magnet_path: 生成 magnet 时使用的前缀
-    :return: 提取到的下载链接；失败时返回 ``None``
+    读取失败、内容为空、JSON 结构不符合预期、无法生成 magnet、
+    或文件后缀不支持时返回 ``None``。
+
+    :param target_path: ``.json`` 或 ``.log`` 下载记录文件路径
+    :param magnet_path: 生成 YTS magnet 时使用的前缀，例如 ``magnet:?xt=urn:btih:``
+    :return: 下载链接；无法提取时返回 ``None``
     """
     file_path = Path(target_path)
+    suffix = file_path.suffix.lower()
 
-    if file_path.suffix.lower() == ".json":
-        json_data = read_json_to_dict(file_path)
-        if not json_data:
-            logger.error(f"读取 JSON 失败: {file_path}")
-            return None
+    if suffix == ".json":
         try:
+            json_data = read_json_to_dict(file_path)
+            if not json_data:
+                logger.error(f"读取 JSON 失败: {file_path}")
+                return None
             return select_best_yts_magnet(json_data, magnet_path)
         except Exception:
             logger.exception(f"从 JSON 提取下载链接失败: {file_path}")
             return None
 
-    if file_path.suffix.lower() == ".log":
+    if suffix == ".log":
         lines = read_file_to_list(file_path)
         if not lines:
             logger.error(f"读取 LOG 失败或内容为空: {file_path}")
             return None
-        return lines[0].lstrip("\ufeff")
+        download_link = lines[0].lstrip("\ufeff").strip()
+        if not download_link:
+            logger.error(f"读取 LOG 失败或内容为空: {file_path}")
+            return None
+        return download_link
 
     return None
 
 
-def safe_get(d: dict, path: list, default: Any = None) -> Any:
+def get_video_info(path_str: str | os.PathLike) -> Optional[dict]:
     """
-    根据 path 列表，从字典 d 中逐层安全获取值。
-    如果任意一步为 None 或不是 dict，就返回 default。
+    读取电影目录中最大视频文件的基础媒体信息。
 
-    :param d: 查询字典
-    :param path: 查询键列表
-    :param default: 出现问题时返回的默认值
-    :return: 无
+    函数会递归扫描 ``path_str`` 下所有受支持的视频后缀文件，
+    选择文件体积最大的一个作为正片候选，然后调用 ``extract_video_info``
+    读取分辨率、清晰度、编码、码率、时长、来源等字段。
+
+    没有找到视频文件，或视频信息提取失败时返回 ``None``。
+
+    :param path_str: 电影目录路径
+    :return: 视频信息字典；无法提取时返回 ``None``
     """
-    for key in path:
-        if not isinstance(d, dict):
-            return default
-        d = d.get(key)
-        if d is None:
-            return default
-    return d
-
-
-def get_video_info(path_str: str) -> Optional[dict]:
-    """
-    在指定目录（包含子目录）中，寻找最大那个视频文件并返回其元数据信息：
-      - resolution: "width*height" (例如 "1920x1080")
-      - codec: 编解码器ID (如 "h264", "hevc" 等)
-      - bitrate: 视频码率，返回形如 "2472kbps"
-
-    :param path_str: 目录路径
-    :return: 文件信息字典，有问题返回 None
-    """
-    # 获取合格视频文件路径
     largest_file_path = get_largest_file(path_str)
     if not largest_file_path:
         logger.error(f"没有找到任何视频文件：{path_str}")
-        return
-    # 获取视频文件信息
-    return extract_video_info(largest_file_path)
+        return None
+
+    try:
+        video_info = extract_video_info(largest_file_path)
+    except Exception:
+        logger.exception(f"读取视频信息失败：{largest_file_path}")
+        return None
+
+    if not video_info:
+        logger.error(f"读取视频信息失败：{largest_file_path}")
+        return None
+    return video_info
 
 
-def get_largest_file(path_str: str) -> str:
+def get_largest_file(path_str: str | os.PathLike) -> Optional[str]:
     """
-    如果目录下有多个视频文件，返回最大的那个
+    递归查找目录中体积最大的视频文件。
 
-    :param path_str: 扫描目录
-    :return: 无
+    只统计扩展名存在于 ``VIDEO_EXTENSIONS`` 的文件，扩展名比较不区分大小写。
+    如果多个视频文件大小相同，按遍历顺序保留先遇到的文件。
+    未找到视频文件时返回 ``None``。
+
+    :param path_str: 待扫描目录路径
+    :return: 最大视频文件路径；不存在视频文件时返回 ``None``
     """
-    largest_file_path = ""
+    largest_file_path = None
     largest_file_size = -1
-    # 使用 os.walk 递归遍历子目录
-    for root, dirs, files in os.walk(path_str):
+    scan_root = os.fspath(path_str)
+    for root, dirs, files in os.walk(scan_root):
+        dirs.sort(key=str.casefold)
+        files.sort(key=str.casefold)
         for filename in files:
-            # 判断文件扩展名是否在常见视频扩展名列表中
             ext = os.path.splitext(filename)[1].lower()
-            if ext in VIDEO_EXTENSIONS:
-                filepath = os.path.join(root, filename)
-                # 找到第一个视频文件后获取大小信息
+            if ext not in VIDEO_EXTENSION_SET:
+                continue
+
+            filepath = os.path.join(root, filename)
+            try:
                 file_size = os.path.getsize(filepath)
-                if file_size > largest_file_size:
-                    largest_file_size = file_size
-                    largest_file_path = filepath
+            except OSError as e:
+                logger.warning(f"获取视频文件大小失败，跳过：{filepath}: {e}")
+                continue
+
+            if file_size > largest_file_size:
+                largest_file_size = file_size
+                largest_file_path = filepath
     return largest_file_path
 
 
-def extract_video_info(filepath: str) -> Optional[dict]:
+def extract_video_info(filepath: str | os.PathLike) -> Optional[dict]:
     """
-    调用 ffprobe 获取视频的分辨率、编解码器和码率信息
-    返回一个字典：{"source": 来源, "resolution": 分辨率, "codec": 编码器, "bitrate": 比特率}
+    使用 ffprobe 和 MediaInfo 提取单个视频文件的整理元数据。
 
-    :param filepath: 视频文件路径路径
-    :return: 文件信息字典
+    函数会读取第一个视频流，返回整理和入库所需的本地媒体字段：
+    ``resolution``、``quality``、``dar``、``codec``、``bitrate``、
+    ``duration``、``source``、``release_group``、``filename``，以及可选的
+    ``comment``。其中 ``source`` 主要根据文件名和路径中的来源标记推断。
+
+    找不到视频流，或关键媒体字段无法解析时返回 ``None``。
+
+    :param filepath: 视频文件路径
+    :return: 视频信息字典；无法解析时返回 ``None``
     """
+    filepath = os.fspath(filepath)
     logger.info(f"获取视频信息：{os.path.basename(filepath)}")
-    dirname, filename = os.path.split(filepath)
-    # 构造并运行 ffprobe 命令
+    _dirname, filename = os.path.split(filepath)
     file_info = {"source": "", "resolution": "", "codec": "", "bitrate": ""}
+
+    # 构造并运行 ffprobe 命令。
     cmd = [
         FFPROBE_PATH,
-        "-v", "quiet",  # 不输出调试信息
-        "-print_format", "json",  # JSON格式输出
+        "-v", "quiet",
+        "-print_format", "json",
         "-show_format",
-        "-show_streams",  # 显示所有流信息
+        "-show_streams",
         filepath
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.exception(f"ffprobe 执行超时：{filepath}")
+        return None
+    except OSError:
+        logger.exception(f"ffprobe 执行失败：{filepath}")
+        return None
 
-    # 解析 JSON。通常第一个视频流在 streams[0]，也可能有音频流排在前面，需要做些过滤
-    data = json.loads(result.stdout)
-    video_stream = None
-    for stream in data.get("streams", []):
-        if stream.get("codec_type") == "video":
-            video_stream = stream
-            break
+    if getattr(result, "returncode", 0) != 0:
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        logger.error(f"ffprobe 解析失败：{filepath}: {stderr}")
+        return None
+
+    # 解析 JSON。通常第一个视频流在 streams[0]，也可能有音频流排在前面，需要过滤。
+    try:
+        data = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        logger.error(f"ffprobe JSON 解析失败：{filepath}")
+        return None
+
+    streams = data.get("streams") or []
+    video_stream = next(
+        (stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "video"),
+        None,
+    )
     if not video_stream:
         logger.error(f"未在文件 {filepath} 中检测到视频流")
-        return
+        return None
 
-    # 分辨率，获取没有失败过
-    width = video_stream.get("width", 0)
-    height = video_stream.get("height", 0)
+    # 分辨率，优先使用视频流的存储宽高。
+    try:
+        width = int(video_stream.get("width") or 0)
+        height = int(video_stream.get("height") or 0)
+    except (TypeError, ValueError):
+        logger.error(f"视频分辨率无法解析：{filepath}")
+        return None
+    if width <= 0 or height <= 0:
+        logger.error(f"视频分辨率缺失：{filepath}")
+        return None
     file_info["resolution"] = f"{width}x{height}"
     file_info["quality"] = classify_resolution_by_pixels(f"{width}x{height}")
 
-    # 实际宽高比
+    # 实际宽高比，优先使用显示宽高比；异常时回退到存储宽高比。
     file_info["dar"] = width / height
-    if 'display_aspect_ratio' in video_stream:
-        dar_str = video_stream['display_aspect_ratio']
-        width, height = map(int, dar_str.split(':'))
-        file_info["dar"] = width / height
+    dar_str = video_stream.get("display_aspect_ratio")
+    if dar_str and dar_str != "N/A":
+        try:
+            display_width, display_height = map(int, str(dar_str).split(":", maxsplit=1))
+            if display_width > 0 and display_height > 0:
+                file_info["dar"] = display_width / display_height
+            else:
+                logger.warning(f"显示宽高比无效，使用存储宽高比：{filepath} {dar_str}")
+        except ValueError:
+            logger.warning(f"显示宽高比无法解析，使用存储宽高比：{filepath} {dar_str}")
 
-    # 编码器，mkv 要特别判断
-    codec_tag_string = video_stream.get("codec_tag_string", "未知编码器")
-    codec_name = video_stream.get("codec_name", "未知编码器")
-    codec_detail = check_video_codec(filepath)
-    not_allow_codec = ["mpeg-4 visual", "mpeg video",
-                       "Vimeo Encoder", "Zencoder Video Encoding System",
-                       "VOLOHEVC", "ATEME Titan File", "ATEME Titan KFE",
-                       "x264pro - Adobe CS Exporter Plug-in",
-                       "TMPGEnc", "TMPGEnc MPEG Editor", "TMPGEnc XPress",
-                       "Created by Nero",
-                       ]
-    not_allow_codec_short = ["Womble", "TMPGEnc", "HCenc"]
-    if codec_detail and codec_detail not in not_allow_codec and not any([x in codec_detail for x in not_allow_codec_short]):
+    # 编码器，mkv 要特别判断；MediaInfo 失败时回退到 ffprobe 字段。
+    codec_tag_string = str(video_stream.get("codec_tag_string") or "未知编码器")
+    codec_name = str(video_stream.get("codec_name") or "未知编码器")
+    try:
+        codec_detail = check_video_codec(filepath)
+    except Exception as e:
+        logger.warning(f"MediaInfo 编码解析失败，回退到 ffprobe：{filepath}: {e}")
+        codec_detail = None
+    if codec_detail and codec_detail not in IGNORED_CODEC_DETAILS and not any(x in codec_detail for x in IGNORED_CODEC_DETAIL_SUBSTRINGS):
         file_info["codec"] = codec_detail
     elif codec_tag_string.startswith("["):
         file_info["codec"] = codec_name
     else:
         file_info["codec"] = codec_tag_string
-    # 修剪名称
-    if file_info["codec"].lower() in ["divx", "dx50", "div3"]:
-        file_info["codec"] = "DivX"
-    elif file_info["codec"].lower() == "xvid":
-        file_info["codec"] = "XviD"
-    elif file_info["codec"].lower() == "mpeg2video":
-        file_info["codec"] = "mpeg2"
+
+    # 修剪和规范化编码器名称。
+    file_info["codec"] = CODEC_ALIASES.get(file_info["codec"].lower(), file_info["codec"])
     file_info["codec"] = file_info["codec"][:49]
     file_info["codec"] = file_info["codec"].replace("x264pro - Adobe CS Exporter Plug-in", "x264")
 
-    # 比特率，mkv 获取不到，改为获取总比特率
+    # 比特率，mkv 获取不到视频流码率时，改为获取容器总比特率。
+    format_data = data.get("format") or {}
+    if not isinstance(format_data, dict):
+        format_data = {}
     bit_rate_bps = video_stream.get("bit_rate")
     if not bit_rate_bps:
-        format_data = data.get("format", [])
         bit_rate_bps = format_data.get("bit_rate")
-    bit_rate_kbps = int(bit_rate_bps) // 1000 if bit_rate_bps is not None else "未知比特率"
+    if bit_rate_bps is None:
+        logger.error(f"视频码率缺失：{filepath}")
+        return None
+    try:
+        bit_rate_kbps = int(bit_rate_bps) // 1000
+    except (TypeError, ValueError):
+        logger.error(f"视频码率无法解析：{filepath} {bit_rate_bps}")
+        return None
     file_info["bitrate"] = f"{bit_rate_kbps}kbps"
 
-    # 视频时长
+    # 视频时长，优先使用视频流时长，缺失时使用容器总时长。
     duration = video_stream.get("duration")
     if not duration:
-        duration_data = data.get("format", [])
-        duration = duration_data.get("duration")
-    file_info["duration"] = int(float(duration) / 60)
+        duration = format_data.get("duration")
+    if duration is None:
+        logger.error(f"视频时长缺失：{filepath}")
+        return None
+    try:
+        file_info["duration"] = round(float(duration) / 60)
+    except (TypeError, ValueError):
+        logger.error(f"视频时长无法解析：{filepath} {duration}")
+        return None
 
-    # 视频来源，需要根据文件名判断。先仅使用当前视频文件名做匹配
+    # 视频来源，先根据视频文件名判断；找不到再回退到完整路径。
     file_info["source"] = "未知"
-    for source in SOURCE_LIST:
-        # 使用 re.IGNORECASE 或在模式中用 (?i) 来忽略大小写
-        # 注意 [A-Za-z] 仅排除英文字母，如果想排除数字可以改成 [A-Za-z0-9]
-        pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
-        if re.search(pattern, filepath):
-            file_info["source"] = source
+    for source_text in (filename, filepath):
+        for source in SOURCE_LIST:
+            pattern = rf"(?i)(?<![A-Za-z]){source}(?![A-Za-z])"
+            if re.search(pattern, source_text):
+                file_info["source"] = source
+                break
+        if file_info["source"] != "未知":
             break
-    # 额外处理
-    if "blu-ray" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
+
+    # 额外处理常见来源写法。
+    normalized_filename = filename.lower().replace(".", " ")
+    compact_filename = normalized_filename.replace(" ", "").replace("-", "")
+    if "blu-ray" in normalized_filename and "remux" in normalized_filename:
         file_info["source"] = "BDRemux"
-    elif "bluray" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
+    elif "bluray" in normalized_filename and "remux" in normalized_filename:
         file_info["source"] = "BDRemux"
-    elif "bd" in filename.lower().replace(".", ' ') and "remux" in filename.lower().replace(".", ' '):
+    elif "bd" in normalized_filename and "remux" in normalized_filename:
         file_info["source"] = "BDRemux"
     elif "blu-ray" in filename.lower():
         file_info["source"] = "BluRay"
-    elif "webdl" in filename.lower():
+    elif "webdl" in compact_filename:
         file_info["source"] = "WEB-DL"
 
     # 发布组
@@ -622,27 +715,75 @@ def extract_video_info(filepath: str) -> Optional[dict]:
     return file_info
 
 
-def check_video_codec(path: str) -> Optional[str]:
-    """使用 MediaInfo 获取编码信息"""
+def check_video_codec(path: str | os.PathLike) -> Optional[str]:
+    """
+    使用 MediaInfo 读取视频编码器和编码参数。
+
+    函数会解析 MediaInfo JSON 输出中的第一个 Video track，
+    优先使用 ``Encoded_Library_Name`` 作为编码器名称；若编码设置中包含
+    ``crf`` 或 ``rc``，则追加为 ``codec.crf18``、``codec.vbr`` 等形式。
+    无法读取媒体信息或找不到视频流时返回 ``None``。
+
+    :param path: 视频文件路径
+    :return: 编码器描述；无法解析时返回 ``None``
+    """
+    path = os.fspath(path)
     # 调用 MediaInfo CLI 获取 JSON 元数据
     cmd = [MEDIAINFO_PATH, '--Output=JSON', path]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
-    data = json.loads(proc.stdout)
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=MEDIAINFO_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f'Mediainfo 执行超时: {path}')
+        return None
+    except OSError as e:
+        logger.warning(f'Mediainfo 执行失败: {path}: {e}')
+        return None
+
+    if getattr(proc, "returncode", 0) != 0:
+        stderr = (getattr(proc, "stderr", "") or "").strip()
+        logger.warning(f'Mediainfo 执行失败: {path}: {stderr}')
+        return None
+
+    try:
+        data = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        logger.warning(f'Mediainfo JSON 解析失败: {path}')
+        return None
+    if not isinstance(data, dict):
+        logger.warning(f'Mediainfo JSON 结构错误: {path}')
+        return None
 
     # 提取 Video track
     media = data.get('media', {})
     if not media:
         logger.warning(f'Mediainfo 解析 JSON 失败: {path}')
-        return
+        return None
 
     tracks = media.get('track', [])
-    video = next((t for t in tracks if t.get('@type') == 'Video'), None)
+    if isinstance(tracks, dict):
+        tracks = [tracks]
+    if not isinstance(tracks, list):
+        logger.warning(f'Mediainfo track 结构错误: {path}')
+        return None
+    video = next((t for t in tracks if isinstance(t, dict) and t.get('@type') == 'Video'), None)
     if not video:
         logger.warning(f'Mediainfo 未找到视频流: {path}')
-        return
+        return None
 
     # 编码器识别
-    codec = video.get('Encoded_Library_Name') or video.get('Format', '').lower() or 'Unknown'
+    codec = str(video.get('Encoded_Library_Name') or '').strip()
+    if not codec:
+        codec = str(video.get('Format') or '').strip().lower()
+    if not codec:
+        codec = 'Unknown'
 
     # 解析编码设置: rc_mode / crf / bitrate
     enc_settings = video.get('Encoded_Library_Settings') or video.get('Encoded_Application', '')
@@ -650,8 +791,9 @@ def check_video_codec(path: str) -> Optional[str]:
     crf_value = None
     target_bitrate = None  # kbps
     if enc_settings:
-        for match in re.finditer(r"(rc|crf)=([\w.]+)", enc_settings):
+        for match in re.finditer(r"(rc|crf)=([\w.]+)", enc_settings, flags=re.IGNORECASE):
             key, val = match.groups()
+            key = key.lower()
             if key == 'rc':
                 raw_rc = val
             elif key == 'crf':
@@ -659,7 +801,7 @@ def check_video_codec(path: str) -> Optional[str]:
                     crf_value = int(float(val))
                 except ValueError:
                     pass
-        m = re.search(r"bitrate=(\d+)", enc_settings)
+        m = re.search(r"bitrate=(\d+)", enc_settings, flags=re.IGNORECASE)
         if m:
             target_bitrate = int(m.group(1))
 
