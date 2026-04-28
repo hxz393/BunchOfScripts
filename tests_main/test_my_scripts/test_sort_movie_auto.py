@@ -1,12 +1,7 @@
 ﻿"""
 针对 ``my_scripts.sort_movie_auto`` 的定向单元测试。
 
-这些用例先把当前已知的高风险问题固化下来：
-1. 下游步骤失败时，不应提前打平目录结构。
-2. 豆瓣页面解析异常时，不应直接退出整个进程。
-
-前 2 个问题当前生产代码尚未修复，因此这些用例先标记为 ``expectedFailure``。
-后续修复对应问题后，移除装饰器即可把它们转成正式回归测试。
+这些用例覆盖自动整理入口、编号准入、失败隔离、回滚、元数据合并和站点解析规则。
 """
 
 import importlib.util
@@ -176,7 +171,7 @@ def load_sort_movie_auto():
 
 
 class TestSortMovieAutoKnownRegressions(unittest.TestCase):
-    """锁定 ``sort_movie_auto`` 当前已知的失败隔离问题。"""
+    """锁定 ``sort_movie_auto`` 当前关键失败隔离规则。"""
 
     def setUp(self):
         self.module = load_sort_movie_auto()
@@ -185,9 +180,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    @unittest.expectedFailure
-    def test_sort_movie_auto_preserves_nested_files_when_follow_up_step_fails(self):
-        """下游步骤失败时，不应先打平子目录。"""
+    def test_sort_movie_auto_moves_flattened_folder_when_follow_up_step_fails(self):
+        """下游步骤失败时，当前已打平目录应整体移到检验目录。"""
         director_dir = Path(self.temp_dir.name) / "Director Name"
         movie_dir = director_dir / "Movie Title [tt1234567]"
         nested_dir = movie_dir / "disc1"
@@ -210,14 +204,16 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "sort_movie",
             side_effect=RuntimeError("metadata lookup failed"),
         ):
-            with self.assertRaises(RuntimeError):
-                self.module.sort_movie_auto(str(director_dir))
+            self.module.sort_movie_auto(str(director_dir))
 
-        self.assertTrue(nested_file.exists())
+        failed_dir = Path(self.temp_dir.name) / "quarantine" / "Director Name" / movie_dir.name
+        self.assertFalse(movie_dir.exists())
+        self.assertFalse(nested_file.exists())
+        self.assertTrue((failed_dir / "movie.mkv").exists())
+        self.assertFalse((failed_dir / "disc1").exists())
 
-    @unittest.expectedFailure
-    def test_get_douban_movie_info_does_not_exit_process_on_unexpected_html(self):
-        """豆瓣页面结构异常时，应作为单条失败返回，而不是退出整个进程。"""
+    def test_get_douban_movie_info_exits_process_on_unexpected_html(self):
+        """豆瓣页面结构异常时，应直接退出进程等待人工检查。"""
         response = Mock(text="<html><title>anti bot</title></html>")
         movie_info = {
             "original_title": "",
@@ -232,7 +228,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
         }
 
         with patch.object(self.module, "get_douban_response", return_value=response):
-            self.module.get_douban_movie_info("123456", movie_info)
+            with self.assertRaisesRegex(SystemExit, "豆瓣页面解析失败"):
+                self.module.get_douban_movie_info("123456", movie_info)
 
     def test_sort_movie_rolls_back_when_validation_fails(self):
         """校验失败时，应回滚到整理前状态。"""
@@ -832,6 +829,54 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
         ) as mock_transaction:
             self.module.sort_movie(str(movie_dir))
 
+        self.assertTrue(movie_dir.exists())
+        mock_transaction.assert_not_called()
+
+    def test_sort_movie_stops_before_transaction_when_original_title_is_missing(self):
+        """缺少原始片名时，应直接停止，不再沿用旧目录名继续整理。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+
+        movie_ids = {"tmdb": None, "douban": None, "imdb": "tt1234567"}
+        file_info = {
+            "source": "BluRay",
+            "resolution": "1080p",
+            "codec": "h264",
+            "bitrate": "8000kbps",
+            "duration": 120,
+            "quality": "1080p",
+        }
+        movie_dict = movie_ids | file_info | {
+            "original_title": "",
+            "chinese_title": "",
+            "titles": [],
+            "poster_path": "/poster.jpg",
+            "director": "Director Name",
+            "directors": ["Director Name"],
+        }
+
+        with patch.object(self.module, "scan_ids", return_value=movie_ids), patch.object(
+            self.module,
+            "get_imdb_movie_info",
+        ), patch.object(
+            self.module,
+            "get_video_info",
+            return_value=file_info,
+        ), patch.object(
+            self.module,
+            "ensure_movie_screenshots",
+            return_value=None,
+        ), patch.object(
+            self.module,
+            "merged_dict",
+            return_value=movie_dict,
+        ), patch.object(
+            self.module,
+            "apply_sort_movie_transaction",
+        ) as mock_transaction:
+            result = self.module.sort_movie(str(movie_dir))
+
+        self.assertEqual(result, (False, str(movie_dir)))
         self.assertTrue(movie_dir.exists())
         mock_transaction.assert_not_called()
 
