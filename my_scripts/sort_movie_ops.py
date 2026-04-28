@@ -93,7 +93,7 @@ PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 
-def format_bytes(size_bytes: str) -> str:
+def format_bytes(size_bytes: int | str) -> str:
     """
     将大小（字节）转换为可读的大小。
 
@@ -101,8 +101,6 @@ def format_bytes(size_bytes: str) -> str:
     :return: 可读的大小
     """
     size_bytes = int(size_bytes)
-    if size_bytes == 0:
-        return "0B"
     size_name = ("B", "KB", "MB", "GB", "TB", "PB")
     i = 0
     while size_bytes >= 1024 and i < len(size_name) - 1:
