@@ -3,7 +3,7 @@
 
 :author: assassing
 :contact: https://github.com/hxz393
-:copyright: Copyright 2025, hxz393. 保留所有权利。
+:copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import contextlib
 import json
@@ -15,14 +15,13 @@ import shutil
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable
 from typing import Optional, Any
 
 from PIL import Image
 from moviepy import VideoFileClip
 
 from my_module import read_json_to_dict, sanitize_filename, read_file_to_list, get_file_paths, remove_target, get_folder_paths
-from scrapy_kpk import scrapy_kpk
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,6 @@ CONFIG = read_json_to_dict('config/sort_movie_ops.json')  # 配置文件
 TRASH_LIST = CONFIG['trash_list']  # 垃圾文件名列表
 SOURCE_LIST = CONFIG['source_list']  # 来源列表
 VIDEO_EXTENSIONS = CONFIG['video_extensions']  # 后缀名列表
-MAX_BITRATE = CONFIG['max_bitrate']  # 最大比特率
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
 RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
 TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
@@ -55,19 +53,6 @@ RARE_PATH = CONFIG['rare_path']  # rare 文件路径
 BD_SOURCE = ['BDRemux', 'BluRay', 'BDRip']
 # 编译正则，匹配文件名中包含 'yts' 且以 .jpg 或 .txt 结尾的文件（不区分大小写）
 RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
-# 编译正则，从目录名中提取信息
-RE_DIR_NAME = re.compile(
-    r'^'
-    r'(?P<year>\d+)\s*-\s*'  # 放映年（4位数字）和分隔符
-    r'(?P<title>[^{]+)'  # 电影原名：匹配除 { 和 ( 之外的字符
-    r'(?:\((?P<chinese>[^)]+)\))?'  # 可选的电影中文名，包含在括号中
-    r'\{(?P<imdb>(tt\d+|tmdb\d+|db\d+|noid)\d*(tv)?)}'  # IMDB 编号，形如 {tt1959550}
-    r'\[(?P<source>[^]]+)]'  # 电影来源，例如 [DVDRip]
-    r'\[(?P<resolution>[^]]+)]'  # 电影分辨率，例如 [656x368]
-    r'\[(?P<encoding>[^]@]+)@(?P<bitrate>[^]]+)]'  # 文件编码和码率，例如 [XVID@1074kbps]
-    r'$',
-    re.IGNORECASE
-)
 # 编译正则，从文件名中提取信息
 RE_VIDEO_NAME = re.compile(
     r'^'  # 开头
@@ -95,6 +80,9 @@ RE_JSON_FILE_NAME = re.compile(
     r'}',  # 匹配 '}'
     re.IGNORECASE
 )
+IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
+IMDB_ID_PATTERN = re.compile(r"(tt\d+)", re.IGNORECASE)
+IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
 
 # 文件多，先行获取列表
 PRE_LOAD_FP = get_file_paths(RARBG_SOURCE)
@@ -105,56 +93,158 @@ PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
 PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 
-def get_ids(source_path: str) -> None:
+def format_bytes(size_bytes: str) -> str:
     """
-    解析给定的链接列表，根据不同站点（Douban、IMDB、TMDB）提取ID，并在输出目录中创建相应的空文件。
+    将大小（字节）转换为可读的大小。
 
-    :param source_path: 包含输出目录和链接列表的文本路径
+    :param size_bytes: 大小，字节
+    :return: 可读的大小
+    """
+    size_bytes = int(size_bytes)
+    if size_bytes == 0:
+        return "0B"
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB")
+    i = 0
+    while size_bytes >= 1024 and i < len(size_name) - 1:
+        size_bytes /= 1024.
+        i += 1
+    return f"{size_bytes:.2f} {size_name[i]}"
+
+
+def _filter_torrents_by_priority(torrents: list[dict], key: str, priority_list: list[str]) -> list[dict]:
+    """
+    按优先级过滤 YTS 种子；如果出现意外字段值则抛错。
+
+    :param torrents: 种子列表
+    :param key: 过滤字段
+    :param priority_list: 优先级列表，按顺序取第一个命中的值
+    :return: 过滤后的种子列表
+    """
+    unique_values = {torrent[key] for torrent in torrents}
+    unexpected_values = unique_values - set(priority_list)
+    if unexpected_values:
+        raise ValueError(f"Unexpected value for {key}: {unexpected_values}")
+
+    for value in priority_list:
+        filtered = [torrent for torrent in torrents if torrent[key] == value]
+        if filtered:
+            return filtered
+    return torrents
+
+
+def select_best_yts_magnet(json_data: dict, magnet_path: str) -> str:
+    """
+    从 YTS JSON 中选择最佳种子并生成磁链。
+
+    选择顺序依次为：
+    1. 画质：2160p > 1080p > 720p > 480p > 3D
+    2. 视频编码：x265 > x264
+    3. 位深：10 > 8
+    4. 来源：bluray > web
+    5. 如果仍有多个候选，则取 ``size_bytes`` 最大者
+
+    :param json_data: 单个 YTS 电影详情 JSON
+    :param magnet_path: 磁链前缀
+    :return: 最佳种子的磁链
+    """
+    torrents = json_data["data"]["movie"]["torrents"]
+    torrents = _filter_torrents_by_priority(torrents, "quality", ["2160p", "1080p", "720p", "480p", "3D"])
+    if len(torrents) == 1:
+        return f"{magnet_path}{torrents[0]['hash']}"
+
+    torrents = _filter_torrents_by_priority(torrents, "video_codec", ["x265", "x264"])
+    if len(torrents) == 1:
+        return f"{magnet_path}{torrents[0]['hash']}"
+
+    torrents = _filter_torrents_by_priority(torrents, "bit_depth", ["10", "8"])
+    if len(torrents) == 1:
+        return f"{magnet_path}{torrents[0]['hash']}"
+
+    torrents = _filter_torrents_by_priority(torrents, "type", ["bluray", "web"])
+    if len(torrents) == 1:
+        return f"{magnet_path}{torrents[0]['hash']}"
+
+    best_torrent = max(torrents, key=lambda torrent: torrent["size_bytes"])
+    return f"{magnet_path}{best_torrent['hash']}"
+
+
+ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
+
+
+def build_unique_path(target_path: str | os.PathLike) -> Path:
+    """
+    为目标文件生成不冲突路径。
+
+    如果 ``target_path`` 已存在，则依次尝试 ``name(1).ext``、``name(2).ext``。
+
+    :param target_path: 原始目标路径
+    :return: 可用目标路径
+    """
+    path = Path(target_path)
+    if not path.exists():
+        return path
+
+    base = path.stem
+    suffix = path.suffix
+    index = 1
+    while True:
+        candidate = path.with_name(f"{base}({index}){suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def get_existing_id_files(path: str) -> tuple[dict[str, Optional[str]], Optional[str]]:
+    """
+    读取目录里现有的编号空文件，并检测是否存在同类型重复文件。
+
+    :param path: 目录路径
+    :return: ``(编号字典, 错误信息)``
+    """
+    id_files: dict[str, list[str]] = {"imdb": [], "tmdb": [], "douban": []}
+
+    try:
+        file_names = os.listdir(path)
+    except FileNotFoundError:
+        return {"imdb": None, "tmdb": None, "douban": None}, f"目录不存在 {path}"
+
+    for file_name in file_names:
+        name, ext = os.path.splitext(file_name)
+        key = ID_MARKER_EXT_MAP.get(ext)
+        if key:
+            id_files[key].append(name)
+
+    for key, values in id_files.items():
+        if len(values) > 1:
+            return {"imdb": None, "tmdb": None, "douban": None}, f"目录 {path} 中 {key.upper()} 编号文件太多，请先清理。"
+
+    return {key: values[0] if values else None for key, values in id_files.items()}, None
+
+
+def touch_id_marker(path: str, id_value: str, suffix: str) -> None:
+    """
+    在目录中创建编号空文件；若已存在则保持不变。
+
+    :param path: 目录路径
+    :param id_value: 编号值
+    :param suffix: 空文件后缀，不含点
     :return: 无
     """
-    content = read_file_to_list(source_path)
-    # 分割内容
-    output_dir = content[0]
-    if not os.path.exists(output_dir):
-        logger.error("输出目录不存在！")
-        return
+    Path(path, f"{id_value}.{suffix}").touch()
 
-    links_list = content[1:]
-    for line in links_list:
-        line = line.strip()
-        if not line:
-            continue  # 跳过空行
 
-        # 处理 Douban
-        if 'douban.com' in line:
-            # 匹配形如 https://movie.douban.com/subject/1234567 或 https://www.douban.com/personage/xxxx
-            match = re.search(r'https?://(?:movie\.|www\.)douban\.com/(?:subject|personage)/(\d+).*', line)
-            if match:
-                douban_id = match.group(1)
-                out_file = os.path.join(output_dir, f"{douban_id}.douban")
-                # 创建空文件（如果文件已存在则不改变内容）
-                Path(out_file).touch()
-        # 处理 IMDB
-        elif 'imdb.com' in line:
-            # 匹配形如 https://www.imdb.com/name/nm0396421/ 或 https://www.imdb.com/title/tt0012175/
-            match = re.search(r'https?://www\.imdb\.com/(?:name|title)/([^/]+)/?.*', line)
-            if match:
-                imdb_id = match.group(1)
-                out_file = os.path.join(output_dir, f"{imdb_id}.imdb")
-                Path(out_file).touch()
-        # 处理 TMDB
-        elif 'themoviedb.org' in line:
-            # 匹配形如 https://www.themoviedb.org/person/19032-john-hough 或 https://www.themoviedb.org/movie|tv/174171
-            match = re.search(r'https?://www\.themoviedb\.org/(?:person|movie)/(\d+).*', line)
-            match_tv = re.search(r'https?://www\.themoviedb\.org/tv/(\d+).*', line)
-            if match:
-                tmdb_id = match.group(1)
-                out_file = os.path.join(output_dir, f"{tmdb_id}.tmdb")
-                Path(out_file).touch()
-            elif match_tv:
-                tmdb_id = match_tv.group(1) + "tv"
-                out_file = os.path.join(output_dir, f"{tmdb_id}.tmdb")
-                Path(out_file).touch()
+def remove_id_marker(path: str, id_value: str, suffix: str) -> None:
+    """
+    删除目录中的指定编号空文件；不存在时静默跳过。
+
+    :param path: 目录路径
+    :param id_value: 编号值
+    :param suffix: 空文件后缀，不含点
+    :return: 无
+    """
+    marker_path = Path(path, f"{id_value}.{suffix}")
+    if marker_path.exists():
+        marker_path.unlink()
 
 
 def scan_ids(directory: str) -> Dict[str, Optional[str]]:
@@ -168,28 +258,147 @@ def scan_ids(directory: str) -> Dict[str, Optional[str]]:
     :param directory: 导演路径
     :return: 返回一个字典，包含可能的键：'tmdb', 'douban', 'imdb'
     """
-    # 初始化变量为 None
-    result = {'tmdb': None, 'douban': None, 'imdb': None}
-
-    try:
-        files = os.listdir(directory)
-    except FileNotFoundError:
-        logger.error(f"目录 {directory} 不存在。")
-        return result
-
-    # 检查是否有多个 id 文件
-    ext_map = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
-    if any(value > 1 for value in {ext: sum(file.path.endswith(ext) for file in os.scandir(directory) if file.is_file()) for ext in ext_map}.values()):
-        logger.error(f"目录 {directory} 中 id 文件太多，请先清理。")
-        return result
-
-    # 遍历目录中的文件
-    for file in files:
-        # 使用 os.path.splitext 分离文件名和扩展名
-        name, ext = os.path.splitext(file)
-        if ext in ext_map:
-            result[ext_map[ext]] = name
+    result, error = get_existing_id_files(directory)
+    if error:
+        logger.error(error)
     return result
+
+
+def remove_duplicates_ignore_case(items: list) -> list:
+    """
+    按首次出现顺序去重；字符串忽略大小写，非字符串按值比较。
+
+    :param items: 原始列表
+    :return: 去重后的列表
+    """
+    seen = set()
+    result = []
+    for item in items:
+        if isinstance(item, str):
+            key = ("str", item.casefold())
+        else:
+            try:
+                hash(item)
+            except TypeError:
+                key = ("repr", repr(item))
+            else:
+                key = ("value", item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def extract_imdb_ids(text: str) -> list[str]:
+    """
+    从文本中提取全部 IMDb 编号，并按首次出现顺序去重。
+
+    :param text: 输入文本
+    :return: IMDb 编号列表，例如 ``["tt1234567", "tt7654321"]``
+    """
+    if not text:
+        return []
+
+    return list(dict.fromkeys(match.lower() for match in IMDB_ID_TOKEN_PATTERN.findall(text)))
+
+
+def extract_imdb_id(text: str) -> Optional[str]:
+    """
+    从文本中提取单个 IMDb 编号。
+
+    优先匹配标准 IMDb 标题页链接；找不到时回退到宽松的 ``tt`` 编号匹配。
+
+    :param text: 输入文本
+    :return: IMDb 编号；不存在时返回 ``None``
+    """
+    if not text:
+        return None
+
+    match = IMDB_URL_PATTERN.search(text)
+    if match:
+        return match.group(1).lower()
+
+    match = IMDB_ID_PATTERN.search(text)
+    return match.group(1).lower() if match else None
+
+
+def parse_movie_id(movie_id: str) -> Optional[tuple[str, str]]:
+    """
+    将电影编号解析为数据库字段名和对应值。
+
+    支持三种格式：
+    - ``tt...`` -> ``("imdb", "tt...")``
+    - ``tmdb123`` -> ``("tmdb", "123")``
+    - ``db456`` -> ``("douban", "456")``
+
+    :param movie_id: 原始电影编号
+    :return: ``(字段名, 字段值)``；无法识别时返回 ``None``
+    """
+    if movie_id.startswith("tt"):
+        return "imdb", movie_id
+    if movie_id.startswith("tmdb"):
+        return "tmdb", movie_id[4:]
+    if movie_id.startswith("db"):
+        return "douban", movie_id[2:]
+    return None
+
+
+def extract_imdb_id_from_links(hrefs: Iterable[str]) -> Optional[str]:
+    """
+    从链接列表中提取 IMDb 编号。
+
+    优先匹配标准 IMDb 标题页链接；找不到时回退到第一个宽松 ``tt`` 编号匹配。
+
+    :param hrefs: 链接序列
+    :return: IMDb 编号；不存在时返回 ``None``
+    """
+    fallback_imdb_id = None
+    for href in hrefs:
+        imdb_id = extract_imdb_id(href)
+        if not imdb_id:
+            continue
+        if IMDB_URL_PATTERN.search(href):
+            return imdb_id
+        if fallback_imdb_id is None:
+            fallback_imdb_id = imdb_id
+
+    return fallback_imdb_id
+
+
+def extract_torrent_download_link(target_path: str | os.PathLike, magnet_path: str) -> Optional[str]:
+    """
+    从来源文件中提取下载链接。
+
+    目前支持：
+    - ``.json``: YTS 电影详情 JSON，返回根据优先级挑选出的 magnet
+    - ``.log``: 纯文本链接文件，返回首行去 BOM 后的链接
+
+    :param target_path: 来源文件路径
+    :param magnet_path: 生成 magnet 时使用的前缀
+    :return: 提取到的下载链接；失败时返回 ``None``
+    """
+    file_path = Path(target_path)
+
+    if file_path.suffix.lower() == ".json":
+        json_data = read_json_to_dict(file_path)
+        if not json_data:
+            logger.error(f"读取 JSON 失败: {file_path}")
+            return None
+        try:
+            return select_best_yts_magnet(json_data, magnet_path)
+        except Exception:
+            logger.exception(f"从 JSON 提取下载链接失败: {file_path}")
+            return None
+
+    if file_path.suffix.lower() == ".log":
+        lines = read_file_to_list(file_path)
+        if not lines:
+            logger.error(f"读取 LOG 失败或内容为空: {file_path}")
+            return None
+        return lines[0].lstrip("\ufeff")
+
+    return None
 
 
 def safe_get(d: dict, path: list, default: Any = None) -> Any:
@@ -209,191 +418,6 @@ def safe_get(d: dict, path: list, default: Any = None) -> Any:
         if d is None:
             return default
     return d
-
-
-def move_all_files_to_root(dir_path: str) -> None:
-    """
-    将目录下所有子文件夹(包括更深层次子文件夹)中的文件移动到根目录
-    如果出现重名文件则自动加上数字编号
-    提取文件完成后，删除所有空目录（递归搜索）
-
-    :param dir_path: 指定目录
-    :return: 无
-    """
-    dir_path = os.path.abspath(dir_path)
-
-    # 移动所有子目录中的文件到根目录
-    for root, dirs, files in os.walk(dir_path):
-        # 如果当前遍历到的是 dir_path 本身，则跳过（不移动根目录下的文件）
-        if root == dir_path:
-            continue
-
-        for file_name in files:
-            old_file_path = os.path.join(root, file_name)
-            # 目标文件路径：在 dir_path 下与 file_name 同名
-            new_file_path = os.path.join(dir_path, file_name)
-
-            # 如果 new_file_path 已经存在，则进行重命名
-            if os.path.exists(new_file_path):
-                base, ext = os.path.splitext(file_name)
-                count = 1
-                while True:
-                    # 重新拼接新文件名，例如 "Traditional.chi(1).srt"
-                    new_file_name = f"{base}({count}){ext}"
-                    new_file_path = os.path.join(dir_path, new_file_name)
-                    # 如果新路径还不存在，说明可以使用这个重命名
-                    if not os.path.exists(new_file_path):
-                        break
-                    count += 1
-
-            # 执行移动操作
-            shutil.move(old_file_path, new_file_path)
-
-    # 递归删除所有空目录（从最深层开始）
-    for root, dirs, files in os.walk(dir_path, topdown=False):
-        # 避免删除根目录
-        if root == dir_path:
-            continue
-        # 如果目录为空，则删除
-        if not os.listdir(root):
-            os.rmdir(root)
-
-
-def get_dl_link(path: str) -> str:
-    """
-    从文本文件中获取下载链接
-    如果同时存在 json 和 log 文件，返回 log 文件中的磁链
-
-    :param path: 电影目录
-    :return: 磁力下载链接
-    """
-    _PATTERN = re.compile(r"magnet:\?xt=urn:btih:[A-Fa-f0-9]+", re.IGNORECASE)
-    files = os.listdir(path)
-    dl = None
-
-    for file_name in files:
-        file_path = os.path.join(path, file_name)
-        if file_name.endswith('.json'):
-            # 读取 json 文件，获取下载链接，重写文件然后删除 json 文件
-            dl = select_yts_best_torrent(read_json_to_dict(file_path))
-            output_path = os.path.splitext(file_path)[0] + ".log"
-            with open(output_path, "w", encoding='utf-8') as f:
-                f.write(dl)
-            remove_target(file_path)
-        elif file_name.endswith('.log'):
-            # 在任意位置定位基础 Magnet 链接
-            match = _PATTERN.search(read_file_to_list(file_path)[0].strip())
-            dl = match.group(0) if match else None
-            with open(file_path, "w", encoding='utf-8') as f:
-                f.write(dl)
-
-    return dl
-
-
-def remove_duplicates_ignore_case(lst: list) -> list:
-    """
-    移除列表中重复的字符串元素，忽略大小写，保留第一个出现的版本。
-    如果列表中的元素不是字符串，则直接比较（不进行大小写转换）。
-
-    :param lst: 原始列表
-    :return: 返回修改后的列表
-    """
-    seen = set()
-    result = []
-    for item in lst:
-        # 如果是字符串，则转换为小写作为比较依据
-        key = item.lower() if isinstance(item, str) else item
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    # result.sort(key=lambda x: x.lower() if isinstance(x, str) else str(x))
-    return result
-
-
-def merged_dict(path: str, movie_info: dict, movie_ids: dict, file_info: dict) -> dict:
-    """
-    合并字典，去重
-
-    :param path: 电影路径
-    :param movie_info: 电影信息字典
-    :param movie_ids: 电影编号字典
-    :param file_info: 视频文件信息字典
-    :return: 返回修改后的列表
-    """
-    movie_dict = movie_info | movie_ids | file_info
-    movie_dict["director"] = Path(path).parent.name
-    movie_dict["original_title"] = movie_dict["original_title"].replace("　", " ").replace("’", "'").replace("  ", " ")
-    movie_dict["titles"] = [re.sub(r'\s+', ' ', title.strip()).replace("　", " ") for title in movie_dict["titles"]]
-    movie_dict["size"] = int(sum(file.stat().st_size for file in Path(path).rglob('*') if file.is_file()) / (1024 * 1024))
-    movie_dict["dl_link"] = get_dl_link(path)
-    movie_dict["year"] = int(movie_dict["year"]) if movie_dict["year"] else 0
-    movie_dict["titles"].append(movie_dict["original_title"])
-    # 针对字典中列表类型的字段去重（忽略大小写）
-    for key in ['genres', 'country', 'language', 'titles', 'directors']:
-        if key in movie_dict and isinstance(movie_dict[key], list):
-            movie_dict[key] = remove_duplicates_ignore_case(movie_dict[key])
-
-    return movie_dict
-
-
-def get_movie_id(movie_dict: dict) -> str:
-    """根据优先级返回电影的 ID，以加入到文件名中
-
-    :param movie_dict: 电影信息字典
-    :return: 电影的 ID
-    """
-    if movie_dict.get('imdb'):
-        return movie_dict['imdb']
-    elif movie_dict.get('tmdb'):
-        return f"tmdb{movie_dict['tmdb']}"
-    elif movie_dict.get('douban'):
-        return f"db{movie_dict['douban']}"
-    else:
-        return "noid"
-
-
-def build_movie_folder_name(path: str, movie_dict: dict) -> str:
-    """
-    生成电影文件夹名字
-
-    :param path: 目录路径
-    :param movie_dict: 电影信息字典
-    :return: 返回文件名
-    """
-    # 使用 .get() 方法安全提取数据
-    cn = movie_dict.get('chinese_title', '')
-    en = movie_dict.get('original_title', '')
-    yn = movie_dict.get('year', '')
-    sc = movie_dict.get('source', '')
-    rs = movie_dict.get('resolution', '')
-    cd = movie_dict.get('codec', '')
-    bt = movie_dict.get('bitrate', '')
-
-    if not en:
-        logger.error(f"没有获取到信息：{path}")
-        base_name = os.path.basename(path)
-    else:
-        cn = "" if cn == en else cn
-        movie_id = get_movie_id(movie_dict)
-        base_name = f"{yn} - {en}{f'({cn})' if cn else ''}{{{movie_id}}}"
-
-    return f"{base_name}[{sc}][{rs}][{cd}@{bt}]"
-
-
-def create_aka_movie(new_path, movie_dict) -> None:
-    """
-    写入电影别名到空白文件
-
-    :param new_path: 电影目录路径
-    :param movie_dict: 电影信息字典
-    :return: 返回文件名
-    """
-    if movie_dict["titles"]:
-        for title in movie_dict["titles"]:
-            file_name = sanitize_filename(title).strip()
-            file_name = file_name.replace("\t", " ")
-            file_name += ".别名"
-            Path(os.path.join(new_path, file_name)).touch()
 
 
 def get_video_info(path_str: str) -> Optional[dict]:
@@ -759,145 +783,103 @@ def parse_bitrate(bitrate_str: str) -> int:
         return 0
 
 
-def check_movie(path: str) -> Optional[str]:
+def sort_aka_files(source_path: str, target_path: str) -> None:
     """
-    检查电影信息完整度流程
+    扫描来源目录下的空文件，移动到对应目标目录下
 
-    :param path: 电影目录
-    :return: 如有问题，返回问题
+    :param source_path: 来源目录
+    :param target_path: 目标目录
+    :return: 无
     """
-    p = Path(path)
-    file_list = [f for f in p.iterdir() if f.is_file()]
+    logger.info(f"来源目录：{source_path}")
+    logger.info(f"目标目录：{target_path}")
+    # 获取所有子目录
+    dir_dict = get_subdirs(source_path)
+    for k, dir_path in dir_dict.items():
+        p = Path(dir_path)
+        destination_dir = Path(os.path.join(target_path, k))
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        # if not destination_dir.exists():
+        #     continue
 
-    # 检查信息文件
-    movie_info_file = p / "movie_info.json5"
-    if not os.path.exists(movie_info_file):
-        return f"{p.name} 目录中不存在 movie_info.json5"
-    movie_info = read_json_to_dict(movie_info_file)
+        for path_item in p.iterdir():
+            if path_item.is_file():
+                if path_item.stat().st_size == 0:
+                    dest_path = destination_dir / path_item.name
+                    shutil.move(str(path_item), str(dest_path))
+                    logger.info(f"移动：{str(path_item)} -> {str(dest_path)}")
+                elif path_item.name == "movies.csv":
+                    remove_target(str(path_item))
+                    logger.info(f"删除：{str(path_item)}")
 
-    # 查找 log 文件数量
-    log_paths = [str(f) for f in file_list if f.suffix.lower() == ".log"]
-    if len(log_paths) > 1:
-        return f"{p.name} 目录中下载数量大于 1"
 
-    # 检查下载链接
-    if len(log_paths) == 1:
-        dl_link = read_file_to_list(log_paths[0])
-        if len(dl_link[0]) != 60:
-            return f"{p.name} 下载链接错误"
+def sort_torrents_auto(path: str) -> None:
+    """
+    自动整理指定目录，扫描目录下的子目录，将其中下载完成的种子移动到对应目录
 
-    # 检查导演是否正确
-    if movie_info["director"].lower() not in [d.lower() for d in movie_info["directors"]]:
-        logger.warning(f"{p.name} 导演 {movie_info['director']} 不在导演列表 {movie_info['directors']} 中")
+    :param path: 来源目录
+    :return: 无
+    """
+    logger.info(f"来源目录：{path}")
+    # 获取所有子目录，为导演目录
+    dir_dict = get_subdirs(path)
+    for k, dir_path in dir_dict.items():
+        # 获取电影目录
+        film_dict = get_subdirs(dir_path)
+        if not film_dict:
+            continue
 
-    # 检查时长
-    for source in ("imdb", "tmdb"):
-        runtime_key = f"runtime_{source}"
-        runtime_value = movie_info.get(runtime_key)
-        if runtime_value:
-            time_diff = abs(runtime_value - movie_info["duration"])
-            if time_diff > 2:
-                logger.warning(f"{source.upper()} 时长相差 {time_diff} 分钟。文件时长：{movie_info['duration']} 分钟，记录时长：{movie_info.get(runtime_key)} 分钟：{p.name} ")
-            else:
-                logger.info(f"{source.upper()} 时长匹配")
-        else:
-            logger.warning(f"{source.upper()} 时长缺失")
+        # 获取所有 json 文件
+        json_dict = get_files_with_extensions(dir_path, ".json")
+        # 获取所有 log 文件
+        log_dict = get_files_with_extensions(dir_path, ".log")
 
-    # 检查其他字段信息
-    for k, v in movie_info.items():
-        if not v:
-            if k not in ["chinese_title", "tmdb", "douban", "imdb", "size", "comment",
-                         "poster_path", "runtime_tmdb", "runtime_imdb", "release_group",
-                         "filename", "version", "dvhdr", "publisher", "pubdate"]:  # 能为空的字段
-                logger.warning(f"{p.name} 缺少字段信息：{k}")
+        # 处理 json 文件，有一些不是通过盒子下载，电影目录为原名，要手动处理
+        if json_dict:
+            for json_name, json_path in json_dict.items():
+                json_name_no_ext = os.path.splitext(json_name)[0]  # 正常文件名
+                info_dict = parse_jason_file_name(json_name_no_ext)
+                json_name_old = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('id')}]"  # 旧文件名
+                json_name_org = f"{info_dict.get('name')} ({info_dict.get('year')}) [{info_dict.get('quality')}]"  # 种子原始名
+                names_to_check = [json_name_no_ext, json_name_old, json_name_org]
+                names_to_check_alt = [n.translate(str.maketrans('', '', "'-,&")).replace("  ", " ") for n in names_to_check]
+                tag_to_check = [info_dict.get('name'), info_dict.get('year'), info_dict.get('quality'), "yts"]  # 近似匹配，只限定来源 yts
+                for film_name, film_path in film_dict.items():
+                    if any(name.lower() in film_name.lower() for name in names_to_check_alt) or any(name.lower() in film_name.lower() for name in names_to_check) or all(sub.lower() in film_name.lower() for sub in tag_to_check):
+                        target_path = os.path.join(film_path, json_name)
+                        shutil.move(json_path, target_path)
+                        logger.info(f"移动文件：{json_path} -> {target_path}")
+                        os.rename(film_path, os.path.join(dir_path, json_name_no_ext))
+                        logger.info(f"目录更名：{film_path} -> {json_name_no_ext}")
+                        logger.info("-" * 255)
+                        break
 
-    # 查找多余目录
-    dir_list = [f.name for f in p.iterdir() if f.is_dir()]
-    if len(dir_list) != 0:
-        return f"{p.name} 目录中有二级目录：{dir_list}"
-
-    # 检查子目录是否符合规范
-    match = RE_DIR_NAME.match(p.name)
-    if not match:
-        return f"{p.name} 目录名格式错误或缺少必须字段"
-
-    # 检查文件名是否符合规范
-    # video_name = os.path.splitext(os.path.basename(get_largest_file(path)))[0]
-    # if not RE_VIDEO_NAME.match(video_name):
-    #     return f"{video_name} 文件名格式不规范"
-
-    # 检查本地库存
-    imdb = movie_info['imdb']
-    quality = movie_info['quality']
-    source = movie_info['source']
-    result = check_local_torrent(imdb, quality, source)
-    move_counts = result['move_counts']
-    delete_counts = result['delete_counts']
-    if move_counts:
-        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
-        return f"{imdb} 请检查本地库存: {move_counts}"
-    if delete_counts:
-        logger.info(f"{imdb} 已删除本地库存文件 {delete_counts}：{result['delete_files']}")
-
-    # 检查码率是否过低
-    info = match.groupdict()
-    file_bitrate = int(info['bitrate'].split('kbps')[0])
-    low_bitrate = False
-    if quality == '2160p' and source == 'BluRay' and file_bitrate < MAX_BITRATE * 40:
-        low_bitrate = True
-    elif quality == '1080p' and source == 'BluRay' and file_bitrate < MAX_BITRATE * 8:
-        low_bitrate = True
-    elif quality == '720p' and file_bitrate < MAX_BITRATE * 2:
-        low_bitrate = True
-    elif quality == '480p' and file_bitrate < MAX_BITRATE:
-        low_bitrate = True
-    if low_bitrate:
-        logger.warning(f"{p.name} 码率过低：{file_bitrate}kbps")
-
-    # 查找视频数量
-    video_paths = [str(f) for f in file_list if f.suffix.lower() in VIDEO_EXTENSIONS]
-    if len(video_paths) > 1:
-        logger.warning(f"{p.name} 目录中视频数量大于 1")
-
-    # 生成视频缩略图
-    for video_path in video_paths:
-        base, ext = os.path.splitext(video_path)
-        screen_path = base + "_s.jpg"
-        if not os.path.exists(screen_path):
-            try:
-                generate_video_contact(video_path)
-            except Exception as e:
-                logger.warning(f"{video_path} 生成缩略图失败: {e}")
-        # 另一种生成缩略图方式
-        if not os.path.exists(screen_path):
-            generate_video_contact_mtm(video_path)
-        if not os.path.exists(screen_path):
-            return f"生成视频截图失败：{p.name}"
-
-    # 检查在线科普库
-    if quality not in ['1080p', '2160p'] and imdb:
-        scrapy_kpk(imdb, quality)
-        # scrapy_jeckett(imdb)
-
-    # 建立镜像文件夹
-    mirror_dir = Path(os.path.join(MIRROR_PATH, movie_info['director']))
-    mirror_dir.mkdir(parents=True, exist_ok=True)
+        # 处理 log 文件，将下载目录名去匹配种子名
+        if log_dict:
+            for log_name, log_path in log_dict.items():
+                for film_name, film_path in film_dict.items():
+                    # 判断目录名是否是文件名的子串，是就移动
+                    if film_name in log_name:
+                        target_path = os.path.join(film_path, log_name)
+                        shutil.move(log_path, target_path)
+                        logger.info(f"移动文件：{log_path} -> {target_path}")
+                        logger.info("-" * 255)
+                        break
 
     # 删除垃圾文件
     delete_trash_files(path)
 
 
-def check_local_torrent(imdb: str, quality: str, source: str) -> dict:
+def check_local_torrent(imdb: str) -> dict:
     """
-    检查本地库存，如果质量大于 1080p 则删除库存，否则检查库存
+    检查本地库存，将命中的种子移动到待检查目录。
 
     :param imdb: imdb 编号
-    :param quality: 质量
-    :param source: 来源
-    :return: 返回检查结果
+    :return: 返回移动结果
     """
-    result = {"move_counts": 0, "delete_counts": 0, "delete_files": []}
+    result = {"move_counts": 0, "move_files": []}
     bracket_id = f"[{imdb}]"
+    os.makedirs(CHECK_TARGET, exist_ok=True)
 
     file_paths = PRE_LOAD_FP
     for file_path in file_paths:
@@ -906,24 +888,10 @@ def check_local_torrent(imdb: str, quality: str, source: str) -> dict:
                 # 文件可能已被删除，跳过
                 continue
 
-            # 如果文件已经是 2160p 质量，直接删除库存种子，否则移动后处理
-            if quality == '2160p':
-                os.remove(file_path)
-                result["delete_counts"] += 1
-                result["delete_files"].append(file_path)
-            elif quality == '1080p':
-                if any(keyword in file_path.lower() for keyword in ("4k", "2160p", "uhd")):
-                    target_path = os.path.join(CHECK_TARGET, os.path.basename(file_path))
-                    shutil.move(file_path, target_path)
-                    result["move_counts"] += 1
-                else:
-                    os.remove(file_path)
-                    result["delete_counts"] += 1
-                    result["delete_files"].append(file_path)
-            else:
-                target_path = os.path.join(CHECK_TARGET, os.path.basename(file_path))
-                shutil.move(file_path, target_path)
-                result["move_counts"] += 1
+            target_path = str(build_unique_path(Path(CHECK_TARGET) / os.path.basename(file_path)))
+            shutil.move(file_path, target_path)
+            result["move_counts"] += 1
+            result["move_files"].append(target_path)
 
     return result
 
@@ -946,15 +914,7 @@ def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
         list2 = result_info.get(key, [])
         combined = list1 + list2
 
-        seen = set()
-        duped_list = []
-        for item in combined:
-            # 将字符串转换为小写进行比较
-            lower_item = item.lower()
-            if lower_item not in seen:
-                seen.add(lower_item)
-                duped_list.append(item)
-        merged[key] = duped_list
+        merged[key] = remove_duplicates_ignore_case(combined)
 
     return merged
 
@@ -1166,22 +1126,22 @@ def sort_new_torrents_by_mysql(target_path: str) -> None:
         shutil.move(source_path, target_path_file)
 
     # 建立数据库连接
-    from sort_movie_mysql import create_conn, get_movie_batch, get_wanted_batch
+    from sort_movie_mysql import create_conn, get_batch_by_imdb
     conn = create_conn()
     # 获取种子列表
     file_path_list = get_file_paths(DHD_PATH) + get_file_paths(TTG_PATH) + get_file_paths(SK_PATH) + get_file_paths(RARE_PATH)
     # 扫描所有文件得到 imdb_id_set
-    imdb_id_set = {m.group(1) for f in file_path_list if (m := re.search(r'(tt\d+)', f))}
+    imdb_id_set = {imdb_id for f in file_path_list if (imdb_id := extract_imdb_id(f))}
 
     # 批量取出数据
-    wanted_rows = get_wanted_batch(conn, imdb_id_set)
-    movie_rows = get_movie_batch(conn, imdb_id_set)
+    wanted_rows = get_batch_by_imdb(conn, "wanted", imdb_id_set)
+    movie_rows = get_batch_by_imdb(conn, "movies", imdb_id_set)
 
     wanted_map = {row['imdb']: row for row in wanted_rows}
     movie_map = {row['imdb']: row for row in movie_rows}
     for file_path in file_path_list:
         # 获取 IMDB 编号，不存在则跳过
-        imdb_id = m.group(1) if (m := re.search(r'(tt\d+)', file_path)) else None
+        imdb_id = extract_imdb_id(file_path)
         if not imdb_id:
             continue
 
@@ -1238,43 +1198,6 @@ def sort_new_torrents_by_mysql(target_path: str) -> None:
         if quality:
             move_torrent(file_path, director)
             continue
-
-
-def select_yts_best_torrent(json_data: dict) -> str:
-    """从 yts json 中选择最佳的下载"""
-    torrents = json_data['data']['movie']['torrents']
-
-    def filter_or_raise(candidates: dict, key: str, priority_list: list) -> [list | dict]:
-        """辅助函数，如果有意外的值则抛出异常"""
-        unique_values = set(t[key] for t in candidates)
-        if unique_values - set(priority_list):
-            raise ValueError(f"Unexpected value for {key}: {unique_values - set(priority_list)}")
-        for val in priority_list:
-            filtered = [t for t in candidates if t[key] == val]
-            if filtered:
-                return filtered
-        return candidates
-
-    # 逐步过滤
-    torrents = filter_or_raise(torrents, 'quality', ['2160p', '1080p', '720p', '480p', '3D'])
-    if len(torrents) == 1:
-        return f"{MAGNET_PATH}{torrents[0]['hash']}"
-
-    torrents = filter_or_raise(torrents, 'video_codec', ['x265', 'x264'])
-    if len(torrents) == 1:
-        return f"{MAGNET_PATH}{torrents[0]['hash']}"
-
-    torrents = filter_or_raise(torrents, 'bit_depth', ['10', '8'])
-    if len(torrents) == 1:
-        return f"{MAGNET_PATH}{torrents[0]['hash']}"
-
-    torrents = filter_or_raise(torrents, 'type', ['bluray', 'web'])
-    if len(torrents) == 1:
-        return f"{MAGNET_PATH}{torrents[0]['hash']}"
-
-    # 最后根据文件大小确定
-    best_torrent = max(torrents, key=lambda t: t['size_bytes'])
-    return f"{MAGNET_PATH}{best_torrent['hash']}"
 
 
 def fix_douban_name(name: str) -> str:
