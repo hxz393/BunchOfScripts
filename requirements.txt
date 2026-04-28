@@ -1,5 +1,5 @@
-﻿configparser==5.2.0
-mitmproxy==11.1.2
+configparser==5.2.0
+mitmproxy==12.2.2
 mutagen==1.45.1
 p115client==0.0.4
 psutil==6.1.1
