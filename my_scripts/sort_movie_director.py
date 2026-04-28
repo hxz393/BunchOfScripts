@@ -581,17 +581,15 @@ def search_missing_director_movies(director_name: str, missing_movies: list[dict
         # 这里的 titles[0] 依赖前面的电影信息整理流程：build_movie_info() 至少会放入一个标题。
         logger.info(f"标题：{movie['year']} - {movie['titles'][0]}")
 
-        # 这里的 240p 不是实际画质，而是传给 check_local_torrent() 的哨兵值，
-        # 用来让命中的本地库存统一走“移动到待检查区”的分支。
+        # 这里的 240p 不是实际画质，只用于让 KPK 查找更高质量资源。
         quality = "240p"
-        source = "None"
         # 这里只做搜索和日志记录，不根据返回值提前中断后续本地库存检查。
         check_kpk_for_better_quality(imdb, quality)
         log_jackett_search_results(imdb)
-        local_check = check_local_torrent(imdb, quality, source)
+        local_check = check_local_torrent(imdb)
         move_counts = local_check["move_counts"]
         if move_counts:
-            logger.warning(f"{imdb} 请检查本地库存: {move_counts}")
+            logger.warning(f"{imdb} 已移动本地库存种子，请检查: {move_counts}")
             time.sleep(0.1)
         logger.info("-" * 35 + director_name + "-" * 35)
         time.sleep(0.1)
