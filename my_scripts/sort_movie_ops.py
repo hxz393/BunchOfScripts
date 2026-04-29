@@ -25,12 +25,7 @@ CONFIG = read_json_to_dict('config/sort_movie_ops.json')  # 配置文件
 
 TRASH_LIST = CONFIG['trash_list']  # 垃圾文件名列表
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
-RARBG_SOURCE = CONFIG['rarbg_source']  # rarbg 种子来源路径
-TTG_SOURCE = CONFIG['ttg_source']  # ttg 种子来源路径
-DHD_SOURCE = CONFIG['dhd_source']  # dhd 种子来源路径
-SK_SOURCE = CONFIG['sk_source']  # sk 种子来源路径
-RARE_SOURCE = CONFIG['rare_source']  # rare 文件路径
-RLS_SOURCE = CONFIG['rls_source']  # rare 文件路径
+BT_SOURCE = CONFIG['bt_source']  # BT 种子来源根目录
 CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
@@ -47,14 +42,8 @@ RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
 IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
 IMDB_ID_PATTERN = re.compile(r"\b(tt\d+)\b", re.IGNORECASE)
 IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
+TORRENT_FILENAME_IMDB_PATTERN = re.compile(r"\[(tt\d+)]", re.IGNORECASE)
 
-# 文件多，先行获取列表
-PRE_LOAD_FP = get_file_paths(RARBG_SOURCE)
-PRE_LOAD_FP.extend(get_file_paths(TTG_SOURCE))
-PRE_LOAD_FP.extend(get_file_paths(DHD_SOURCE))
-PRE_LOAD_FP.extend(get_file_paths(SK_SOURCE))
-PRE_LOAD_FP.extend(get_file_paths(RARE_SOURCE))
-PRE_LOAD_FP.extend(get_file_paths(RLS_SOURCE))
 
 ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
 EMPTY_ID_MARKERS: dict[str, Optional[str]] = {"imdb": None, "tmdb": None, "douban": None}
@@ -66,6 +55,48 @@ YTS_TORRENT_PRIORITIES = (
     ("bit_depth", ["10", "8"]),
     ("type", ["bluray", "web"]),
 )
+
+
+def build_local_torrent_index(root_path: str | os.PathLike) -> dict[str, list[str]]:
+    """
+    扫描本地种子目录，并按文件名中的 IMDb 编号建立索引。
+
+    只提取文件名里 ``[tt...]`` 形式的编号；父目录名中的编号不会参与索引。
+    该函数用于程序启动阶段一次性扫描大量种子文件，避免后续每次查询 IMDb 编号时
+    都线性遍历完整文件列表。
+
+    :param root_path: BT 种子来源根目录
+    :return: ``{imdb: [torrent_path, ...]}`` 格式的索引
+    """
+    root_path = os.fspath(root_path)
+    index: dict[str, list[str]] = {}
+    try:
+        if not os.path.exists(root_path):
+            logger.error(f"BT 种子来源目录不存在：{root_path}")
+            return index
+        if not os.path.isdir(root_path):
+            logger.error(f"BT 种子来源路径不是目录：{root_path}")
+            return index
+
+        for root, _dirs, files in os.walk(root_path):
+            for filename in files:
+                imdb_ids = {
+                    match.group(1).lower()
+                    for match in TORRENT_FILENAME_IMDB_PATTERN.finditer(filename)
+                }
+                if not imdb_ids:
+                    continue
+
+                file_path = os.path.join(root, filename)
+                for imdb_id in imdb_ids:
+                    index.setdefault(imdb_id, []).append(file_path)
+    except Exception:
+        logger.exception(f"建立本地种子索引失败：{root_path}")
+    return index
+
+
+# 文件多，程序启动时先建立 IMDb -> 种子路径索引，后续查询避免反复扫描完整路径列表。
+LOCAL_TORRENT_INDEX = build_local_torrent_index(BT_SOURCE)
 
 
 def format_bytes(size_bytes: int | str) -> str:
@@ -432,26 +463,28 @@ def sort_torrents_auto(path: str) -> None:
 
 def check_local_torrent(imdb: str) -> dict:
     """
-    从预加载的本地种子路径列表中查找并移动指定 IMDb 编号的种子文件。
+    从本地种子索引中查找并移动指定 IMDb 编号的种子文件。
 
-    函数在 ``PRE_LOAD_FP`` 中查找文件名包含 ``[imdb]`` 的路径，命中且源文件
-    仍存在时，将文件移动到 ``CHECK_TARGET``。目标目录已存在同名文件时，通过
-    ``build_unique_path`` 生成不重名路径，避免覆盖已有文件。
+    函数从 ``LOCAL_TORRENT_INDEX`` 直接取出当前 IMDb 编号对应的候选路径；
+    候选文件仍存在且文件名包含 ``[imdb]`` 时，将文件移动到 ``CHECK_TARGET``。
+    目标目录已存在同名文件时，通过 ``build_unique_path`` 生成不重名路径，
+    避免覆盖已有文件。
 
-    ``PRE_LOAD_FP`` 是模块导入时从多个种子来源目录预加载的快照；函数不会重新
+    ``LOCAL_TORRENT_INDEX`` 是模块导入时从 BT 来源目录建立的快照；函数不会重新
     扫描来源目录，因此运行期间新增的种子不会被本次检查发现。
 
     :param imdb: IMDb 编号，例如 ``tt1234567``
     :return: ``{"move_counts": 移动数量, "move_files": 移动后的路径列表}``
     """
     moved_files = []
+    imdb = imdb.lower()
     bracket_id = f"[{imdb}]"
     target_dir = Path(CHECK_TARGET)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    for file_path in PRE_LOAD_FP:
+    for file_path in LOCAL_TORRENT_INDEX.get(imdb, []):
         source_path = Path(file_path)
-        if bracket_id not in source_path.name or not source_path.exists():
+        if bracket_id not in source_path.name.lower() or not source_path.exists():
             continue
 
         target_path = build_unique_path(target_dir / source_path.name)

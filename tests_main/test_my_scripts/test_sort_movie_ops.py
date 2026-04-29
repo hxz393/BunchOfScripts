@@ -33,6 +33,7 @@ def load_sort_movie_ops(check_target: str):
         "source_list": [],
         "video_extensions": [".mkv", ".mp4"],
         "magnet_path": "magnet:",
+        "bt_source": str(Path(check_target).parent),
         "rarbg_source": "",
         "ttg_source": "",
         "dhd_source": "",
@@ -463,7 +464,10 @@ class TestCheckLocalTorrent(unittest.TestCase):
         second.write_text("second", encoding="utf-8")
         other.write_text("other", encoding="utf-8")
         existing.write_text("existing", encoding="utf-8")
-        self.module.PRE_LOAD_FP = [str(first), str(second), str(other)]
+        self.module.LOCAL_TORRENT_INDEX = {
+            "tt1234567": [str(first), str(second)],
+            "tt7654321": [str(other)],
+        }
 
         result = self.module.check_local_torrent("tt1234567")
 
@@ -475,6 +479,36 @@ class TestCheckLocalTorrent(unittest.TestCase):
         self.assertEqual(existing.read_text(encoding="utf-8"), "existing")
         self.assertEqual((self.check_target / "Movie [tt1234567](1).torrent").read_text(encoding="utf-8"), "first")
         self.assertEqual((self.check_target / second.name).read_text(encoding="utf-8"), "second")
+
+    def test_check_local_torrent_matches_imdb_in_filename_only(self):
+        """父目录名包含 IMDb 编号但文件名不包含时，不应误移动。"""
+        source_dir = self.root / "[tt1234567]"
+        source_dir.mkdir()
+        torrent_file = source_dir / "Movie.torrent"
+        torrent_file.write_text("torrent", encoding="utf-8")
+        self.module.LOCAL_TORRENT_INDEX = {"tt1234567": [str(torrent_file)]}
+
+        result = self.module.check_local_torrent("tt1234567")
+
+        self.assertEqual(result, {"move_counts": 0, "move_files": []})
+        self.assertTrue(torrent_file.exists())
+
+    def test_build_local_torrent_index_uses_imdb_in_filename_only(self):
+        """本地种子索引只提取文件名里的 ``[tt...]``，不使用父目录名。"""
+        parent_only_dir = self.root / "[tt1234567]"
+        parent_only_dir.mkdir()
+        parent_only = parent_only_dir / "Movie.torrent"
+        matched = self.root / "Movie [TT1234567].torrent"
+        other = self.root / "Other [tt7654321].torrent"
+        parent_only.write_text("parent", encoding="utf-8")
+        matched.write_text("matched", encoding="utf-8")
+        other.write_text("other", encoding="utf-8")
+
+        index = self.module.build_local_torrent_index(self.root)
+
+        self.assertEqual(index["tt1234567"], [str(matched)])
+        self.assertEqual(index["tt7654321"], [str(other)])
+        self.assertNotIn(str(parent_only), index.get("tt1234567", []))
 
 
 if __name__ == "__main__":
