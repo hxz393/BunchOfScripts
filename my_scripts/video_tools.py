@@ -100,18 +100,20 @@ RESOLUTION_PIXEL_LIMITS = {
 }
 
 
-def get_video_info(path_str: str | os.PathLike) -> Optional[dict]:
+def get_video_probe(path_str: str | os.PathLike) -> Optional[dict]:
     """
-    读取电影目录中最大视频文件的基础媒体信息。
+    读取电影目录中最大视频文件的媒体信息，并保留可复用的视频流元数据。
 
-    函数会递归扫描 ``path_str`` 下所有受支持的视频后缀文件，
-    选择文件体积最大的一个作为正片候选，然后调用 ``extract_video_info``
-    读取分辨率、清晰度、编码、码率、时长、来源等字段。
+    返回值包含：
+    - ``video_path``：选中的最大视频文件路径
+    - ``file_info``：整理和入库使用的视频信息字段
+    - ``video_stream``：首个视频流的 ffprobe 元数据，可供截图 HDR/DAR 判断复用
+    - ``format``：容器级 ffprobe 元数据
 
     没有找到视频文件，或视频信息提取失败时返回 ``None``。
 
     :param path_str: 电影目录路径
-    :return: 视频信息字典；无法提取时返回 ``None``
+    :return: 视频探测结果字典；无法提取时返回 ``None``
     """
     largest_file_path = get_largest_file(path_str)
     if not largest_file_path:
@@ -119,15 +121,15 @@ def get_video_info(path_str: str | os.PathLike) -> Optional[dict]:
         return None
 
     try:
-        video_info = extract_video_info(largest_file_path)
+        video_probe = extract_video_probe(largest_file_path)
     except Exception:
         logger.exception(f"读取视频信息失败：{largest_file_path}")
         return None
 
-    if not video_info:
+    if not video_probe:
         logger.error(f"读取视频信息失败：{largest_file_path}")
         return None
-    return video_info
+    return video_probe
 
 
 def get_largest_file(path_str: str | os.PathLike) -> Optional[str]:
@@ -165,19 +167,12 @@ def get_largest_file(path_str: str | os.PathLike) -> Optional[str]:
     return largest_file_path
 
 
-def extract_video_info(filepath: str | os.PathLike) -> Optional[dict]:
+def extract_video_probe(filepath: str | os.PathLike) -> Optional[dict]:
     """
-    使用 ffprobe 和 MediaInfo 提取单个视频文件的整理元数据。
-
-    函数会读取第一个视频流，返回整理和入库所需的本地媒体字段：
-    ``resolution``、``quality``、``dar``、``codec``、``bitrate``、
-    ``duration``、``source``、``release_group``、``filename``，以及可选的
-    ``comment``。其中 ``source`` 主要根据文件名和路径中的来源标记推断。
-
-    找不到视频流，或关键媒体字段无法解析时返回 ``None``。
+    使用 ffprobe 和 MediaInfo 提取单个视频文件的整理字段和视频流元数据。
 
     :param filepath: 视频文件路径
-    :return: 视频信息字典；无法解析时返回 ``None``
+    :return: 包含 ``video_path``、``file_info``、``video_stream`` 和 ``format`` 的探测结果
     """
     filepath = os.fspath(filepath)
     logger.info(f"获取视频信息：{os.path.basename(filepath)}")
@@ -348,7 +343,7 @@ def extract_video_info(filepath: str | os.PathLike) -> Optional[dict]:
     if match:
         file_info["comment"] = match.group(1)
 
-    return file_info
+    return {"video_path": filepath, "file_info": file_info, "video_stream": video_stream, "format": format_data}
 
 
 def check_video_codec(path: str | os.PathLike) -> Optional[str]:
@@ -603,14 +598,15 @@ def get_video_contact_stream_metadata(video_path: str | os.PathLike) -> dict:
     return stream or {}
 
 
-def is_hdr_video(video_path: str | os.PathLike) -> bool:
+def is_hdr_video(video_path: str | os.PathLike, stream_metadata: Optional[dict] = None) -> bool:
     """
     根据视频流色彩元数据判断是否需要 HDR 到 SDR 转换。
 
     :param video_path: 视频文件路径
+    :param stream_metadata: 已有视频流元数据；未提供时会现场读取
     :return: 检测到 HDR/PQ/HLG/BT.2020 元数据时返回 ``True``
     """
-    stream = get_video_contact_stream_metadata(video_path)
+    stream = stream_metadata if stream_metadata is not None else get_video_contact_stream_metadata(video_path)
     color_transfer = str(stream.get("color_transfer") or "").strip().lower()
     color_primaries = str(stream.get("color_primaries") or "").strip().lower()
     side_data_list = stream.get("side_data_list") or []
@@ -719,16 +715,18 @@ def draw_video_contact_timestamp(frame: Any, seconds: float, font: Any, font_siz
     return frame
 
 
-def generate_video_contact(video_path: str | os.PathLike) -> None:
+def generate_video_contact(video_path: str | os.PathLike, video_info: Optional[dict] = None, video_stream: Optional[dict] = None) -> None:
     """
     从视频中均匀抽取 16 帧，按 4x4 生成带时间戳的同名 ``_s.jpg`` 网格缩略图。
 
-    函数优先使用 ``extract_video_info`` 解析出的 DAR 修正截图显示宽高比；
+    函数优先使用调用方传入或 ``extract_video_probe`` 解析出的 DAR 修正截图显示宽高比；
     如果 DAR 不可用，则退回 ``VideoFileClip.aspect_ratio``。HDR 视频会使用
     ffmpeg tone mapping 抽帧后再拼图，避免截图发灰。调用方负责在失败时使用
     mtn 兜底，并检查输出文件是否实际存在。
 
     :param video_path: 视频文件路径
+    :param video_info: 已有视频信息字段；提供时复用其中的 ``dar``
+    :param video_stream: 已有视频流元数据；提供时复用其 HDR 色彩字段
     :return: 无返回值
     """
     video_path = os.fspath(video_path)
@@ -751,11 +749,18 @@ def generate_video_contact(video_path: str | os.PathLike) -> None:
         if storage_height <= 0:
             raise ValueError(f"视频高度无效: {storage_height}")
 
-        try:
-            file_info = extract_video_info(video_path) or {}
-        except Exception as e:
-            logger.warning(f"{video_path} 获取视频 DAR 失败: {e}")
-            file_info = {}
+        file_info = video_info or {}
+        resolved_video_stream = video_stream
+        if video_info is None or video_stream is None:
+            try:
+                video_probe = extract_video_probe(video_path) or {}
+            except Exception as e:
+                logger.warning(f"{video_path} 获取视频探测信息失败: {e}")
+                video_probe = {}
+            if video_info is None:
+                file_info = video_probe.get("file_info") or {}
+            if video_stream is None:
+                resolved_video_stream = video_probe.get("video_stream")
 
         dar = file_info.get("dar") or getattr(clip, "aspect_ratio", 0)
         try:
@@ -783,7 +788,7 @@ def generate_video_contact(video_path: str | os.PathLike) -> None:
         times = [duration * (i + 1) / (total_images + 1) for i in range(total_images)]
         timestamp_font_size = max(VIDEO_CONTACT_TIMESTAMP_MIN_FONT_SIZE, display_height // VIDEO_CONTACT_TIMESTAMP_FONT_DIVISOR)
         timestamp_font = load_video_contact_timestamp_font(timestamp_font_size)
-        hdr_video = is_hdr_video(video_path)
+        hdr_video = is_hdr_video(video_path, resolved_video_stream)
 
         images = []
         for t in times:
@@ -823,7 +828,7 @@ def classify_resolution_by_pixels(width: int, height: int) -> str:
     ``720p`` 和 ``1080p`` 边界附近，会结合宽度和高度修正常见宽银幕、
     方形或接近方形片源的归类。
 
-    调用方应传入已校验的正整数宽高。当前主要由 ``extract_video_info``
+    调用方应传入已校验的正整数宽高。当前主要由 ``extract_video_probe``
     在确认宽高有效后调用。
 
     :param width: 视频存储宽度

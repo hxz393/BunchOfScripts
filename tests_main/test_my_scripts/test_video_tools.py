@@ -333,7 +333,7 @@ class TestVideoTools(unittest.TestCase):
             with patch.object(self.module, "Image", fake_image):
                 with patch.object(self.module, "ImageDraw", fake_image_draw):
                     with patch.object(self.module, "ImageFont", fake_image_font):
-                        with patch.object(self.module, "extract_video_info", return_value={"dar": 2.4}):
+                        with patch.object(self.module, "extract_video_probe", return_value={"file_info": {"dar": 2.4}, "video_stream": {}}):
                             with patch.object(self.module, "is_hdr_video", return_value=False):
                                 self.module.generate_video_contact(video_path)
 
@@ -346,6 +346,29 @@ class TestVideoTools(unittest.TestCase):
         self.assertEqual(timestamp_texts[0], "0:10.00")
         self.assertEqual(timestamp_texts[-1], "2:40.00")
 
+    def test_generate_video_contact_reuses_supplied_probe_metadata(self):
+        """调用方已传入 DAR/HDR 元数据时，截图不应再次读取视频信息。"""
+        video_path = self.root / "movie sample.mkv"
+        output_path = self.root / "movie sample_s.jpg"
+        clip = self.make_fake_contact_clip(size=(1920, 800), duration=170, aspect_ratio=2.0)
+        fake_image, fake_image_draw, fake_image_font, resized_sizes, grid_sizes, _timestamp_texts = self.make_fake_contact_image_api(output_path)
+        video_info = {"dar": 2.4}
+        video_stream = {"color_transfer": "bt709"}
+
+        with patch.object(self.module, "VideoFileClip", return_value=clip):
+            with patch.object(self.module, "Image", fake_image):
+                with patch.object(self.module, "ImageDraw", fake_image_draw):
+                    with patch.object(self.module, "ImageFont", fake_image_font):
+                        with patch.object(self.module, "extract_video_probe") as extract_video_probe:
+                            with patch.object(self.module, "get_video_contact_stream_metadata") as stream_metadata:
+                                self.module.generate_video_contact(video_path, video_info=video_info, video_stream=video_stream)
+
+        self.assertTrue(output_path.exists())
+        self.assertEqual(resized_sizes, [(1920, 800)] * 16)
+        self.assertEqual(grid_sizes, [(7680, 3200)])
+        extract_video_probe.assert_not_called()
+        stream_metadata.assert_not_called()
+
     def test_generate_video_contact_falls_back_to_clip_aspect_ratio_and_warns_when_output_missing(self):
         """DAR 读取失败时应退回 clip 宽高比；未生成输出文件时只记录 warning。"""
         video_path = self.root / "movie.mkv"
@@ -357,7 +380,7 @@ class TestVideoTools(unittest.TestCase):
             with patch.object(self.module, "Image", fake_image):
                 with patch.object(self.module, "ImageDraw", fake_image_draw):
                     with patch.object(self.module, "ImageFont", fake_image_font):
-                        with patch.object(self.module, "extract_video_info", side_effect=RuntimeError("ffprobe failed")):
+                        with patch.object(self.module, "extract_video_probe", side_effect=RuntimeError("ffprobe failed")):
                             with patch.object(self.module.logger, "warning") as mock_warning:
                                 with patch.object(self.module, "is_hdr_video", return_value=False):
                                     self.module.generate_video_contact(video_path)
@@ -394,7 +417,7 @@ class TestVideoTools(unittest.TestCase):
             with patch.object(self.module, "Image", fake_image):
                 with patch.object(self.module, "ImageDraw", fake_image_draw):
                     with patch.object(self.module, "ImageFont", fake_image_font):
-                        with patch.object(self.module, "extract_video_info", return_value={"dar": 16 / 9}):
+                        with patch.object(self.module, "extract_video_probe", return_value={"file_info": {"dar": 16 / 9}, "video_stream": {}}):
                             with patch.object(self.module, "is_hdr_video", return_value=True):
                                 with patch.object(self.module, "extract_video_contact_hdr_frame", side_effect=fake_hdr_frame):
                                     self.module.generate_video_contact(video_path)
@@ -466,7 +489,7 @@ class TestVideoTools(unittest.TestCase):
 
         self.assertTrue(clip.closed)
 
-    def test_extract_video_info_uses_first_video_stream_and_filename_overrides(self):
+    def test_extract_video_probe_uses_first_video_stream_and_filename_overrides(self):
         """ffprobe/mediainfo 输出应被归一化成下游入库需要的字段。"""
         ffprobe = {
             "streams": [
@@ -486,18 +509,45 @@ class TestVideoTools(unittest.TestCase):
 
         with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(stdout=json.dumps(ffprobe))):
             with patch.object(self.module, "check_video_codec", return_value="x264"):
-                result = self.module.extract_video_info(filename)
+                result = self.module.extract_video_probe(filename)
 
-        self.assertEqual(result["resolution"], "1920x800")
-        self.assertEqual(result["quality"], "1080p")
-        self.assertEqual(result["dar"], 12 / 5)
-        self.assertEqual(result["codec"], "x264")
-        self.assertEqual(result["bitrate"], "5000kbps")
-        self.assertEqual(result["duration"], 120)
-        self.assertEqual(result["source"], "BDRemux")
-        self.assertEqual(result["comment"], "Director Cut")
+        file_info = result["file_info"]
+        self.assertEqual(file_info["resolution"], "1920x800")
+        self.assertEqual(file_info["quality"], "1080p")
+        self.assertEqual(file_info["dar"], 12 / 5)
+        self.assertEqual(file_info["codec"], "x264")
+        self.assertEqual(file_info["bitrate"], "5000kbps")
+        self.assertEqual(file_info["duration"], 120)
+        self.assertEqual(file_info["source"], "BDRemux")
+        self.assertEqual(file_info["comment"], "Director Cut")
 
-    def test_extract_video_info_returns_none_when_ffprobe_fails_or_outputs_bad_json(self):
+    def test_extract_video_probe_keeps_reusable_stream_metadata(self):
+        """完整探测结果应保留 file_info 和截图可复用的视频流元数据。"""
+        video_stream = {
+            "codec_type": "video",
+            "width": 1920,
+            "height": 1080,
+            "codec_tag_string": "[0][0][0][0]",
+            "codec_name": "hevc",
+            "bit_rate": "6000000",
+            "duration": "3600",
+            "color_transfer": "smpte2084",
+        }
+        ffprobe = {"streams": [{"codec_type": "audio"}, video_stream], "format": {"duration": "3600"}}
+        filename = str(self.root / "Movie.WEB-DL.mkv")
+
+        with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(ffprobe), stderr="")) as mock_run:
+            with patch.object(self.module, "check_video_codec", return_value="x265"):
+                result = self.module.extract_video_probe(filename)
+
+        self.assertEqual(result["video_path"], filename)
+        self.assertEqual(result["file_info"]["codec"], "x265")
+        self.assertEqual(result["file_info"]["dar"], 16 / 9)
+        self.assertEqual(result["video_stream"], video_stream)
+        self.assertEqual(result["format"], ffprobe["format"])
+        mock_run.assert_called_once()
+
+    def test_extract_video_probe_returns_none_when_ffprobe_fails_or_outputs_bad_json(self):
         """ffprobe 执行失败、超时或输出非 JSON 时应返回 None。"""
         filename = self.root / "Movie.mkv"
 
@@ -507,15 +557,15 @@ class TestVideoTools(unittest.TestCase):
                 "run",
                 side_effect=self.module.subprocess.TimeoutExpired(cmd="ffprobe", timeout=60),
             ):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
 
         with patch.object(self.module.logger, "error"):
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=1, stdout="", stderr="boom")):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout="not-json", stderr="")):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
 
-    def test_extract_video_info_returns_none_when_required_media_fields_are_missing(self):
+    def test_extract_video_probe_returns_none_when_required_media_fields_are_missing(self):
         """缺少视频流、码率或时长时应返回 None。"""
         filename = self.root / "Movie.mkv"
         no_video = {"streams": [{"codec_type": "audio"}], "format": {"bit_rate": "5000000", "duration": "7200"}}
@@ -530,13 +580,13 @@ class TestVideoTools(unittest.TestCase):
 
         with patch.object(self.module.logger, "error"), patch.object(self.module, "check_video_codec", return_value=None):
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(no_video), stderr="")):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(no_bitrate), stderr="")):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(no_duration), stderr="")):
-                self.assertIsNone(self.module.extract_video_info(filename))
+                self.assertIsNone(self.module.extract_video_probe(filename))
 
-    def test_extract_video_info_falls_back_for_bad_dar_and_mediainfo_failure(self):
+    def test_extract_video_probe_falls_back_for_bad_dar_and_mediainfo_failure(self):
         """DAR 无法解析时回退到存储宽高比；MediaInfo 失败时回退到 ffprobe codec。"""
         ffprobe = {
             "streams": [
@@ -558,16 +608,17 @@ class TestVideoTools(unittest.TestCase):
         with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(ffprobe), stderr="")):
             with patch.object(self.module, "check_video_codec", side_effect=ValueError("mediainfo broken")):
                 with patch.object(self.module.logger, "warning") as mock_warning:
-                    result = self.module.extract_video_info(filename)
+                    result = self.module.extract_video_probe(filename)
 
-        self.assertEqual(result["dar"], 1920 / 1080)
-        self.assertEqual(result["codec"], "hevc")
-        self.assertEqual(result["bitrate"], "6000kbps")
-        self.assertEqual(result["duration"], 60)
-        self.assertEqual(result["source"], "WEB-DL")
+        file_info = result["file_info"]
+        self.assertEqual(file_info["dar"], 1920 / 1080)
+        self.assertEqual(file_info["codec"], "hevc")
+        self.assertEqual(file_info["bitrate"], "6000kbps")
+        self.assertEqual(file_info["duration"], 60)
+        self.assertEqual(file_info["source"], "WEB-DL")
         mock_warning.assert_called_once()
 
-    def test_extract_video_info_prefers_filename_source_before_parent_path(self):
+    def test_extract_video_probe_prefers_filename_source_before_parent_path(self):
         """父目录和文件名都含来源标记时，应优先使用文件名里的来源。"""
         source_dir = self.root / "WEB"
         source_dir.mkdir()
@@ -590,38 +641,39 @@ class TestVideoTools(unittest.TestCase):
         with patch.object(self.module, "SOURCE_LIST", ["WEB", "BluRay"]):
             with patch.object(self.module.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=json.dumps(ffprobe), stderr="")):
                 with patch.object(self.module, "check_video_codec", return_value=None):
-                    result = self.module.extract_video_info(filename)
+                    result = self.module.extract_video_probe(filename)
 
-        self.assertEqual(result["source"], "BluRay")
+        self.assertEqual(result["file_info"]["source"], "BluRay")
 
-    def test_get_video_info_returns_none_when_no_video_file_exists(self):
+    def test_get_video_probe_returns_none_when_no_video_file_exists(self):
         """没有视频文件时入口函数应返回 None，不调用 ffprobe。"""
-        with patch.object(self.module.logger, "error"), patch.object(self.module, "extract_video_info") as extract_video_info:
-            self.assertIsNone(self.module.get_video_info(str(self.root)))
+        with patch.object(self.module.logger, "error"), patch.object(self.module, "extract_video_probe") as extract_video_probe:
+            self.assertIsNone(self.module.get_video_probe(str(self.root)))
 
-        extract_video_info.assert_not_called()
+        extract_video_probe.assert_not_called()
 
-    def test_get_video_info_uses_largest_video_file(self):
+    def test_get_video_probe_uses_largest_video_file(self):
         """入口函数应选择目录中体积最大的视频文件进行解析。"""
         small = self.root / "small.mkv"
         large = self.root / "large.mp4"
         small.write_bytes(b"1" * 10)
         large.write_bytes(b"1" * 20)
         video_info = {"resolution": "1920x1080", "duration": 120}
+        video_probe = {"video_path": str(large), "file_info": video_info, "video_stream": {}, "format": {}}
 
-        with patch.object(self.module, "extract_video_info", return_value=video_info) as extract_video_info:
-            result = self.module.get_video_info(self.root)
+        with patch.object(self.module, "extract_video_probe", return_value=video_probe) as extract_video_probe:
+            result = self.module.get_video_probe(self.root)
 
-        self.assertIs(result, video_info)
-        extract_video_info.assert_called_once_with(str(large))
+        self.assertIs(result, video_probe)
+        extract_video_probe.assert_called_once_with(str(large))
 
-    def test_get_video_info_returns_none_when_extract_video_info_fails(self):
+    def test_get_video_probe_returns_none_when_extract_video_probe_fails(self):
         """视频解析异常应记录日志并返回 None。"""
         video_file = self.root / "movie.mkv"
         video_file.write_bytes(b"1" * 10)
 
         with patch.object(self.module.logger, "exception") as mock_exception:
-            with patch.object(self.module, "extract_video_info", side_effect=ValueError("bad ffprobe")):
-                self.assertIsNone(self.module.get_video_info(self.root))
+            with patch.object(self.module, "extract_video_probe", side_effect=ValueError("bad ffprobe")):
+                self.assertIsNone(self.module.get_video_probe(self.root))
 
         mock_exception.assert_called_once()

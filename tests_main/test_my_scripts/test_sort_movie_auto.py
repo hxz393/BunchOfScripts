@@ -85,6 +85,16 @@ def fake_remove_duplicates_ignore_case(items: list) -> list:
     return result
 
 
+def make_video_probe(file_info: dict, video_path: str | os.PathLike = "movie.mkv", video_stream: dict | None = None) -> dict:
+    """生成 ``get_video_probe`` 的最小测试返回值。"""
+    return {
+        "video_path": str(video_path),
+        "file_info": file_info,
+        "video_stream": video_stream or {},
+        "format": {},
+    }
+
+
 def load_sort_movie_auto():
     """在隔离依赖的环境中加载 ``sort_movie_auto`` 模块。"""
     fake_retrying = types.ModuleType("retrying")
@@ -125,9 +135,9 @@ def load_sort_movie_auto():
 
     fake_video_tools = types.ModuleType("video_tools")
     fake_video_tools.VIDEO_EXTENSIONS = [".mkv", ".mp4"]
-    fake_video_tools.generate_video_contact = lambda _video_path: None
+    fake_video_tools.generate_video_contact = lambda _video_path, **_kwargs: None
     fake_video_tools.generate_video_contact_mtn = lambda _video_path: None
-    fake_video_tools.get_video_info = lambda _path: None
+    fake_video_tools.get_video_probe = lambda _path: None
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_search_response = lambda _search_id: {}
@@ -246,8 +256,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "merged_dict",
@@ -309,8 +319,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "merged_dict",
@@ -379,8 +389,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
                     "get_imdb_movie_info",
                 ), patch.object(
                     self.module,
-                    "get_video_info",
-                    return_value=file_info,
+                    "get_video_probe",
+                    return_value=make_video_probe(file_info),
                 ), patch.object(
                     self.module,
                     "merged_dict",
@@ -535,8 +545,8 @@ class TestSortMovieAutoKnownRegressions(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "merged_dict",
@@ -646,7 +656,7 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_douban_movie_info",
         ) as mock_douban, patch.object(
             self.module,
-            "get_video_info",
+            "get_video_probe",
         ) as mock_video_info, patch.object(
             self.module,
             "insert_movie_record_to_mysql",
@@ -682,8 +692,8 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info, movie_dir / "movie.mkv"),
         ), patch.object(
             self.module,
             "merged_dict",
@@ -728,7 +738,7 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_tmdb_movie_info",
         ) as mock_tmdb, patch.object(
             self.module,
-            "get_video_info",
+            "get_video_probe",
             return_value=None,
         ):
             self.module.sort_movie(str(movie_dir))
@@ -758,8 +768,8 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "generate_video_contact",
@@ -801,8 +811,8 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "ensure_movie_screenshots",
@@ -848,8 +858,8 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
             "get_imdb_movie_info",
         ), patch.object(
             self.module,
-            "get_video_info",
-            return_value=file_info,
+            "get_video_probe",
+            return_value=make_video_probe(file_info),
         ), patch.object(
             self.module,
             "ensure_movie_screenshots",
@@ -903,6 +913,25 @@ class TestSortMovieAutoCurrentRules(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertTrue(any("视频数量大于 1" in message for message in cm.output))
+
+    def test_ensure_movie_screenshots_reuses_primary_video_probe(self):
+        """主视频截图应复用前面已读取的 DAR/HDR 元数据。"""
+        movie_dir = Path(self.temp_dir.name) / "Movie Folder"
+        movie_dir.mkdir()
+        video_path = movie_dir / "movie.mkv"
+        video_path.write_text("video", encoding="utf-8")
+        video_info = {"dar": 2.4}
+        video_stream = {"color_transfer": "bt709"}
+        video_probe = make_video_probe(video_info, video_path, video_stream)
+
+        def fake_generate_contact(target_path: str, **_kwargs) -> None:
+            Path(target_path).with_name(Path(target_path).stem + "_s.jpg").write_text("screenshot", encoding="utf-8")
+
+        with patch.object(self.module, "generate_video_contact", side_effect=fake_generate_contact) as mock_generate:
+            result = self.module.ensure_movie_screenshots(str(movie_dir), video_probe)
+
+        self.assertIsNone(result)
+        mock_generate.assert_called_once_with(str(video_path), video_info=video_info, video_stream=video_stream)
 
     def test_check_movie_returns_error_for_missing_required_movie_info_field(self):
         """必要字段缺失时，应返回明确错误，而不是让后续流程抛 KeyError。"""
