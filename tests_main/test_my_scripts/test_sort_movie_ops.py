@@ -31,7 +31,7 @@ def load_sort_movie_ops(check_target: str):
     fake_my_module.read_json_to_dict = lambda _path: {
         "trash_list": [],
         "source_list": [],
-        "video_extensions": [".mkv", ".mp4"],
+        "video_extensions": [".mkv", ".mp4", ".avi", ".rmvb"],
         "magnet_path": "magnet:",
         "bt_source": str(Path(check_target).parent),
         "rarbg_source": "",
@@ -254,15 +254,58 @@ class TestSharedHelpers(unittest.TestCase):
         self.assertEqual(self.module.split_director_name("John Smith"), ["John Smith"])
         self.assertEqual(self.module.split_director_name("  "), [])
         self.assertEqual(self.module.fix_douban_name("电影名 (导演剪辑版)（蓝光）"), "电影名")
+        self.assertEqual(self.module.fix_douban_name("  名字　(备注)  别名（说明） "), "名字 别名")
+        self.assertEqual(self.module.fix_douban_name("(备注)（说明）"), "")
 
     def test_create_aka_director_deduplicates_case_insensitively(self):
         """创建导演别名空文件时应按大小写不敏感规则去重。"""
         director_dir = self.root / "director"
         director_dir.mkdir()
-        with patch.object(self.module, "sanitize_filename", side_effect=lambda text: text.replace("/", "_")):
-            self.module.create_aka_director(str(director_dir), ["A/B", "a/b", "Alias"])
+        with patch.object(self.module, "sanitize_filename", side_effect=lambda text: text.replace("/", "_").replace(":", "_")):
+            self.module.create_aka_director(director_dir, ["A/B", "a/b", "A:B", "Alias", "  "])
 
         self.assertEqual(sorted(path.name for path in director_dir.iterdir()), ["A_B", "Alias"])
+
+    def test_delete_trash_files_removes_configured_names_case_insensitively(self):
+        """垃圾文件清理只按文件名大小写不敏感精确匹配配置项。"""
+        trash_file = self.root / "Thumbs.DB"
+        keep_file = self.root / "movie.mkv"
+        nested_dir = self.root / "nested"
+        nested_dir.mkdir()
+        nested_trash = nested_dir / "sample.txt"
+        trash_file.write_text("trash", encoding="utf-8")
+        keep_file.write_text("keep", encoding="utf-8")
+        nested_trash.write_text("trash", encoding="utf-8")
+
+        self.module.TRASH_LIST = ["thumbs.db", "sample.txt"]
+        with patch.object(self.module, "get_file_paths", return_value=[str(trash_file), str(keep_file), str(nested_trash)]), \
+                patch.object(self.module, "remove_target", side_effect=lambda path: Path(path).unlink()):
+            self.module.delete_trash_files(self.root)
+
+        self.assertFalse(trash_file.exists())
+        self.assertFalse(nested_trash.exists())
+        self.assertTrue(keep_file.exists())
+
+    def test_delete_trash_files_ignores_missing_scan_results(self):
+        """扫描失败返回 None 时不应继续遍历。"""
+        with patch.object(self.module, "get_file_paths", return_value=None), \
+                patch.object(self.module, "remove_target") as remove_target:
+            self.module.delete_trash_files(self.root)
+
+        remove_target.assert_not_called()
+
+    def test_open_everything_search_for_keywords_uses_existing_keyword_list(self):
+        """Everything GUI 搜索应直接使用调用方传入的关键词列表。"""
+        self.module.EVERYTHING_PATH = r"C:\Everything\Everything64.exe"
+
+        with patch.object(self.module, "read_file_to_list", side_effect=AssertionError("should not read file")), \
+                patch.object(self.module.subprocess, "Popen") as popen:
+            self.module.open_everything_search_for_keywords(["Movie One", "Movie Two"])
+
+        popen.assert_called_once_with(
+            [r"C:\Everything\Everything64.exe", "-search", "<Movie One>|<Movie Two>"],
+            shell=False,
+        )
 
 
 class TestYtsTorrentSelection(unittest.TestCase):
@@ -416,18 +459,53 @@ class TestFilesystemWorkflows(unittest.TestCase):
         with patch.object(self.module.logger, "error"):
             self.assertIsNone(self.module.extract_movie_ids(str(self.root)))
 
+    def test_extract_movie_ids_returns_stable_valid_ids(self):
+        """归档检查应按稳定目录顺序提取合法电影编号。"""
+        z_director = self.root / "Z Director"
+        a_director = self.root / "A Director"
+        z_director.mkdir()
+        a_director.mkdir()
+        (self.root / "root-file.txt").write_text("ignored", encoding="utf-8")
+        (z_director / "B Movie {tmdb200}").mkdir()
+        (z_director / "a Movie {db300}").mkdir()
+        (a_director / "Movie One {tt1111111}").mkdir()
+        (a_director / "Movie One {tt1111111}" / "Nested {tt9999999}").mkdir()
+        (a_director / "note.txt").write_text("ignored", encoding="utf-8")
+
+        self.assertEqual(self.module.extract_movie_ids(self.root), ["tt1111111", "db300", "tmdb200"])
+
+    def test_extract_movie_ids_rejects_invalid_braced_id(self):
+        """花括号内容不是受支持编号时应停止扫描。"""
+        director = self.root / "Director"
+        (director / "Movie {unknown123}").mkdir(parents=True)
+
+        with patch.object(self.module.logger, "error"):
+            self.assertIsNone(self.module.extract_movie_ids(self.root))
+
+    def test_extract_movie_ids_rejects_missing_root(self):
+        """根路径不存在时应返回 None，而不是继续抛出底层异常。"""
+        with patch.object(self.module.logger, "error"):
+            self.assertIsNone(self.module.extract_movie_ids(self.root / "missing"))
+
     def test_find_and_filter_video_files_use_expected_name_rules(self):
         """视频扫描和疑似错误文件名过滤应覆盖常用后缀和例外前缀。"""
         good = self.root / "ex_sample.mkv"
         sub = self.root / "SUB-sample.mp4"
         bad = self.root / "movie.avi"
         duplicate = self.root / "movie (1).mkv"
+        configured = self.root / "ex_configured.rmvb"
         ignored = self.root / "movie.txt"
-        for path in [good, sub, bad, duplicate, ignored]:
+        suffix_dir = self.root / "folder.mkv"
+        suffix_dir.mkdir()
+        for path in [good, sub, bad, duplicate, configured, ignored]:
             path.write_text("x", encoding="utf-8")
 
         videos = self.module.find_video_files(str(self.root))
-        self.assertCountEqual(videos, [str(good), str(sub), str(bad), str(duplicate)])
+        self.assertCountEqual(videos, [str(good), str(sub), str(bad), str(duplicate), str(configured)])
+        self.assertFalse(self.module.is_bad_video_filename(good))
+        self.assertFalse(self.module.is_bad_video_filename(sub))
+        self.assertTrue(self.module.is_bad_video_filename(bad))
+        self.assertTrue(self.module.is_bad_video_filename(duplicate))
         self.assertCountEqual(self.module.filter_video_files(videos), [str(bad), str(duplicate)])
 
 
