@@ -32,7 +32,7 @@ from sort_movie_ops import (
     select_best_yts_magnet,
     touch_id_marker,
 )
-from video_tools import VIDEO_EXTENSIONS, generate_video_contact, generate_video_contact_mtn, get_video_info
+from video_tools import VIDEO_EXTENSIONS, generate_video_contact, generate_video_contact_mtn, get_video_probe
 from sort_movie_request import (
     get_douban_response,
     get_douban_search_details,
@@ -171,10 +171,11 @@ def sort_movie(path: str) -> SortMovieResult:
     fill_movie_info(movie_ids, movie_info, tv)
 
     # 读取本地视频文件的基础信息
-    file_info = get_video_info(path)
-    if not file_info:
+    video_probe = get_video_probe(path)
+    if not video_probe:
         return False, path
-    screenshot_result = ensure_movie_screenshots(path)
+    file_info = video_probe["file_info"]
+    screenshot_result = ensure_movie_screenshots(path, video_probe)
     if screenshot_result:
         logger.error(screenshot_result)
         return False, path
@@ -796,11 +797,12 @@ def build_movie_folder_name(path: str, movie_dict: dict) -> Optional[str]:
     return f"{base_name}[{source}][{resolution}][{codec}@{bitrate}]"
 
 
-def ensure_movie_screenshots(path: str) -> Optional[str]:
+def ensure_movie_screenshots(path: str, video_probe: Optional[dict] = None) -> Optional[str]:
     """
     检查视频数量并确保每个视频都有缩略图。
 
     :param path: 电影目录路径
+    :param video_probe: 已读取的主视频探测结果；命中同一路径时复用截图所需元数据
     :return: 截图生成失败时返回错误信息，否则返回 ``None``
     """
     p = Path(path)
@@ -808,12 +810,18 @@ def ensure_movie_screenshots(path: str) -> Optional[str]:
     if len(video_paths) > 1:
         logger.warning(f"{p.name} 目录中视频数量大于 1")
 
+    probed_video_path = normalize_optional_path(video_probe.get("video_path")) if video_probe else None
+    probed_video_info = video_probe.get("file_info") if video_probe else None
+    probed_video_stream = video_probe.get("video_stream") if video_probe else None
     for video_path in video_paths:
         base, _ext = os.path.splitext(video_path)
         screen_path = base + "_s.jpg"
         if not os.path.exists(screen_path):
             try:
-                generate_video_contact(video_path)
+                if normalize_optional_path(video_path) == probed_video_path:
+                    generate_video_contact(video_path, video_info=probed_video_info, video_stream=probed_video_stream)
+                else:
+                    generate_video_contact(video_path)
             except Exception as e:
                 logger.warning(f"{video_path} 生成缩略图失败: {e}")
         if not os.path.exists(screen_path):
@@ -821,6 +829,18 @@ def ensure_movie_screenshots(path: str) -> Optional[str]:
         if not os.path.exists(screen_path):
             return f"生成视频截图失败：{p.name}"
     return None
+
+
+def normalize_optional_path(path: Optional[str | os.PathLike]) -> Optional[str]:
+    """
+    将可选路径规范化，供同一路径比较使用。
+
+    :param path: 待规范化路径
+    :return: 规范化后的绝对路径；输入为空时返回 ``None``
+    """
+    if not path:
+        return None
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
 def apply_sort_movie_transaction(path: str, new_path: str, movie_dict: dict) -> SortMovieResult:
