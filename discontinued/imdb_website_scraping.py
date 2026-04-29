@@ -52,6 +52,42 @@ def safe_get(d: dict, path: list, default: Any = None) -> Any:
     return d
 
 
+def _remove_duplicates_ignore_case(items: list[Any]) -> list[Any]:
+    """按大小写不敏感规则去重，保留第一次出现的原始值。"""
+    seen = set()
+    result = []
+    for item in items:
+        if isinstance(item, str):
+            key = ("str", item.casefold())
+        else:
+            key = ("value", item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
+    """
+    合并旧 IMDb 网页抓取得到的导演信息字典，并对每个列表去重。
+
+    该函数来自旧版 IMDb 网页抓取流程，用于合并 ``get_imdb_director_info()``
+    等函数返回的 ``country``、``aka`` 等列表字段。当前主流程已停用 IMDb
+    网页抓取，这里仅作为旧逻辑归档保留。
+
+    :param director_info: 原导演信息字典
+    :param result_info: 新抓取到的信息字典
+    :return: 合并并去重后的字典
+    """
+    merged = {}
+    all_keys = set(director_info.keys()) | set(result_info.keys())
+    for key in all_keys:
+        combined = director_info.get(key, []) + result_info.get(key, [])
+        merged[key] = _remove_duplicates_ignore_case(combined)
+    return merged
+
+
 @retry(stop_max_attempt_number=5, wait_random_min=2420, wait_random_max=3700)
 def get_imdb_cookie(force=False, hl=False):
     """用浏览器访问 IMDB 刷新 Cookie。"""
