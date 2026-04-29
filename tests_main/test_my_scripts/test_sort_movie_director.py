@@ -67,6 +67,7 @@ def load_sort_movie_director():
         "move_files": [],
     }
     fake_sort_movie_ops.touch_id_marker = lambda path, id_value, suffix: Path(path, f"{id_value}.{suffix}").touch()
+    fake_sort_movie_ops.remove_duplicates_ignore_case = lambda items: list(dict.fromkeys(items))
 
     fake_sort_movie_request = types.ModuleType("sort_movie_request")
     fake_sort_movie_request.get_tmdb_director_details = lambda _director_id: {"name": "", "also_known_as": []}
@@ -283,13 +284,37 @@ class TestTmdbAndDoubanHelpers(unittest.TestCase):
         mock_aliases.assert_called_once_with("77")
 
     def test_get_douban_director_aliases_extracts_main_name_and_extra_aliases(self):
-        """豆瓣人物页应提取主名字和“更多外文名”里的 alias。"""
+        """豆瓣人物页应提取主名字和“更多中文名/更多外文名”里的 alias。"""
         response = Mock(
             text="""
             <html>
-              <h1 class="subject-name">黑泽明</h1>
+              <h1 class="subject-name">宫崎骏 Hayao Miyazaki</h1>
+              <span class="label">更多中文名:</span>
+              <span class="value">秋津三朗(化名) / 无</span>
               <span class="label">更多外文名:</span>
-              <span class="value">Akira Kurosawa / Kurosawa Akira</span>
+              <span class="value">宮﨑駿 / みやざき はやお / Hayao Miyazaki</span>
+            </html>
+            """
+        )
+
+        with patch.object(self.module, "get_douban_response", return_value=response), \
+                patch.object(self.module, "split_director_name", return_value=["Hayao Miyazaki", "宫崎骏"]), \
+                patch.object(self.module, "fix_douban_name", side_effect=lambda name: re.sub(r"\([^)]*\)|（[^）]*）", "", name).strip()):
+            result = self.module.get_douban_director_aliases("123456")
+
+        self.assertEqual(
+            result,
+            ["Hayao Miyazaki", "宫崎骏", "秋津三朗", "宮﨑駿", "みやざき はやお"],
+        )
+
+    def test_get_douban_director_aliases_returns_main_name_when_extra_aliases_missing(self):
+        """没有更多名字段时，应只返回主标题拆分结果。"""
+        response = Mock(
+            text="""
+            <html>
+              <h1 class="subject-name">文牧野 Muye Wen</h1>
+              <span class="label">IMDb编号:</span>
+              <span class="value">nm6337063</span>
             </html>
             """
         )
@@ -297,7 +322,16 @@ class TestTmdbAndDoubanHelpers(unittest.TestCase):
         with patch.object(self.module, "get_douban_response", return_value=response):
             result = self.module.get_douban_director_aliases("123456")
 
-        self.assertEqual(result, ["黑泽明", "Akira Kurosawa", "Kurosawa Akira"])
+        self.assertEqual(result, ["文牧野 Muye Wen"])
+
+    def test_get_douban_director_aliases_returns_empty_when_main_name_missing(self):
+        """人物页缺少主标题时返回空列表。"""
+        response = Mock(text="<html></html>")
+
+        with patch.object(self.module, "get_douban_response", return_value=response):
+            result = self.module.get_douban_director_aliases("123456")
+
+        self.assertEqual(result, [])
 
 
 class TestDirectorMovieCollection(unittest.TestCase):

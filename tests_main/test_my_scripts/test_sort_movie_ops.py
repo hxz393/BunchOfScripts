@@ -252,19 +252,11 @@ class TestSharedHelpers(unittest.TestCase):
         self.assertEqual(self.module.split_director_name("John Smith 约翰·史密斯"), ["John Smith", "约翰·史密斯"])
         self.assertEqual(self.module.split_director_name("约翰·史密斯"), ["约翰·史密斯"])
         self.assertEqual(self.module.split_director_name("John Smith"), ["John Smith"])
+        self.assertEqual(self.module.split_director_name("  "), [])
         self.assertEqual(self.module.fix_douban_name("电影名 (导演剪辑版)（蓝光）"), "电影名")
 
-    def test_merge_and_create_aka_director_deduplicate_case_insensitively(self):
-        """别名合并和空文件创建都应按大小写不敏感规则去重。"""
-        merged = self.module.merge_and_dedup(
-            {"aka": ["Movie", "Film"], "year": [2020]},
-            {"aka": ["movie", "Cinema"], "imdb": ["tt1234567"]},
-        )
-
-        self.assertEqual(merged["aka"], ["Movie", "Film", "Cinema"])
-        self.assertEqual(merged["year"], [2020])
-        self.assertEqual(merged["imdb"], ["tt1234567"])
-
+    def test_create_aka_director_deduplicates_case_insensitively(self):
+        """创建导演别名空文件时应按大小写不敏感规则去重。"""
         director_dir = self.root / "director"
         director_dir.mkdir()
         with patch.object(self.module, "sanitize_filename", side_effect=lambda text: text.replace("/", "_")):
@@ -457,19 +449,16 @@ class TestCheckLocalTorrent(unittest.TestCase):
         source_dir.mkdir()
         self.check_target.mkdir()
         first = source_dir / "Movie [tt1234567].torrent"
-        second = source_dir / "Movie [tt1234567] 2160p.torrent"
+        second = source_dir / "Movie {tt1234567} 2160p.torrent"
         other = source_dir / "Other [tt7654321].torrent"
         existing = self.check_target / first.name
         first.write_text("first", encoding="utf-8")
         second.write_text("second", encoding="utf-8")
         other.write_text("other", encoding="utf-8")
         existing.write_text("existing", encoding="utf-8")
-        self.module.LOCAL_TORRENT_INDEX = {
-            "tt1234567": [str(first), str(second)],
-            "tt7654321": [str(other)],
-        }
 
-        result = self.module.check_local_torrent("tt1234567")
+        with patch.object(self.module, "search_local_torrents_by_imdb", return_value=[str(first), str(second)]):
+            result = self.module.check_local_torrent("tt1234567")
 
         self.assertEqual(result["move_counts"], 2)
         self.assertEqual(result["move_files"], [str(self.check_target / "Movie [tt1234567](1).torrent"), str(self.check_target / second.name)])
@@ -486,29 +475,41 @@ class TestCheckLocalTorrent(unittest.TestCase):
         source_dir.mkdir()
         torrent_file = source_dir / "Movie.torrent"
         torrent_file.write_text("torrent", encoding="utf-8")
-        self.module.LOCAL_TORRENT_INDEX = {"tt1234567": [str(torrent_file)]}
 
-        result = self.module.check_local_torrent("tt1234567")
+        with patch.object(self.module, "search_local_torrents_by_imdb", return_value=[str(torrent_file)]):
+            result = self.module.check_local_torrent("tt1234567")
 
         self.assertEqual(result, {"move_counts": 0, "move_files": []})
         self.assertTrue(torrent_file.exists())
 
-    def test_build_local_torrent_index_uses_imdb_in_filename_only(self):
-        """本地种子索引只提取文件名里的 ``[tt...]``，不使用父目录名。"""
+    def test_search_local_torrents_by_imdb_uses_everything_15_and_filters_filename(self):
+        """Everything 搜索固定使用 es1.5 和 BT 根目录，并只返回文件名命中的路径。"""
         parent_only_dir = self.root / "[tt1234567]"
         parent_only_dir.mkdir()
         parent_only = parent_only_dir / "Movie.torrent"
         matched = self.root / "Movie [TT1234567].torrent"
-        other = self.root / "Other [tt7654321].torrent"
-        parent_only.write_text("parent", encoding="utf-8")
-        matched.write_text("matched", encoding="utf-8")
-        other.write_text("other", encoding="utf-8")
+        second = self.root / "Second {tt1234567}.torrent"
+        bare = self.root / "Third tt1234567.torrent"
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout=f"{matched}\n{parent_only}\n{second}\n{bare}\n{matched}\n",
+            stderr="",
+        )
 
-        index = self.module.build_local_torrent_index(self.root)
+        with patch.object(self.module.shutil, "which", return_value=r"C:\Tools\es.exe"), \
+                patch.object(self.module.subprocess, "run", return_value=completed) as run_mock:
+            result = self.module.search_local_torrents_by_imdb("TT1234567")
 
-        self.assertEqual(index["tt1234567"], [str(matched)])
-        self.assertEqual(index["tt7654321"], [str(other)])
-        self.assertNotIn(str(parent_only), index.get("tt1234567", []))
+        self.assertEqual(result, [str(matched), str(second)])
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[:7], [r"C:\Tools\es.exe", "-instance", "es1.5", "-r", r"[\[\{]tt1234567[\]\}]", "-full-path-and-name", "-path"])
+        self.assertIn(r"B:\0.整理\BT", command)
+        self.assertIn("/a-d", command)
+
+    def test_search_local_torrents_by_imdb_rejects_invalid_id(self):
+        """非法 IMDb 编号不应传给 Everything。"""
+        with self.assertRaises(ValueError):
+            self.module.search_local_torrents_by_imdb("1234567")
 
 
 if __name__ == "__main__":

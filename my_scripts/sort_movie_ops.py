@@ -6,7 +6,6 @@
 :copyright: Copyright 2026, hxz393. 保留所有权利。
 """
 import itertools
-import json
 import logging
 import os
 import os.path
@@ -25,7 +24,6 @@ CONFIG = read_json_to_dict('config/sort_movie_ops.json')  # 配置文件
 
 TRASH_LIST = CONFIG['trash_list']  # 垃圾文件名列表
 MAGNET_PATH = CONFIG['magnet_path']  # 磁链前缀
-BT_SOURCE = CONFIG['bt_source']  # BT 种子来源根目录
 CHECK_TARGET = CONFIG['check_target']  # 种子移动目录
 EVERYTHING_PATH = CONFIG['everything_path']  # everything 路径
 MIRROR_PATH = CONFIG['mirror_path']  # 镜像文件夹路径
@@ -42,8 +40,7 @@ RE_TRASH = re.compile(r".*(yts|YIFY).*\.(jpg|txt)$", re.IGNORECASE)
 IMDB_URL_PATTERN = re.compile(r"https?://(?:www\.)?imdb\.com/title/(tt\d+)", re.IGNORECASE)
 IMDB_ID_PATTERN = re.compile(r"\b(tt\d+)\b", re.IGNORECASE)
 IMDB_ID_TOKEN_PATTERN = re.compile(r"\btt\d+\b", re.IGNORECASE)
-TORRENT_FILENAME_IMDB_PATTERN = re.compile(r"\[(tt\d+)]", re.IGNORECASE)
-
+CHINESE_NAME_SEGMENT_PATTERN = re.compile(r"\S*[\u4e00-\u9fff]+\S*")
 
 ID_MARKER_EXT_MAP = {'.tmdb': 'tmdb', '.douban': 'douban', '.imdb': 'imdb'}
 EMPTY_ID_MARKERS: dict[str, Optional[str]] = {"imdb": None, "tmdb": None, "douban": None}
@@ -55,48 +52,70 @@ YTS_TORRENT_PRIORITIES = (
     ("bit_depth", ["10", "8"]),
     ("type", ["bluray", "web"]),
 )
+BT_SEARCH_ROOT = r"B:\0.整理\BT"
 
 
-def build_local_torrent_index(root_path: str | os.PathLike) -> dict[str, list[str]]:
+def search_local_torrents_by_imdb(imdb: str) -> list[str]:
     """
-    扫描本地种子目录，并按文件名中的 IMDb 编号建立索引。
+    使用 Everything 1.5 在本地 BT 目录中查询指定 IMDb 编号的文件。
 
-    只提取文件名里 ``[tt...]`` 形式的编号；父目录名中的编号不会参与索引。
-    该函数用于程序启动阶段一次性扫描大量种子文件，避免后续每次查询 IMDb 编号时
-    都线性遍历完整文件列表。
+    搜索范围固定为 ``B:\\0.整理\\BT``，只调用 ``es1.5`` 实例。Everything 使用
+    一次正则查询同时匹配 ``[tt...]`` 和 ``{tt...}``；返回结果后，再按文件名
+    二次过滤，避免父目录名命中导致误移动。
 
-    :param root_path: BT 种子来源根目录
-    :return: ``{imdb: [torrent_path, ...]}`` 格式的索引
+    :param imdb: IMDb 编号，例如 ``tt1234567``
+    :return: 命中的完整文件路径列表
+    :raises ValueError: ``imdb`` 不是合法 IMDb 编号
+    :raises FileNotFoundError: 找不到 ``es.exe``
+    :raises RuntimeError: Everything 查询失败
     """
-    root_path = os.fspath(root_path)
-    index: dict[str, list[str]] = {}
-    try:
-        if not os.path.exists(root_path):
-            logger.error(f"BT 种子来源目录不存在：{root_path}")
-            return index
-        if not os.path.isdir(root_path):
-            logger.error(f"BT 种子来源路径不是目录：{root_path}")
-            return index
+    imdb = imdb.strip().lower()
+    if not IMDB_ID_PATTERN.fullmatch(imdb):
+        raise ValueError(f"无效 IMDb 编号：{imdb}")
 
-        for root, _dirs, files in os.walk(root_path):
-            for filename in files:
-                imdb_ids = {
-                    match.group(1).lower()
-                    for match in TORRENT_FILENAME_IMDB_PATTERN.finditer(filename)
-                }
-                if not imdb_ids:
-                    continue
+    es_path = shutil.which("es.exe")
+    if not es_path:
+        raise FileNotFoundError("未找到 es.exe")
 
-                file_path = os.path.join(root, filename)
-                for imdb_id in imdb_ids:
-                    index.setdefault(imdb_id, []).append(file_path)
-    except Exception:
-        logger.exception(f"建立本地种子索引失败：{root_path}")
-    return index
+    imdb_tokens = (f"[{imdb}]", f"{{{imdb}}}")
+    everything_regex = rf"[\[\{{]{re.escape(imdb)}[\]\}}]"
+    command = [
+        es_path,
+        "-instance",
+        "es1.5",
+        "-r",
+        everything_regex,
+        "-full-path-and-name",
+        "-path",
+        BT_SEARCH_ROOT,
+        "/a-d",
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        stderr_text = completed.stderr.strip()
+        raise RuntimeError(f"Everything 查询失败：{stderr_text or completed.returncode}")
 
-
-# 文件多，程序启动时先建立 IMDb -> 种子路径索引，后续查询避免反复扫描完整路径列表。
-LOCAL_TORRENT_INDEX = build_local_torrent_index(BT_SOURCE)
+    results = []
+    seen = set()
+    for line in completed.stdout.splitlines():
+        file_path = line.strip()
+        if not file_path:
+            continue
+        file_name = Path(file_path).name.lower()
+        if not any(token in file_name for token in imdb_tokens):
+            continue
+        path_key = file_path.casefold()
+        if path_key in seen:
+            continue
+        seen.add(path_key)
+        results.append(file_path)
+    return results
 
 
 def format_bytes(size_bytes: int | str) -> str:
@@ -463,28 +482,28 @@ def sort_torrents_auto(path: str) -> None:
 
 def check_local_torrent(imdb: str) -> dict:
     """
-    从本地种子索引中查找并移动指定 IMDb 编号的种子文件。
+    从本地 BT 目录中查找并移动指定 IMDb 编号的种子文件。
 
-    函数从 ``LOCAL_TORRENT_INDEX`` 直接取出当前 IMDb 编号对应的候选路径；
-    候选文件仍存在且文件名包含 ``[imdb]`` 时，将文件移动到 ``CHECK_TARGET``。
+    函数通过 Everything 1.5 在 ``B:\\0.整理\\BT`` 中按 IMDb 编号查找候选路径。
+    候选文件仍存在且文件名包含 ``[imdb]`` 或 ``{imdb}`` 时，将文件移动到 ``CHECK_TARGET``。
     目标目录已存在同名文件时，通过 ``build_unique_path`` 生成不重名路径，
     避免覆盖已有文件。
 
-    ``LOCAL_TORRENT_INDEX`` 是模块导入时从 BT 来源目录建立的快照；函数不会重新
-    扫描来源目录，因此运行期间新增的种子不会被本次检查发现。
+    Everything 负责维护文件索引，函数本身不再预加载或扫描完整 BT 目录。
 
     :param imdb: IMDb 编号，例如 ``tt1234567``
     :return: ``{"move_counts": 移动数量, "move_files": 移动后的路径列表}``
     """
     moved_files = []
     imdb = imdb.lower()
-    bracket_id = f"[{imdb}]"
+    imdb_tokens = (f"[{imdb}]", f"{{{imdb}}}")
     target_dir = Path(CHECK_TARGET)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    for file_path in LOCAL_TORRENT_INDEX.get(imdb, []):
+    for file_path in search_local_torrents_by_imdb(imdb):
         source_path = Path(file_path)
-        if bracket_id not in source_path.name.lower() or not source_path.exists():
+        file_name = source_path.name.lower()
+        if not any(token in file_name for token in imdb_tokens) or not source_path.exists():
             continue
 
         target_path = build_unique_path(target_dir / source_path.name)
@@ -494,59 +513,28 @@ def check_local_torrent(imdb: str) -> dict:
     return {"move_counts": len(moved_files), "move_files": moved_files}
 
 
-def merge_and_dedup(director_info: dict, result_info: dict) -> dict:
+def split_director_name(full_name: str) -> list[str]:
     """
-    合并两个字典中相同键的列表，并去重（忽略大小写）。
-    如果两个列表中有重复项（忽略大小写），保留第一次出现的值。
+    将豆瓣人物页标题拆分为导演别名列表。
 
-    :param director_info: 原字典
-    :param result_info: 新字典
-    :return: 返回合并后的字典。
+    如果标题中包含中文字符，函数把第一个包含中文字符的连续非空白片段视为中文名，
+    并将剩余文本视为外文名；返回顺序固定为外文名在前、中文名在后。
+    如果标题中没有中文字符，则返回清理空白后的原字符串。空输入返回空列表。
+
+    :param full_name: 豆瓣人物页主标题，例如 ``John Smith 约翰·史密斯``
+    :return: 拆分后的别名列表
     """
-    merged = {}
+    full_name = full_name.strip()
+    if not full_name:
+        return []
 
-    # 获取所有的键
-    all_keys = set(director_info.keys()) | set(result_info.keys())
-    for key in all_keys:
-        list1 = director_info.get(key, [])
-        list2 = result_info.get(key, [])
-        combined = list1 + list2
-
-        merged[key] = remove_duplicates_ignore_case(combined)
-
-    return merged
-
-
-def split_director_name(full_name: str) -> list:
-    """
-    根据规则，将输入字符串拆分为 [英文名, 中文名] 或 [中文名] 或 [原字符串].
-    规则：
-      1. 若不存在中文字符，则返回 [原字符串].
-      2. 若存在中文字符，则视匹配到的不含空格、且至少含一个中文字符的片段为中文名。可能包含部分英文字母或符号（如 A·V·洛克威尔）。
-      3. 将中文名从原字符串中移除后，剩余部分（若存在）即视为英文名。
-      4. 若中英文名都存在，英文名在前，中文名在后。
-      5. 若只有中文名，则只返回该中文名。
-
-    :param full_name: 传入名字
-    :return: 分割后的名字列表
-    """
-    # 匹配含有至少一个中文字符的片段（不包含空格）
-    pattern = re.compile(r'\S*[\u4e00-\u9fff]+\S*')
-
-    match = pattern.search(full_name)
+    match = CHINESE_NAME_SEGMENT_PATTERN.search(full_name)
     if not match:
-        # 不包含中文，直接返回整个字符串
-        return [full_name.strip()]
+        return [full_name]
 
-    # 如果包含中文
     chinese_part = match.group(0)
-    # 将匹配到的中文名片段从原字符串中去掉，得到英文部分
     english_part = full_name.replace(chinese_part, '', 1).strip()
-
-    if english_part:
-        return [english_part, chinese_part]
-    else:
-        return [chinese_part]
+    return [english_part, chinese_part] if english_part else [chinese_part]
 
 
 def create_aka_director(path: str, aka: list) -> None:

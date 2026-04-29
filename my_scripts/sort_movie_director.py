@@ -33,6 +33,7 @@ from sort_movie_ops import (
     extract_imdb_id,
     check_local_torrent,
     touch_id_marker,
+    remove_duplicates_ignore_case,
 )
 from sort_movie_request import (
     get_tmdb_director_details,
@@ -296,12 +297,12 @@ def get_tmdb_director_aliases(director_id: str) -> tuple[str, ...]:
     return p["name"], *list(p["also_known_as"])
 
 
-def get_douban_director_aliases(director_id: str) -> list:
+def get_douban_director_aliases(director_id: str) -> list[str]:
     """
     从豆瓣人物页提取导演别名。
 
-    返回值先放豆瓣页面主标题拆出来的名字，再追加“更多外文名/更多中文名”
-    里的条目。
+    返回值先放豆瓣人物页主标题拆出来的名字，再追加“更多中文名”和“更多外文名”
+    里的条目。页面没有更多名字段时，只返回主标题拆分结果；字段值为“无”时跳过。
 
     :param director_id: 导演 douban 编号
     :return: 返回别名列表
@@ -311,30 +312,29 @@ def get_douban_director_aliases(director_id: str) -> list:
         return []
 
     soup = BeautifulSoup(response.text, 'html.parser')
-    # 定位到 class 为 "subject-name" 的 h1 标签
     h1_tag = soup.find('h1', class_='subject-name')
-    name_main = h1_tag.get_text(strip=True)
-    name_main_list = split_director_name(name_main)
-    aka = list(name_main_list)
+    if not h1_tag:
+        return []
 
-    # 查找所有 <span class="label"> 标签
-    labels = soup.find_all('span', class_='label')
+    aka = list(split_director_name(h1_tag.get_text(" ", strip=True)))
+    wanted_labels = {"更多中文名:", "更多外文名:"}
 
-    # 获取别名信息
-    for label in labels:
-        # 获取标签内文本，并去除空白字符
+    for label in soup.find_all('span', class_='label'):
         label_text = label.get_text(strip=True)
-        if label_text == "更多外文名:" or label_text == "更多中文名:":
-            # 找到紧跟在 label 后面的 <span class="value"> 标签（也可以用 label.find_next_sibling）
-            value_tag = label.find_next_sibling('span', class_='value')
-            if value_tag:
-                # 获取文本并去除两端空格，然后按 "/" 分割并去除分割后每个名字的前后空白
-                alias_text = value_tag.get_text(strip=True)
-                alias = [fix_douban_name(name) for name in alias_text.split('/') if name.strip()]
-                aka.extend(alias)
-            break
+        if label_text not in wanted_labels:
+            continue
 
-    return aka
+        value_tag = label.find_next_sibling('span', class_='value')
+        if not value_tag:
+            continue
+
+        alias_text = value_tag.get_text(strip=True)
+        for name in alias_text.split('/'):
+            alias = fix_douban_name(name).strip()
+            if alias and alias != "无":
+                aka.append(alias)
+
+    return remove_duplicates_ignore_case(aka)
 
 
 def get_director_movies(source: str) -> Optional[List[str]]:
